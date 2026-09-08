@@ -1,0 +1,27 @@
+{
+  "split": "dev",
+  "corpus_law": "حماية البيانات الشخصية",
+  "corpus_law_status": "CONFIRMED",
+  "authored_from": "secondary web sources (paraphrased); all 20 article references machine-verified against the ingested corpus on 2026-09-08",
+  "max_lexical_overlap": 0.55,
+  "notes": [
+    "corpus_law is a substring matched against law_name in data/processed/articles.jsonl; law_name comes from the mandatory --law flag on ingest.",
+    "Scoring is refused when the ingested corpus is a different law: 151/2020 questions run against قانون المرافعات would look like bad retrieval, not like a mismatched eval set.",
+    "corpus_law_status must become CONFIRMED (the official PDF is in data/raw/ and ingested) before any number is published.",
+    "overlap_band caps AND floors how much of a question's wording is shared with the article that answers it (ADR-009). Too high = BM25 wins for free. Too low in a `direct` question = BM25 has nothing to match and the lexical baseline is unfairly crushed; that belongs in the `colloquial` category, which is where paraphrase robustness is tested on purpose."
+  ],
+  "overlap_band": {
+    "direct": [
+      0.15,
+      0.55
+    ],
+    "multi_article": [
+      0.15,
+      0.6
+    ],
+    "colloquial": [
+      0.0,
+      0.35
+    ]
+  }
+}

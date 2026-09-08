@@ -1,0 +1,30 @@
+PY ?= python3
+export PYTHONPATH := src
+
+.PHONY: setup ingest eval verify-refs verify-refs-write test all
+
+## install python dependencies
+setup:
+	$(PY) -m pip install -r requirements.txt
+
+## data/raw/*.pdf|txt -> data/processed/articles.jsonl (article-level chunks)
+## LAW is mandatory:  make ingest LAW="قانون حماية البيانات الشخصية"
+ingest:
+	$(PY) -m legalrag.ingest --law "$(LAW)"
+
+## THE command: load the eval set and print the scoreboard
+eval:
+	$(PY) -m legalrag.evaluate
+
+## check every ground-truth article reference against the ingested corpus
+verify-refs:
+	$(PY) -m legalrag.verify_refs
+
+## same, and stamp ref_status back into questions.jsonl
+verify-refs-write:
+	$(PY) -m legalrag.verify_refs --write
+
+test:
+	$(PY) -m pytest -q
+
+all: ingest verify-refs eval

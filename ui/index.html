@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>arabic-legal-rag — صفحة الاختبار</title>
+<style>
+  :root{
+    --bg:#f7f7f5; --panel:#fff; --ink:#1a1a19; --muted:#6b6b66; --line:#e3e3de;
+    --accent:#2f5d50; --warn:#8a5a1a; --warn-bg:#fdf5e6; --bad:#a33; --good:#2f6b3f;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{--bg:#161715;--panel:#1e201d;--ink:#e8e8e4;--muted:#9a9a93;--line:#2e312d;
+          --accent:#7fb3a1;--warn:#d9a441;--warn-bg:#2a2418;--bad:#e07070;--good:#7fbf8f;}
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:15px/1.65 system-ui,"Segoe UI",Tahoma,sans-serif}
+  header{padding:18px 22px;border-bottom:1px solid var(--line);background:var(--panel)}
+  h1{margin:0 0 4px;font-size:17px;letter-spacing:-.01em}
+  .sub{color:var(--muted);font-size:13px}
+  .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+  .chip{font-size:12px;padding:3px 10px;border:1px solid var(--line);border-radius:999px;
+        background:var(--bg);color:var(--muted)}
+  .chip b{color:var(--ink);font-weight:600}
+  main{max-width:1100px;margin:0 auto;padding:20px 22px 60px}
+  .banner{background:var(--warn-bg);border:1px solid var(--warn);color:var(--warn);
+          padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:18px}
+  nav{display:flex;gap:4px;margin-bottom:18px;border-bottom:1px solid var(--line)}
+  nav button{background:none;border:0;border-bottom:2px solid transparent;padding:9px 14px;
+             font:inherit;font-size:14px;color:var(--muted);cursor:pointer}
+  nav button[aria-selected=true]{color:var(--ink);border-bottom-color:var(--accent);font-weight:600}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px}
+  input[type=search],input[type=number],select{font:inherit;padding:9px 12px;border:1px solid var(--line);
+    border-radius:8px;background:var(--panel);color:var(--ink)}
+  input[type=search]{flex:1;min-width:260px}
+  button.go{font:inherit;padding:9px 18px;border:0;border-radius:8px;background:var(--accent);
+            color:#fff;cursor:pointer;font-weight:600}
+  button.go:disabled{opacity:.5;cursor:default}
+  .metrics{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:18px}
+  .metric{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 20px;min-width:130px}
+  .metric .v{font-size:26px;font-weight:650;font-family:var(--mono)}
+  .metric .k{font-size:12px;color:var(--muted)}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+        padding:14px 16px;margin-bottom:10px}
+  .qhead{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+  .qid{font-family:var(--mono);font-size:12px;color:var(--muted)}
+  .tag{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line);color:var(--muted)}
+  .tag.bad{color:var(--bad);border-color:var(--bad)}
+  .tag.good{color:var(--good);border-color:var(--good)}
+  .hits{margin-top:10px;border-top:1px dashed var(--line);padding-top:10px}
+  .hit{display:flex;gap:10px;padding:6px 0;font-size:13.5px;border-bottom:1px solid var(--line)}
+  .hit:last-child{border-bottom:0}
+  .hit .sc{font-family:var(--mono);font-size:12px;color:var(--muted);min-width:52px}
+  .hit .aid{font-family:var(--mono);font-size:12px;min-width:96px}
+  .hit.match .aid{color:var(--good);font-weight:700}
+  .snip{color:var(--muted)}
+  .empty{color:var(--muted);padding:30px 0;text-align:center}
+  .hidden{display:none}
+  footer{color:var(--muted);font-size:12px;margin-top:26px;border-top:1px solid var(--line);padding-top:12px}
+</style>
+</head>
+<body>
+<header>
+  <h1>arabic-legal-rag — صفحة الاختبار</h1>
+  <div class="sub">أداة تطوير محلية. الأرقام من مجموعة dev، وخط الأساس BM25.</div>
+  <div class="chips" id="chips"></div>
+</header>
+
+<main>
+  <div class="banner" id="banner"></div>
+
+  <nav role="tablist">
+    <button role="tab" aria-selected="true" data-tab="eval">تشغيل التقييم</button>
+    <button role="tab" aria-selected="false" data-tab="search">بحث حر</button>
+    <button role="tab" aria-selected="false" data-tab="qs">مجموعة الأسئلة</button>
+  </nav>
+
+  <section id="tab-eval">
+    <div class="row">
+      <label>k = <input type="number" id="k" value="5" min="1" max="20" style="width:72px"></label>
+      <button class="go" id="runEval">شغّل على كل الأسئلة</button>
+      <span class="sub" id="evalNote"></span>
+    </div>
+    <div class="metrics hidden" id="metrics"></div>
+    <div id="evalOut"></div>
+  </section>
+
+  <section id="tab-search" class="hidden">
+    <div class="row">
+      <input type="search" id="q" placeholder="اكتب سؤالاً… مثال: خلال كام ساعة يجب إبلاغ المركز بخرق البيانات؟">
+      <button class="go" id="runSearch">ابحث</button>
+    </div>
+    <div id="searchOut"></div>
+  </section>
+
+  <section id="tab-qs" class="hidden">
+    <div class="row">
+      <select id="catFilter">
+        <option value="">كل الفئات</option>
+        <option value="direct">direct</option>
+        <option value="multi_article">multi_article</option>
+        <option value="colloquial">colloquial</option>
+        <option value="out_of_corpus">out_of_corpus</option>
+      </select>
+    </div>
+    <div id="qsOut"></div>
+  </section>
+
+  <footer>
+    أداة تطوير — ليست منتجاً ولا مصدراً لمشورة قانونية. الأرقام إشارة على عيّنة صغيرة، مش إثبات.
+  </footer>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => (s ?? "").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+let STATUS = null;
+
+async function get(path){ const r = await fetch(path); return r.json(); }
+
+function renderStatus(s){
+  STATUS = s;
+  $("#chips").innerHTML = [
+    `المتن: <b>${s.corpus}</b> مادة`,
+    s.laws.length ? `القانون: <b>${esc(s.laws.join(" · "))}</b>` : null,
+    `الأسئلة: <b>${s.questions}</b>`,
+    s.unverified ? `مراجع غير محقّقة: <b>${s.unverified}</b>` : `كل المراجع <b>محقّقة</b>`,
+    `المسترجِع: <b>${esc(s.retriever || "لا يوجد")}</b>`,
+  ].filter(Boolean).map(t => `<span class="chip">${t}</span>`).join("");
+
+  const msgs = [];
+  if(!s.corpus) msgs.push("المتن مش مُستوعَب. حط الـ PDF الرسمي في <code>data/raw/</code> ثم شغّل <code>python tasks.py ingest --law \"…\"</code>.");
+  if(s.unverified) msgs.push(`<b>${s.unverified}</b> سؤال مراجعه غير محقّقة — أي رقم هنا مبدئي لحد ما <code>verify-refs</code> يعدّي.`);
+  if(s.errors && s.errors.length) msgs.push("أخطاء في مجموعة الأسئلة: " + esc(s.errors.join(" / ")));
+  $("#banner").innerHTML = msgs.join("<br>") || "جاهز.";
+  $("#banner").classList.toggle("hidden", msgs.length === 0);
+  $("#runEval").disabled = !s.corpus;
+  $("#runSearch").disabled = !s.corpus;
+}
+
+function hitsHtml(hits, expected){
+  if(!hits.length) return `<div class="snip">لا نتائج</div>`;
+  return `<div class="hits">` + hits.map(h => {
+    const match = (expected || []).includes(h.id);
+    return `<div class="hit ${match ? "match" : ""}">
+      <span class="sc">${h.score.toFixed(2)}</span>
+      <span class="aid">${esc(h.id)}${match ? " ✓" : ""}</span>
+      <span class="snip">${esc(h.snippet)}…</span></div>`;
+  }).join("") + `</div>`;
+}
+
+async function runEval(){
+  $("#runEval").disabled = true; $("#evalNote").textContent = "جارٍ التشغيل…";
+  const d = await get("/api/eval?k=" + $("#k").value);
+  $("#runEval").disabled = false; $("#evalNote").textContent = "";
+  if(d.error){ $("#evalOut").innerHTML = `<div class="empty">${esc(d.error)}</div>`; return; }
+
+  $("#metrics").classList.remove("hidden");
+  $("#metrics").innerHTML = `
+    <div class="metric"><div class="v">${d.recall_at_k ?? "—"}</div><div class="k">Recall@${d.k}</div></div>
+    <div class="metric"><div class="v">${d.mrr ?? "—"}</div><div class="k">MRR</div></div>
+    <div class="metric"><div class="v">${d.scored}</div><div class="k">أسئلة مُقيَّمة</div></div>`;
+
+  const failed = d.rows.filter(r => r.recall !== null && r.recall < 1);
+  const rest = d.rows.filter(r => !failed.includes(r));
+  const card = r => `<div class="card">
+      <div class="qhead">
+        <span class="qid">${esc(r.id)}</span>
+        <strong>${esc(r.question)}</strong>
+        <span class="tag">${esc(r.category)}</span>
+        ${r.recall === null ? `<span class="tag">امتناع</span>`
+          : `<span class="tag ${r.recall === 1 ? "good" : "bad"}">recall ${r.recall}</span>`}
+        ${r.expected && r.expected.length ? `<span class="qid">المتوقع: ${esc(r.expected.join(", "))}</span>` : ""}
+      </div>
+      ${r.note ? `<div class="snip">${esc(r.note)}</div>` : hitsHtml(r.hits, r.expected)}
+    </div>`;
+
+  $("#evalOut").innerHTML =
+    (failed.length ? `<h3>فشل أو نجاح جزئي (${failed.length})</h3>` + failed.map(card).join("") : "") +
+    `<h3>الباقي (${rest.length})</h3>` + rest.map(card).join("");
+}
+
+async function runSearch(){
+  const q = $("#q").value.trim();
+  if(!q) return;
+  const hits = await get("/api/search?k=8&q=" + encodeURIComponent(q));
+  $("#searchOut").innerHTML = hits.length
+    ? `<div class="card">${hitsHtml(hits, [])}</div>`
+    : `<div class="empty">لا نتائج</div>`;
+}
+
+async function renderQuestions(){
+  const qs = await get("/api/questions");
+  const cat = $("#catFilter").value;
+  const rows = qs.filter(q => !cat || q.category === cat);
+  $("#qsOut").innerHTML = rows.map(q => `<div class="card">
+      <div class="qhead">
+        <span class="qid">${esc(q.id)}</span>
+        <strong>${esc(q.question)}</strong>
+        <span class="tag">${esc(q.category)}</span>
+        <span class="tag ${q.ref_status === "verified" ? "good" : "bad"}">${esc(q.ref_status)}</span>
+        ${q.expected_articles.length ? `<span class="qid">${esc(q.expected_articles.join(", "))}</span>`
+          : `<span class="qid">لا إجابة في المتن</span>`}
+      </div>
+      ${q.notes ? `<div class="snip">${esc(q.notes)}</div>` : ""}
+    </div>`).join("") || `<div class="empty">لا أسئلة</div>`;
+}
+
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("nav button").forEach(x => x.setAttribute("aria-selected", x === b));
+  ["eval","search","qs"].forEach(t =>
+    document.querySelector("#tab-" + t).classList.toggle("hidden", t !== b.dataset.tab));
+  if(b.dataset.tab === "qs") renderQuestions();
+});
+$("#runEval").onclick = runEval;
+$("#runSearch").onclick = runSearch;
+$("#q").addEventListener("keydown", e => { if(e.key === "Enter") runSearch(); });
+$("#catFilter").onchange = renderQuestions;
+
+get("/api/status").then(renderStatus);
+</script>
+</body>
+</html>

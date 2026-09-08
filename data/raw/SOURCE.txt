@@ -12,24 +12,73 @@ INGESTED FILE
   structure   : 7 issuance articles + 49 law articles
   --law value : "قانون حماية البيانات الشخصية"
 
-TEXT OF RECORD (not ingested — no text layer)
+TEXT OF RECORD (now on disk, still not ingested — no text layer)
+  file        : gazette-28-mukarrar-h-2020-07-15.pdf
   source      : الجريدة الرسمية، العدد 28 مكرر (هـ) — 15 يوليو 2020
-  via         : https://manshurat.org/node/66932  ->  /file/78585/download
-  sha256      : (not stored; 6,470,641 bytes, 29 pages)
-  why not     : scanned images, 0 characters extractable. Ingesting it needs OCR
-                (ocrmypdf --language ara), which is not installed on this machine.
+  via         : https://manshurat.org/node/66932  (download link carries a
+                per-session token; a bare /file/78585/download returns 403)
+  downloaded  : 2026-09-08
+  sha256      : deb05826c33600a3180861b2747e23e837d2b7a1531467f21cfbd837548abab1
+  bytes       : 6,470,641   pages: 29   text layer: NONE (verified: 29 embedded
+                images, 0 extractable characters)
+  scan quality: clean. 1339x1916 RGB, crisp print, not a photocopy.
 
-FIDELITY — OUTSTANDING, blocks publication of any number
-  The ingested file is NOT the official gazette. It is a law firm / industry
-  republication that happens to carry a text layer. Its wording has not been
-  compared against the gazette scan, because comparing them requires the OCR
-  step above. Until that is done, every retrieval number computed on this
-  corpus is a number about THIS PDF, not about the law as published.
+FIDELITY — CHECK DONE 2026-09-08.  RESULT: FAILED.  checked: 11 articles
+  The ingested file is NOT the law as published. This is now measured, not
+  suspected. 9 of 11 sampled articles differ from the gazette.
 
-  checked : __/10 against the gazette scan     date: ____-__-__
+  faithful  : art 11, art 12          (hamza-form variants only)
+  differing : art 1, 2, 3, 5, 6, 7, 10, 17, 18
 
-  Two article numbers to check first, because the eval set keys on them:
-  the 72-hour breach-notification deadline, and the article it sits in.
+  The differences are NOT extraction noise. They are different words, present
+  as such in the republication's own text layer:
+
+    art 7   gazette "اثنتين وسبعين ساعة"   ingested "اثنين وسبعين ساعة"
+            gazette "بموافاة المركز"        ingested "بموافاته"
+    art 1   gazette "بالكلمات والعبارات"    ingested "بالمصطلحات"
+            gazette "الربط بين هذه البيانات وأى بيانات أخرى"
+            ingested "الربط بينها وبين بيانات أخرى"
+    art 6   gazette "أى من الحالات"         ingested "إحدى الحالات"
+            gazette "عقد لصالح"             ingested "عقد الصالح"
+    art 10  gazette "أن يكون بناءً"          ingested "أن تكون بناء"
+    art 17  gazette "الإشارة إلى أن"         ingested "الإشارة بأن"
+    art 18  gazette "إلكترونى" (standard)   ingested "إليكتروني" (3x)
+            ingested drops "وذلك"; "مثبت" -> "مثبتا"
+    art 3   ingested drops "لهذا القانون"
+    art 5   gazette "هذا القانون"           ingested "هذا القنون"
+    art 2   gazette "ببياناته"              ingested "بياناته"
+
+  Proof it is the source and not our reconstruction: the string "اثنتين"
+  occurs 0 times in the republication's extracted text, "بالمصطلحات" occurs
+  once and "بالكلمات" zero times. Whole different words cannot come from a
+  spacing bug.
+
+  >>> CONSEQUENCE FOR THE EVAL SET <<<
+  Q001 and Q013 carry expected_keywords ["اثنين وسبعين", "ساعة"]. That phrase
+  does NOT appear in the law as published. The ARTICLE reference (law-7) is
+  correct in both sources; only the keyword is keyed to the republication.
+  verify-refs passes today because it checks against the ingested corpus.
+  Re-ingesting from a gazette OCR will break those two questions — that is
+  correct behaviour, and the keyword must then become "اثنتين وسبعين".
+
+  >>> CONSEQUENCE FOR EVERY NUMBER <<<
+  Run 1 and Run 2 in EVAL.md are numbers about this republication. They are
+  valid as a retrieval comparison (all four configurations saw exactly the
+  same corpus) and invalid as a statement about Egyptian law 151/2020.
+
+BROKEN WORDS — 20 instances across 13 articles
+  Words split by a space that does not belong: "عشر ين" (عشرين), "تو افر"
+  (توافر), "مض ي" (مضي), "نشر ها" (نشرها), "المع الجة" (المعالجة), and 15
+  more. Detected by: the joined form occurs elsewhere in the same corpus as a
+  standalone token.
+
+  ADR-013 records "0 remaining" for this defect class. That claim is FALSE.
+  Origin is NOT settled: pdfplumber's independent word-splitting reproduces
+  some of these breaks (they are in the document) and not others (ours). Two
+  probes disagreed, and naive visual-order reversal is unreliable across
+  Arabic ligatures, so no per-word attribution is published here. What is
+  established: the breaks exist, and they depress lexical retrieval, because
+  BM25 indexes "عشر" and "ين" as two tokens.
 
 EXTRACTION (ADR-013)
   This PDF stores Arabic in visual order; pdfplumber's own extract_text()

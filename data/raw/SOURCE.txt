@@ -48,10 +48,34 @@ FIDELITY — CHECK DONE 2026-09-08.  RESULT: FAILED.  checked: 11 articles
     art 5   gazette "هذا القانون"           ingested "هذا القنون"
     art 2   gazette "ببياناته"              ingested "بياناته"
 
-  Proof it is the source and not our reconstruction: the string "اثنتين"
-  occurs 0 times in the republication's extracted text, "بالمصطلحات" occurs
-  once and "بالكلمات" zero times. Whole different words cannot come from a
-  spacing bug.
+  Proof it is the source and not our reconstruction, two independent ways:
+
+  (a) counted in the republication's own extracted text: "اثنتين" 0 times,
+      "بالمصطلحات" 1, "بالكلمات" 0. Whole different words cannot come from a
+      spacing bug.
+
+  (b) the whole gazette was OCR'd (easyocr, 29 pages, 36,829 chars — kept at
+      data/processed/gazette_ocr_easyocr.json, derived and gitignored) and
+      every disputed phrase separates cleanly, with zero crossover:
+
+        phrase          gazette OCR   privacylaws
+        اثنتين                    2             0
+        اثنين                     0             2
+        بالكلمات                  1             0
+        بالمصطلحات                0             1
+        الصالح                    0             1
+        إليكترون                  0             3
+        عشرين  (whole)            1             0
+        عشر ين (broken)           0             1
+        ببياناته                  1             0
+
+      Article 7 uses the deadline phrase twice; "اثنتين" appears exactly twice
+      in the gazette and "اثنين" exactly twice in the republication. This is a
+      mechanical result, independent of anyone reading the scan.
+
+      Note this also settles one broken word: "عشرين" is whole in the gazette
+      and split in the republication, so THAT break is in the source document,
+      not in our reconstruction.
 
   >>> CONSEQUENCE FOR THE EVAL SET <<<
   Q001 and Q013 carry expected_keywords ["اثنين وسبعين", "ساعة"]. That phrase

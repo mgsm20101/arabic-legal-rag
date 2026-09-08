@@ -1,0 +1,45 @@
+Source card — corpus text of record and the file actually ingested.
+Two different things right now. Read the fidelity note before publishing a number.
+
+INGESTED FILE
+  file        : law-151-2020-personal-data-protection.pdf
+  law         : قانون حماية البيانات الشخصية (القانون رقم 151 لسنة 2020)
+  source      : privacylaws.com — third-party republication, dual Arabic/English
+  url         : https://www.privacylaws.com/media/3263/egypt-data-protection-law-151-of-2020.pdf
+  downloaded  : 2026-09-08
+  sha256      : 406b649d163da500e1951bb8982fef1b71bda430309fc5dedfe38f40ec09dc14
+  pages       : 33   text layer: yes (35,763 chars after RTL reconstruction)
+  structure   : 7 issuance articles + 49 law articles
+  --law value : "قانون حماية البيانات الشخصية"
+
+TEXT OF RECORD (not ingested — no text layer)
+  source      : الجريدة الرسمية، العدد 28 مكرر (هـ) — 15 يوليو 2020
+  via         : https://manshurat.org/node/66932  ->  /file/78585/download
+  sha256      : (not stored; 6,470,641 bytes, 29 pages)
+  why not     : scanned images, 0 characters extractable. Ingesting it needs OCR
+                (ocrmypdf --language ara), which is not installed on this machine.
+
+FIDELITY — OUTSTANDING, blocks publication of any number
+  The ingested file is NOT the official gazette. It is a law firm / industry
+  republication that happens to carry a text layer. Its wording has not been
+  compared against the gazette scan, because comparing them requires the OCR
+  step above. Until that is done, every retrieval number computed on this
+  corpus is a number about THIS PDF, not about the law as published.
+
+  checked : __/10 against the gazette scan     date: ____-__-__
+
+  Two article numbers to check first, because the eval set keys on them:
+  the 72-hour breach-notification deadline, and the article it sits in.
+
+EXTRACTION (ADR-013)
+  This PDF stores Arabic in visual order; pdfplumber's own extract_text()
+  returns every word reversed. src/legalrag/pdf_text.py reconstructs logical
+  order. Four defects were found and fixed while doing so — see ADR-013. The
+  one to remember: Arabic-Indic digits (٠-٩) sit inside the Arabic Unicode
+  block, so a naive reversal turned مادة (٢٥) into مادة (٥٢).
+
+---
+Leftover from the reverted Hugging Face path (ADR-007): data/raw/egypt-legal-corpus/
+may still hold train-00000-of-00001.parquet (~24 MB, revision
+4855942706f8b2bea152cbb8db8040fd8da83a14). It is NOT read by ingest — the
+source scan is non-recursive. Delete it whenever you like.

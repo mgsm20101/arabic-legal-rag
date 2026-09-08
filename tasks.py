@@ -4,6 +4,7 @@
     python tasks.py ingest --law "…"      data/raw/*.pdf -> data/processed/articles.jsonl
     python tasks.py verify-refs [--write] check ground-truth article references
     python tasks.py eval                  load the eval set, print the scoreboard
+    python tasks.py ablate                4 retrieval configs compared (M1/A4)
     python tasks.py serve [--port 8000]   local test page (retrieval + eval run)
     python tasks.py test                  run the test suite
     python tasks.py setup                 install dependencies
@@ -34,6 +35,9 @@ def _run_module(module: str, *args: str) -> int:
     if module == "legalrag.verify_refs":
         from legalrag.verify_refs import main
         return main(list(args))
+    if module == "legalrag.ablate":
+        from legalrag.ablate import main
+        return main(list(args))
     if module == "legalrag.server":
         from legalrag.server import main
         return main(list(args))
@@ -48,6 +52,7 @@ def _subprocess(*cmd: str) -> int:
 
 TASKS = {
     "eval": lambda a: _run_module("legalrag.evaluate"),
+    "ablate": lambda a: _run_module("legalrag.ablate", *a),
     "ingest": lambda a: _run_module("legalrag.ingest", *a),
     "serve": lambda a: _run_module("legalrag.server", *a),
     "verify-refs": lambda a: _run_module("legalrag.verify_refs", *a),

@@ -13,6 +13,9 @@ ingest:
 	$(PY) -m legalrag.ingest --law "$(LAW)"
 
 ## THE command: load the eval set and print the scoreboard
+ablate:
+	$(PY) tasks.py ablate
+
 eval:
 	$(PY) -m legalrag.evaluate
 

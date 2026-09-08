@@ -24,13 +24,18 @@ python tasks.py setup                    # install dependencies
 # download the official law PDF into data/raw/ by hand — see data/raw/README.md
 python tasks.py ingest --law "<name>"    # PDF -> article-level chunks + validation
 python tasks.py verify-refs              # check every ground-truth article ref
-python tasks.py eval                     # scoreboard in the terminal
+python tasks.py eval                     # BM25 scoreboard — fast, no model needed
+python tasks.py ablate                   # 4 configs compared: BM25/dense/hybrid/+rerank
 python tasks.py serve                    # local test page at http://127.0.0.1:8000
 python tasks.py test                     # run the test suite
 ```
 
 `tasks.py` is the canonical runner and needs nothing but Python. `make <target>`
 is an equivalent alias on Linux/CI.
+
+`eval` and `ablate` are separate on purpose: `eval` must stay runnable on a
+fresh clone with no model and no torch (it takes ~0.2s), while `ablate` loads
+~1 GB of local models. Neither calls a paid API; retrieval runs entirely on CPU.
 
 `python tasks.py eval` runs from a fresh clone with no corpus present — it
 reports the question set and an empty result column rather than failing. That is

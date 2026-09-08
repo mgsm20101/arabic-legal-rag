@@ -2,5 +2,6 @@
 # Nothing here is needed to run `make eval` on the question set alone.
 pdfplumber>=0.11        # read the official law PDF (ADR-006/012)
 rank-bm25>=0.2.2        # lexical retrieval baseline
-sentence-transformers>=3.0   # dense retrieval baseline
+sentence-transformers>=3.0   # dense baseline + cross-encoder reranker (ADR-015/017)
+numpy>=1.24             # embedding matrix; `eval` does not need it, `ablate` does
 pytest>=8.0

@@ -6,6 +6,8 @@ venv/
 data/raw/*
 !data/raw/.gitkeep
 !data/raw/README.md
+# derived artifacts: articles.jsonl (from ingest) and embeddings.npz
+# (model-specific, ~1 MB, rebuilt by `ablate` from the corpus fingerprint)
 data/processed/*
 !data/processed/.gitkeep
 runs/

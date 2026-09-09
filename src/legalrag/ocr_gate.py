@@ -42,11 +42,20 @@ from pathlib import Path
 
 GROUND_TRUTH = Path("evals/ocr/digit_ground_truth.json")
 
-# A digit token is a maximal run of digits. Arabic-Indic and ASCII are folded
-# together: an engine that transliterates ٤٧ to 47 has read the number
-# correctly, and that is what is being measured here.
-DIGIT_RUN = re.compile(r"[٠-٩0-9]+")
-TO_ASCII = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+# A digit token is a maximal run of digits in ANY of the three blocks Arabic
+# text uses, folded together: an engine that writes ٤٧ or ۴۷ or 47 has read the
+# same number, and the number is what is being measured.
+#
+# The third block is not optional trivia. Arabic-Indic (U+0660-0669, ٠١٢) and
+# EXTENDED Arabic-Indic (U+06F0-06F9, ۰۱۲) are separate code points that render
+# almost identically, and surya emits both — sometimes inside one number
+# (`مادة ( ۲٤ )` is U+06F2 followed by U+0664). A pattern covering only the
+# first block scored 16% of this document's digits as absent and split mixed
+# numbers in half, which understated the best engine by a wide margin. The rest
+# of the codebase already knew this: normalize.normalize_digits, ingest's header
+# regex and pdf_text all cover both blocks. This module did not.
+DIGIT_RUN = re.compile(r"[٠-٩۰-۹0-9]+")
+TO_ASCII = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
 
 # This is a screening gate, not a certificate. Passing means "worth running
 # over the whole document, then verifying against it" — 31 digits on two

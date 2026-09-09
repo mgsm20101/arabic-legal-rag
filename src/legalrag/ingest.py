@@ -39,8 +39,17 @@ NOT_CORPUS = {"source.txt"}
 # wrapped line; without the anchor it opened a second article 21 and cut the
 # real article 21 in half. Measured on that PDF: 56 header-only lines (7
 # issuance + 49 law, exactly the published structure) against 1 citation.
+# Arabic justification stretches letters with tatweel (U+0640), so the gazette
+# sets the same word as مادة, مـادة and مــادة on different lines. The
+# republication the corpus was first built from does not use it, which is why
+# this only surfaced when a gazette OCR was ingested and returned 48 articles
+# where the law has 49. A missed header does not error: it welds two articles
+# into one and the count is quietly short.
+_T = "ـ"
+_MADA = f"م{_T}*ا{_T}*د{_T}*ة"
+
 NUMERIC_ARTICLE = re.compile(
-    r"(?:^|\n)[ \t]*(?:ال)?مادة[ \t]*(?:رقم)?[ \t]*"
+    r"(?:^|\n)[ \t]*(?:ال)?" + _MADA + r"[ \t]*(?:رقم)?[ \t]*"
     r"[\(\[]?[ \t]*([0-9٠-٩۰-۹]{1,3})[ \t]*[\)\]]?[ \t]*[:\-–]?[ \t]*(?=\n|$)",
 )
 
@@ -50,8 +59,15 @@ ORDINALS = {
     "الخامسة": 5, "السادسة": 6, "السابعة": 7, "الثامنة": 8, "التاسعة": 9,
     "العاشرة": 10,
 }
+# The gazette prints issuance headers inside brackets — «(المادة الأولى)» —
+# where the republication printed them bare. Unmatched, all seven issuance
+# articles vanish and the annexed law's own numbering is taken for theirs,
+# which is exactly what the first gazette ingest reported: 36 "issuance"
+# articles and 12 "law" ones.
 ORDINAL_ARTICLE = re.compile(
-    r"(?:^|\n)[ \t]*(?:ال)?مادة[ \t]+(" + "|".join(ORDINALS) + r")[ \t]*[:\-–]?[ \t]*(?=\n|$)",
+    r"(?:^|\n)[ \t]*[\(\[]?[ \t]*(?:ال)?" + _MADA + r"[ \t]+("
+    + "|".join(ORDINALS)
+    + r")[ \t]*[\)\]]?[ \t]*[:\-–]?[ \t]*(?=\n|$)",
 )
 
 ARABIC_CHAR = re.compile(r"[؀-ۿ]")

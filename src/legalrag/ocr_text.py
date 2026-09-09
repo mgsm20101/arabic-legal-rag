@@ -34,7 +34,10 @@ import sys
 from pathlib import Path
 
 TAG = re.compile(r"<[^>]+>")
-DIGITS_ONLY = re.compile(r"^[\s٠-٩0-9.,،ـ\-]+$")
+# All three digit blocks Arabic text uses. Extended Arabic-Indic (U+06F0-06F9,
+# ۰۱۲) is not optional: surya emits it for roughly one digit in six here, so
+# a page number written `۲` slips past a pattern that knows only U+0660.
+DIGITS_ONLY = re.compile(r"^[\s٠-٩۰-۹0-9.,،ـ\-]+$")
 PAGE_KEY = re.compile(r"(\d+)")
 
 # Words that make up the running header of an Egyptian gazette issue. The

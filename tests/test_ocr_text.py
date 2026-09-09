@@ -75,3 +75,11 @@ def test_a_line_that_merely_mentions_the_gazette_is_not_furniture():
 def test_blank_lines_are_not_counted_as_furniture():
     _, dropped = to_raw_text({"p1": "مادة (١) :\n\n\nنص"})
     assert dropped == 0
+
+
+def test_a_page_number_in_extended_arabic_indic_digits_is_dropped():
+    """U+06F0-06F9 (۲) renders like U+0660-0669 (٢) and is a different code
+    point. surya emits both; a filter that knows only one lets page numbers
+    through into the corpus."""
+    assert is_page_furniture("۲")
+    assert is_page_furniture(" ۲۹ ")

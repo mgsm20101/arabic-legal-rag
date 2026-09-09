@@ -133,3 +133,27 @@ def test_arabic_indic_article_numbers_are_recognised():
 
 def test_the_real_pdf_structure_validates_clean():
     assert validate(parse(ISSUANCE_THEN_LAW, "sample.pdf")) == []
+
+
+# --- gazette typography (ADR-020) --------------------------------------------
+# The official gazette sets headers differently from the third-party
+# republication the corpus was first built from, in two ways that are invisible
+# to a reader and fatal to a regex. Both were found by ingesting a surya OCR of
+# the gazette and getting 48 articles where there are 49.
+
+def test_a_header_stretched_with_tatweel_is_still_a_header():
+    """Arabic justification stretches letters with U+0640: `مــادة (١٥)`.
+    The gazette uses it; the republication did not. One missed header does not
+    error — it silently welds two articles into one."""
+    text = "مــادة (١٥) :\nنص المادة الخامسة عشرة\n\nمادة (١٦) :\nنص المادة السادسة عشرة\n"
+    numbers = [a.number for a in parse(text, "gazette.txt")]
+    assert numbers == [15, 16]
+
+
+def test_an_ordinal_header_in_brackets_is_still_a_header():
+    """The gazette prints issuance headers as `(المادة الأولى)`; the
+    republication printed them bare. Unmatched, all seven issuance articles
+    vanish and the annexed law's own numbering is mistaken for theirs."""
+    text = "(المادة الأولى)\nيعمل بأحكام هذا القانون\n\n( المادة الثانية )\nتسرى أحكامه\n"
+    got = [(a.book, a.number) for a in parse(text, "gazette.txt")]
+    assert got == [("issuance", 1), ("issuance", 2)]

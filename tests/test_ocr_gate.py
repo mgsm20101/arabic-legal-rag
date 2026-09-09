@@ -105,3 +105,19 @@ def test_the_shipped_ground_truth_is_hand_read_not_engine_derived():
         assert all(digit_tokens(t) == [t] for t in spec["tokens"]), page
         for tok in spec.get("critical", {}):
             assert tok in spec["tokens"], f"{page}: critical {tok} not in tokens"
+
+
+def test_extended_arabic_indic_digits_count_as_digits():
+    """U+06F0-06F9 (۰۱۲) and U+0660-0669 (٠١٢) render almost identically and
+    are different code points. surya emits both — and mixes them inside a
+    single number. A gate that knows only the first block scores 16% of this
+    document's digits as missing."""
+    assert digit_tokens("مادة (۲۰)") == ["۲۰"]
+    assert fold("۲۰") == "20"
+    assert score_page(["٢٠"], digit_tokens("مادة (۲۰)"))["correct"] == 1
+
+
+def test_a_number_mixing_both_blocks_stays_one_token():
+    """`مادة ( ۲٤ )` is U+06F2 then U+0664. Split, it reads as two numbers."""
+    assert digit_tokens("مادة ( ۲٤ )") == ["۲٤"]
+    assert fold("۲٤") == "24"

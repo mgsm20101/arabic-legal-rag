@@ -6,6 +6,7 @@
     python tasks.py eval                  load the eval set, print the scoreboard
     python tasks.py ablate                4 retrieval configs compared (M1/A4)
     python tasks.py broken-words          find words split by a stray space (ADR-018)
+    python tasks.py ocr-gate <json>       score an OCR engine on digit accuracy (ADR-019)
     python tasks.py serve [--port 8000]   local test page (retrieval + eval run)
     python tasks.py test                  run the test suite
     python tasks.py setup                 install dependencies
@@ -39,6 +40,9 @@ def _run_module(module: str, *args: str) -> int:
     if module == "legalrag.broken_words":
         from legalrag.broken_words import main
         return main(list(args))
+    if module == "legalrag.ocr_gate":
+        from legalrag.ocr_gate import main
+        return main(list(args))
     if module == "legalrag.ablate":
         from legalrag.ablate import main
         return main(list(args))
@@ -58,6 +62,7 @@ TASKS = {
     "eval": lambda a: _run_module("legalrag.evaluate"),
     "ablate": lambda a: _run_module("legalrag.ablate", *a),
     "broken-words": lambda a: _run_module("legalrag.broken_words", *a),
+    "ocr-gate": lambda a: _run_module("legalrag.ocr_gate", *a),
     "ingest": lambda a: _run_module("legalrag.ingest", *a),
     "serve": lambda a: _run_module("legalrag.server", *a),
     "verify-refs": lambda a: _run_module("legalrag.verify_refs", *a),

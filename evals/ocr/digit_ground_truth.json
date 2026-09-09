@@ -1,0 +1,21 @@
+{
+  "_about": "Digit ground truth for the OCR gate (ADR-019). Read off the rasterised gazette pages BY EYE on 2026-09-09, not produced by any OCR engine — an engine cannot be its own ruler.",
+  "_source": "data/raw/gazette-28-mukarrar-h-2020-07-15.pdf, sha256 deb05826…, rasterised with pdfimages at 1339x1916.",
+  "_why_these_pages": "p07 carries `المادة (١٢)`, a cross-reference inside running prose — the hardest and most consequential digit on the page. p28 carries two lists of article numbers (`٣٦، ٣٧، …`), where an engine that swallows the Arabic comma fuses two article numbers into one. Between them they cover every way a digit appears in this document: page header, article header, in-prose reference, and comma-separated list.",
+  "_header_note": "The running header is identical on all 29 pages: «الجريدة الرسمية - العدد ٢٨ مكرر (ه) فى ١٥ يولية سنة ٢٠٢٠». The printed page label is the image index + 1.",
+
+  "p07": {
+    "page_label": "٨",
+    "tokens": ["٨", "٢٨", "١٥", "٢٠٢٠", "٤", "١٢", "١", "٢", "٣", "٤", "٥", "٦", "٧", "٨"],
+    "critical": {
+      "١٢": "المادة (١٢) — an in-prose cross-reference. easyocr read it as ١٢١."
+    }
+  },
+  "p28": {
+    "page_label": "٢٩",
+    "tokens": ["٢٩", "٢٨", "١٥", "٢٠٢٠", "٤٧", "٤٨", "٤٩", "٣٦", "٣٧", "٣٨", "٣٩", "٤٠", "٤١", "٤٣", "٤٢", "٤٤", "٤٥"],
+    "critical": {
+      "٣٦": "first number in the cross-reference list — easyocr swallowed the Arabic comma and read ٣٦، as ٣٦١."
+    }
+  }
+}

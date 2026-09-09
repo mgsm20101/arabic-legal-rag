@@ -1,0 +1,129 @@
+"""Citation-forced generation over retrieved articles — PRD M2.
+
+The model is given the retrieved articles and asked for an answer in which
+every claim carries the number of the article it rests on, or the fixed
+abstention marker if the articles do not answer the question. Whether it obeys
+is not assumed: `cite.audit` checks every answer against the corpus and against
+the exact set of articles the retriever handed over, and `cite` has no model in
+it, so the check holds regardless of what generated the text.
+
+**Local, on CPU, by constraint not by preference.** `llama-cpp-python` has no
+wheel for Python 3.14 at all and Ollama is not installed, so the runtime is
+`transformers` on the torch that is already here. That fixes the size: a 3B
+instruct model is what a CPU answers 20 questions with in minutes rather than
+hours. The number that matters for M2 is citation discipline, and a small model
+measures that honestly — arguably more honestly, since a larger one hides
+grounding failures behind fluency.
+
+**The prompt asks for one citation form and the audit measures two.** The gap
+between `[مادة N]` and every other way Arabic cites an article is the model's
+instruction-following, reported as a number instead of an impression.
+
+The model is injectable for the same reason as in `dense.py`: the test suite
+must run on a fresh clone with no download and no torch.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from .cite import ABSTAIN_MARKER
+
+DEFAULT_MODEL = "Qwen/Qwen2.5-3B-Instruct"
+
+# Enough for a two or three sentence legal answer with citations. Long enough
+# to finish a thought, short enough that a CPU run over the eval set is minutes.
+MAX_NEW_TOKENS = 256
+
+# Greedy. A temperature would make the citation numbers themselves vary between
+# runs, and B1 is a claim about the system, not about one sample of it.
+TEMPERATURE = 0.0
+
+SYSTEM = f"""أنت مساعد قانوني. تجيب **فقط** من نصوص المواد المعطاة لك أدناه.
+
+القواعد:
+1. كل جملة تحمل حكماً يجب أن تنتهي بمرجعها بالصيغة: [مادة رقم]
+2. لا تستشهد بأي مادة غير المواد المعطاة لك. لا تعتمد على معرفتك السابقة.
+3. إذا كانت المواد المعطاة لا تجيب على السؤال، اكتب هذه الجملة وحدها ولا شيء غيرها:
+{ABSTAIN_MARKER}
+4. أجب بالعربية، جملتين أو ثلاثاً على الأكثر. لا تشرح القواعد ولا تعتذر."""
+
+USER = """المواد المتاحة:
+
+{articles}
+
+السؤال: {question}"""
+
+
+@dataclass
+class Answer:
+    question: str
+    text: str
+    article_numbers: list[int]   # what the retriever supplied, in rank order
+
+
+def format_articles(articles: list[dict]) -> str:
+    """`articles` are dicts with `number` and `text`, in retrieval rank order."""
+    return "\n\n".join(f"[مادة {a['number']}]\n{a['text']}" for a in articles)
+
+
+def build_messages(question: str, articles: list[dict]) -> list[dict]:
+    return [
+        {"role": "system", "content": SYSTEM},
+        {"role": "user", "content": USER.format(
+            articles=format_articles(articles), question=question.strip())},
+    ]
+
+
+def load_model(name: str = DEFAULT_MODEL, max_new_tokens: int = MAX_NEW_TOKENS):
+    """A callable messages -> str, backed by transformers on CPU."""
+    try:
+        import torch  # noqa: F401
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+    except ImportError as e:  # pragma: no cover - environment-dependent
+        raise SystemExit(
+            "transformers and torch are required to generate.\n"
+            "  python tasks.py setup      (or: pip install -r requirements.txt)"
+        ) from e
+
+    tok = AutoTokenizer.from_pretrained(name)
+    model = AutoModelForCausalLM.from_pretrained(name, dtype="auto", device_map="cpu")
+    model.eval()
+
+    def run(messages: list[dict]) -> str:
+        import torch
+
+        prompt = tok.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True)
+        inputs = tok([prompt], return_tensors="pt")
+        with torch.no_grad():
+            out = model.generate(
+                **inputs, max_new_tokens=max_new_tokens, do_sample=False,
+                pad_token_id=tok.eos_token_id)
+        return tok.decode(out[0][inputs["input_ids"].shape[1]:],
+                          skip_special_tokens=True).strip()
+
+    return run
+
+
+class Generator:
+    """Answers a question from a ranked list of articles."""
+
+    def __init__(self, model=None, model_name: str = DEFAULT_MODEL):
+        self.model_name = model_name
+        self._model = model
+
+    @property
+    def model(self):
+        if self._model is None:
+            self._model = load_model(self.model_name)
+        return self._model
+
+    def answer(self, question: str, articles: list[dict]) -> Answer:
+        if not articles:
+            # Nothing retrieved is not a hard question — it is no context at
+            # all, and answering from an empty context is exactly the failure
+            # the abstention rule exists for.
+            return Answer(question, ABSTAIN_MARKER, [])
+        text = self.model(build_messages(question, articles))
+        return Answer(question, text.strip(), [a["number"] for a in articles])

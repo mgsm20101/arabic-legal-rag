@@ -8,6 +8,7 @@
     python tasks.py broken-words          find words split by a stray space (ADR-018)
     python tasks.py ocr-gate <json>       score an OCR engine on digit accuracy (ADR-019)
     python tasks.py ocr-to-raw <in> <out> OCR pages -> raw text for ingest (ADR-020)
+    python tasks.py answer-eval           end-to-end answers: citations + abstention (M2)
     python tasks.py serve [--port 8000]   local test page (retrieval + eval run)
     python tasks.py test                  run the test suite
     python tasks.py setup                 install dependencies
@@ -41,6 +42,9 @@ def _run_module(module: str, *args: str) -> int:
     if module == "legalrag.broken_words":
         from legalrag.broken_words import main
         return main(list(args))
+    if module == "legalrag.answer_eval":
+        from legalrag.answer_eval import main
+        return main(list(args))
     if module == "legalrag.ocr_text":
         from legalrag.ocr_text import main
         return main(list(args))
@@ -68,6 +72,7 @@ TASKS = {
     "broken-words": lambda a: _run_module("legalrag.broken_words", *a),
     "ocr-gate": lambda a: _run_module("legalrag.ocr_gate", *a),
     "ocr-to-raw": lambda a: _run_module("legalrag.ocr_text", *a),
+    "answer-eval": lambda a: _run_module("legalrag.answer_eval", *a),
     "ingest": lambda a: _run_module("legalrag.ingest", *a),
     "serve": lambda a: _run_module("legalrag.server", *a),
     "verify-refs": lambda a: _run_module("legalrag.verify_refs", *a),

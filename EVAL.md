@@ -244,6 +244,8 @@ python tasks.py ocr-gate <ocr-output.json> [engine name]
 | easyocr 1.7.2 | افتراضي | 24/31 = **77.4%** | 83–99 | ❌ |
 | PaddleOCR 3.7.0 | `server_det` + `arabic_PP-OCRv5_mobile_rec` | 7/31 = **22.6%** | 590–669 | ❌ |
 | PaddleOCR 3.7.0 | `mobile_det` + نفس نموذج التعرّف | 6/31 = **19.4%** | 75–119 | ❌ |
+| **surya-ocr 0.17.1** | torch/CPU، الصورة الأصلية | 28/31 = **90.3%** | 160–198 | ❌ (وأقرب بكثير) |
+| surya-ocr 0.17.1 | + تكبير ×2 LANCZOS كـ`highres` | 28/31 = **90.3%** | 244–432 | ❌ |
 
 **المحرّكان يرسبان — بطريقتين مختلفتين، وهذا هو الجزء المفيد:**
 

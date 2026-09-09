@@ -144,9 +144,29 @@ OCR — THE RE-INGEST PATH IS BLOCKED, MEASURED (ADR-020)
   Version 0.22 also dropped the torch backend entirely (vllm-in-Docker /
   llama.cpp / OpenAI client only), which is why 0.17.1 is the one measured.
 
-  UNTIL AN ENGINE PASSES: there is no faithful corpus, the Q001/Q013 keyword
-  correction below stays unapplied, and no number in EVAL.md may be restated
-  as a claim about Egyptian law 151/2020.
+  FULL GAZETTE RUN, MEASURED, NOT ADOPTED (ADR-021)
+  surya was run over all 29 pages and ingested in an ISOLATED copy — the
+  shipped corpus was never touched. It parsed into 56 articles, 7 issuance +
+  49 law: the published structure exactly. Article by article against the
+  shipped corpus: mean similarity 0.988 under search_normalize (what retrieval
+  sees), 0.973 verbatim, 55 of 56 at or above 0.90. Three article-header
+  numbers were misread (38->28, 42->21, 44->144), every one of them detectable
+  from its position in the sequence.
+
+  The single article below 0.90 is issuance-7, and the gap favours the gazette:
+  it carries the presidential attestation block that the republication dropped.
+  A second broken word was settled the same way — the shipped corpus has
+  `مض ي` where the gazette has `مضى` whole.
+
+  Mohamed's decision: do NOT replace the corpus. Correcting misread numbers
+  from position is a human hand on the text of record, and at 0.988 the
+  retrieval numbers would barely move — what the intervention buys is a
+  stronger CLAIM, not a better measurement. Kept as evidence at
+  data/processed/gazette_ocr_surya.json and gazette_surya_raw.txt (derived,
+  gitignored).
+
+  SO THIS STILL HOLDS: the Q001/Q013 keyword correction stays unapplied, and
+  no number in EVAL.md may be restated as a claim about Egyptian law 151/2020.
 
 EXTRACTION (ADR-013)
   This PDF stores Arabic in visual order; pdfplumber's own extract_text()

@@ -93,31 +93,84 @@ def is_abstention(text: str) -> bool:
     return ABSTAIN_MARKER in text
 
 
-def audit(text: str, corpus_numbers: set[int], retrieved_numbers: set[int]) -> dict:
+# A run of this many characters shared with a retrieved article is copying,
+# not writing. Short enough to catch a copied sentence, long enough that an
+# ordinary legal phrase ("من هذا القانون") does not trip it.
+COPIED_RUN = 60
+
+
+def copied_from_context(sentence: str, context: list[str]) -> bool:
+    """Is this sentence lifted verbatim out of one of the retrieved articles?
+
+    This exists because of what the first real run produced. Asked a question,
+    the model frequently reproduced the retrieved article instead of answering
+    — and Egyptian statutes cite themselves: «استثناء من حكم المادة (14) من
+    هذا القانون». The extractor read that as the model citing article 14. It
+    was the law citing itself, inside text the model had copied.
+
+    So a citation lifted from context is not evidence the model grounded
+    anything, and counting it inflates exactly the number a reader most wants
+    to trust. The strict `[مادة N]` form cannot be produced this way, which is
+    what makes it the trustworthy signal.
+    """
+    s = " ".join(sentence.split())
+    if len(s) < COPIED_RUN:
+        return False
+    joined = [" ".join(c.split()) for c in context]
+    step = max(1, COPIED_RUN // 2)
+    for i in range(0, len(s) - COPIED_RUN + 1, step):
+        window = s[i:i + COPIED_RUN]
+        if any(window in c for c in joined):
+            return True
+    return False
+
+
+def audit(
+    text: str,
+    corpus_numbers: set[int],
+    retrieved_numbers: set[int],
+    context: list[str] | None = None,
+) -> dict:
     """Check one answer against the corpus and the context it was given.
 
-    ``corpus_numbers`` / ``retrieved_numbers`` are law-article numbers. An
-    abstention is not audited for citations — refusing to answer is the
+    ``corpus_numbers`` / ``retrieved_numbers`` are law-article numbers.
+    ``context`` is the verbatim text of the retrieved articles; given it, a
+    citation sitting inside a sentence copied out of that text is reported in
+    ``copied`` and excluded from ``cited``, because the law citing itself is
+    not the model grounding an answer. See ``copied_from_context``.
+
+    An abstention is not audited for citations — refusing to answer is the
     behaviour being asked for, not a failure to cite.
     """
     if is_abstention(text):
         return {
-            "abstained": True, "fabricated": [], "ungrounded": [],
+            "abstained": True, "fabricated": [], "ungrounded": [], "copied": [],
             "uncited": [], "cited": [], "strict": [], "grounded": True,
         }
 
-    cited = citations(text)
+    ctx = context or []
+    own: list[int] = []
+    copied: list[int] = []
+    for s in sentences(text):
+        target = copied if copied_from_context(s, ctx) else own
+        for n in citations(s):
+            if n not in target:
+                target.append(n)
+
+    cited = [n for n in own]
     fabricated = [n for n in cited if n not in corpus_numbers]
     ungrounded = [n for n in cited if n in corpus_numbers and n not in retrieved_numbers]
 
     uncited = [
         s for s in sentences(text)
-        if len(s) >= MIN_CLAIM_CHARS and not citations(s)
+        if len(s) >= MIN_CLAIM_CHARS
+        and (not citations(s) or copied_from_context(s, ctx))
     ]
 
     return {
         "abstained": False,
         "cited": cited,
+        "copied": [n for n in copied if n not in cited],
         "strict": strict_citations(text),
         "fabricated": fabricated,
         "ungrounded": ungrounded,

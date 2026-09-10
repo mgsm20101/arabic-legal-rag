@@ -104,3 +104,49 @@ def test_an_abstention_is_not_audited_for_citations():
 def test_sentences_split_on_arabic_terminators_but_not_on_commas():
     assert sentences("الأول، والثاني؟ الثالث. الرابع") == [
         "الأول، والثاني", "الثالث", "الرابع"]
+
+
+# --- copied context (found by the first real run) -----------------------------
+
+ARTICLE_14 = (
+    "استثناء من حكم المادة (14) من هذا القانون ، يجوز في حالة الموافقة الصريحة "
+    "للشخص المعني بالبيانات أو من ينوب عنه ، نقل أو مشاركة أو تداول أو معالجة "
+    "البيانات الشخصية إلى دولة لا يتوفر فيها مستوى الحماية المشار إليها"
+)
+
+
+def test_a_citation_inside_copied_statute_text_is_not_the_model_citing():
+    """Asked a question, the model reproduced the retrieved article. Egyptian
+    statutes cite themselves, so the copied text contained «المادة (14)» — and
+    the extractor read it as grounding. It was the law citing itself."""
+    r = audit(ARTICLE_14, CORPUS, {14}, context=[ARTICLE_14])
+    assert r["cited"] == []
+    assert r["copied"] == [14]
+    assert r["grounded"] is False
+
+
+def test_copied_text_still_counts_as_an_uncited_claim():
+    """Reproducing the statute is not answering, and it is certainly not
+    citing. It must not buy its way out of the uncited count."""
+    r = audit(ARTICLE_14, CORPUS, {14}, context=[ARTICLE_14])
+    assert r["uncited"]
+
+
+def test_the_models_own_citation_survives_alongside_copied_text():
+    text = ARTICLE_14 + "\nوبناء عليه يلزم الحصول على موافقة صريحة قبل النقل [مادة 7]."
+    r = audit(text, CORPUS, {7, 14}, context=[ARTICLE_14])
+    assert r["cited"] == [7]
+    assert r["copied"] == [14]
+
+
+def test_without_context_the_audit_behaves_as_before():
+    """`context` is optional; omitting it must not silently change a verdict."""
+    r = audit("يلزم الإبلاغ خلال المهلة المقررة قانونا [مادة 7].", CORPUS, {7})
+    assert r["cited"] == [7]
+    assert r["grounded"] is True
+
+
+def test_a_short_shared_phrase_is_not_copying():
+    """«من هذا القانون» appears everywhere. Only a long shared run is copying."""
+    from legalrag.cite import copied_from_context
+    assert not copied_from_context("يلزم ذلك من هذا القانون.", [ARTICLE_14])

@@ -69,7 +69,8 @@ def run(questions, docs, generator: Generator, k: int = TOP_K) -> list[dict]:
         elapsed = time.perf_counter() - t
 
         retrieved = {a["number"] for a in articles}
-        result = audit(ans.text, corpus_numbers, retrieved)
+        result = audit(ans.text, corpus_numbers, retrieved,
+                       context=[a["text"] for a in articles])
         expected = {n for n in (article_number(a) for a in q.expected_articles) if n}
 
         rows.append(
@@ -119,6 +120,14 @@ def report(rows: list[dict]) -> int:
     if uncited:
         line += "   " + str([r["id"] for r in uncited])
     print(line)
+    copied = [r for r in scored if r.get("copied")]
+    line = f"  citation was inside copied statute : {len(copied)}"
+    if copied:
+        line += "   " + str([(r["id"], r["copied"]) for r in copied])
+    print(line)
+    if copied:
+        print("      (the law citing itself in text the model reproduced -")
+        print("       not the model grounding an answer; excluded from `cited`)")
 
     # PRD B1 reads «صفر إجابة **بلا استشهاد** بمادة موجودة فعلا في المتن» — zero
     # answers *without* a citation to an article that really exists. An answer
@@ -172,7 +181,26 @@ def main(argv: list[str] | None = None) -> int:
             print(f"no saved run at {ROWS_PATH}. Run `python tasks.py answer-eval` first.")
             return 2
         rows = json.loads(ROWS_PATH.read_text(encoding="utf-8"))
-        print(f"re-reporting {len(rows)} saved answers from {ROWS_PATH} "
+        # Re-audit rather than replay the stored verdicts. The audit has been
+        # wrong twice already — once on B1's wording, once on citations lifted
+        # out of copied statute text — and each time the answers themselves
+        # were still good. Recomputing from the text means a fixed checker
+        # costs a second instead of another 45 minutes of CPU.
+        docs = load_docs(CORPUS_PATH)
+        by_number = {
+            n: d["text"]
+            for d in docs
+            if (n := article_number(d["id"])) is not None
+        }
+        corpus_numbers = set(by_number)
+        for r in rows:
+            retrieved = set(r["retrieved"])
+            r.update(audit(
+                r["text"], corpus_numbers, retrieved,
+                context=[by_number[n] for n in retrieved if n in by_number],
+            ))
+            r["cited_expected"] = bool(set(r["expected"]) & set(r["cited"]))
+        print(f"re-audited {len(rows)} saved answers from {ROWS_PATH} "
               "(no model loaded)\n")
         return report(rows)
 

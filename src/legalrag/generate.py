@@ -29,11 +29,24 @@ from dataclasses import dataclass
 
 from .cite import ABSTAIN_MARKER
 
-DEFAULT_MODEL = "Qwen/Qwen2.5-3B-Instruct"
+# Measured, not chosen by size. Qwen2.5-3B-Instruct was tried first and is
+# unusable here: its checkpoint is bfloat16, this CPU has no native bf16, so
+# every matmul is emulated. One short answer took SIX HOURS end to end (load
+# 6,465s, generate 15,499s) — timestamps in git history, not an estimate.
+# The fix is not a smaller model, it is the dtype: float32 runs natively. A 3B
+# in float32 needs 12.4 GB against 16 GB of RAM and would swap; 1.5B needs
+# 6.2 GB and does not.
+DEFAULT_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
 
-# Enough for a two or three sentence legal answer with citations. Long enough
-# to finish a thought, short enough that a CPU run over the eval set is minutes.
-MAX_NEW_TOKENS = 256
+# float32, deliberately. See above: "auto" honours the checkpoint's bfloat16,
+# which is correct on hardware that has it and catastrophic on hardware that
+# does not. Nothing errors — it just runs four orders of magnitude too slow.
+DTYPE = "float32"
+
+# A citation-carrying legal answer of two or three sentences. Capped low
+# because on CPU every token is wall-clock, and an answer that rambles past
+# its citations is not more useful for what B1 measures.
+MAX_NEW_TOKENS = 128
 
 # Greedy. A temperature would make the citation numbers themselves vary between
 # runs, and B1 is a claim about the system, not about one sample of it.
@@ -87,7 +100,9 @@ def load_model(name: str = DEFAULT_MODEL, max_new_tokens: int = MAX_NEW_TOKENS):
         ) from e
 
     tok = AutoTokenizer.from_pretrained(name)
-    model = AutoModelForCausalLM.from_pretrained(name, dtype="auto", device_map="cpu")
+    # No `device_map`: it makes `accelerate` a hard dependency and buys nothing,
+    # because the torch here is a CPU-only build and loads to CPU by default.
+    model = AutoModelForCausalLM.from_pretrained(name, dtype=DTYPE)
     model.eval()
 
     def run(messages: list[dict]) -> str:

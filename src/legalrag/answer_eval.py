@@ -23,8 +23,10 @@ Run: ``python tasks.py answer-eval``
 
 from __future__ import annotations
 
+import json
 import sys
 import time
+from pathlib import Path
 
 from .cite import audit
 from .dense import CACHE_PATH, CORPUS_PATH, DenseIndex, load_docs
@@ -32,6 +34,9 @@ from .evaluate import binding_problem, corpus_laws, load_meta, load_questions
 from .generate import DEFAULT_MODEL, Generator
 
 TOP_K = 5
+
+RUNS = Path("runs")
+ROWS_PATH = RUNS / "answer_eval.json"
 
 
 def _pct(n: int, d: int) -> str:
@@ -115,9 +120,20 @@ def report(rows: list[dict]) -> int:
         line += "   " + str([r["id"] for r in uncited])
     print(line)
 
-    b1 = not fabricated and not ungrounded
+    # PRD B1 reads «صفر إجابة **بلا استشهاد** بمادة موجودة فعلا في المتن» — zero
+    # answers *without* a citation to an article that really exists. An answer
+    # carrying no citation at all is a violation, not a neutral outcome.
+    #
+    # Getting this wrong is the same species of error as the B2 trap one
+    # section below: a verdict of `not fabricated and not ungrounded` is passed
+    # trivially by a model that never cites anything, and the first run of this
+    # eval printed exactly that — PASS, on 12 of 14 answers with no citation.
+    # Silence is not grounding.
+    b1 = not fabricated and not ungrounded and not uncited
     verdict = "PASS" if b1 else "FAIL"
-    print(f"\n  B1: {verdict} - the criterion is ZERO fabricated or ungrounded citations.")
+    print(f"\n  B1: {verdict} - every answer must carry a citation, it must resolve to a")
+    print("      real article, and that article must have been retrieved. An answer")
+    print("      with no citation fails: not citing is not the same as not lying.")
 
     print("\n" + "=" * 68)
     print("  B2 - abstention, with the false-abstention rate beside it")
@@ -149,6 +165,17 @@ def report(rows: list[dict]) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = argv or []
+
+    if "--report-only" in argv:
+        if not ROWS_PATH.exists():
+            print(f"no saved run at {ROWS_PATH}. Run `python tasks.py answer-eval` first.")
+            return 2
+        rows = json.loads(ROWS_PATH.read_text(encoding="utf-8"))
+        print(f"re-reporting {len(rows)} saved answers from {ROWS_PATH} "
+              "(no model loaded)\n")
+        return report(rows)
+
     questions, errors = load_questions()
     if errors:
         for e in errors:
@@ -190,6 +217,17 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  ready ({time.perf_counter() - t:.1f}s)\n", flush=True)
 
     rows = run(questions, docs, generator)
+
+    # Persist before reporting. The first run of this eval cost 45 minutes of
+    # CPU and kept none of the answers, so the one question worth asking after
+    # it — *what did the model actually write?* — could not be answered without
+    # paying for the whole run again. The report is cheap to recompute; the
+    # generation is not.
+    RUNS.mkdir(exist_ok=True)
+    ROWS_PATH.write_text(
+        json.dumps(rows, ensure_ascii=False, indent=1), encoding="utf-8")
+    print(f"\nanswers saved to {ROWS_PATH} ({len(rows)} rows)")
+
     return report(rows)
 
 

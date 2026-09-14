@@ -14,6 +14,7 @@ from legalrag.cite import (  # noqa: E402
     ABSTAIN_MARKER,
     audit,
     citations,
+    gate,
     is_abstention,
     loose_citations,
     sentences,
@@ -150,3 +151,141 @@ def test_a_short_shared_phrase_is_not_copying():
     """«من هذا القانون» appears everywhere. Only a long shared run is copying."""
     from legalrag.cite import copied_from_context
     assert not copied_from_context("يلزم ذلك من هذا القانون.", [ARTICLE_14])
+
+
+# --- Run 5's gate (claims JSON, EVAL.md commit ecd37f8) ---------------------
+#
+# `gate` is the model-free check applied to the claims contract's answer
+# shape, the way `audit` is applied to free text — same job (do not trust a
+# citation the model did not earn), a different input shape (a claim names
+# its sources by position, `[1]..[k]`, instead of writing an article number
+# inline). `SOURCE_NUMBERS[i]` / `SOURCE_TEXTS[i]` describe source `i + 1`,
+# in retrieval rank order, the numbering `claims.format_sources` shows the
+# model.
+
+SOURCE_NUMBERS = [7, 12, None]  # source 3 is an issuance article: no number
+SOURCE_TEXTS = [
+    "يلتزم المتحكم بالإبلاغ خلال ستة أيام عمل من تاريخ العلم بالخرق.",
+    "يجوز للمركز الإعفاء من الإخطار في حالات محددة.",
+    "ينشر هذا القرار في الجريدة الرسمية ويعمل به من اليوم التالي لنشره.",
+]
+
+
+def test_a_claim_without_a_source_is_removed_before_display():
+    parsed = {"abstain": False, "claims": [
+        {"text": "الرد خلال ستة أيام عمل.", "sources": []},
+    ]}
+
+    result = gate(parsed, SOURCE_NUMBERS, SOURCE_TEXTS)
+
+    assert result["kept"] == []
+    assert result["dropped"] == [
+        {"text": "الرد خلال ستة أيام عمل.", "sources": [], "reason": "uncited"},
+    ]
+    assert result["uncited"] == 1
+    assert result["status"] == "abstained"
+
+
+def test_a_source_number_outside_the_retrieved_list_counts_as_fabricated():
+    """`SOURCE_TEXTS` has 3 entries (k=3) — source 4 was never shown to the
+    model at all."""
+    parsed = {"abstain": False, "claims": [
+        {"text": "الرد خلال ستة أيام عمل.", "sources": [4]},
+    ]}
+
+    result = gate(parsed, SOURCE_NUMBERS, SOURCE_TEXTS)
+
+    assert result["fabricated"] == 1
+    assert result["dropped"][0]["reason"] == "fabricated"
+    assert result["kept"] == []
+
+
+def test_a_claim_naming_an_article_it_does_not_cite_is_ungrounded():
+    """Article 30 is not among the numbers of the claim's own cited sources
+    ({7}) — any check that only asks "does 30 exist somewhere" would miss
+    that this citation was never earned."""
+    parsed = {"abstain": False, "claims": [
+        {"text": "يلزم الحفظ لمدة سنة كاملة [مادة 30].", "sources": [1]},
+    ]}
+
+    result = gate(parsed, SOURCE_NUMBERS, SOURCE_TEXTS)
+
+    assert result["ungrounded"] == 1
+    assert result["dropped"][0]["reason"] == "ungrounded"
+    assert result["kept"] == []
+
+
+def test_a_claim_quoting_its_own_source_may_name_the_articles_that_source_names():
+    """Egyptian statutes cite themselves — a claim that copies its cited
+    source verbatim is not the model inventing a citation, it is the law
+    naming itself (the same exemption `audit` already gives free text via
+    `copied_from_context`). This is Run 5's recorded meaning change: the
+    claim is KEPT, with `copied` set so the rate is visible on its own."""
+    self_citing_text = (
+        "استثناء من حكم المادة (14) من هذا القانون يجوز نقل البيانات "
+        "بموافقة صريحة من صاحبها في جميع الأحوال دون استثناء يذكر."
+    )
+    parsed = {"abstain": False, "claims": [
+        {"text": self_citing_text, "sources": [1]},
+    ]}
+
+    result = gate(parsed, [7], [self_citing_text])
+
+    assert result["ungrounded"] == 0
+    assert result["kept"] == [{"text": self_citing_text, "sources": [1], "copied": True}]
+
+
+def test_a_response_whose_claims_are_all_removed_becomes_an_abstention():
+    parsed = {"abstain": False, "claims": [
+        {"text": "الرد خلال ستة أيام عمل.", "sources": []},
+        {"text": "لا يوجد أي سند لهذا الادعاء إطلاقاً.", "sources": [9]},
+    ]}
+
+    result = gate(parsed, SOURCE_NUMBERS, SOURCE_TEXTS)
+
+    assert result["status"] == "abstained"
+    assert result["kept"] == []
+    assert len(result["dropped"]) == 2
+
+
+def test_an_explicit_abstention_is_an_abstention_even_if_claims_came_with_it():
+    """`abstain: true` wins outright — the claims that came with it are not
+    run through the gate at all, only counted as ignored."""
+    parsed = {"abstain": True, "claims": [
+        {"text": "الرد خلال ستة أيام عمل [مادة 7].", "sources": [1]},
+    ]}
+
+    result = gate(parsed, SOURCE_NUMBERS, SOURCE_TEXTS)
+
+    assert result["status"] == "abstained"
+    assert result["kept"] == []
+    assert result["dropped"] == []
+    assert result["ignored_on_abstain"] == 1
+
+
+def test_a_schema_failure_is_an_abstention():
+    """Two failed JSON attempts reach the gate as `parsed=None` — there is
+    nothing to ignore-count here, unlike an explicit `abstain: true`."""
+    result = gate(None, SOURCE_NUMBERS, SOURCE_TEXTS)
+
+    assert result["status"] == "abstained"
+    assert result["kept"] == []
+    assert result["dropped"] == []
+    assert result["ignored_on_abstain"] == 0
+
+
+def test_a_partial_answer_keeps_its_supported_claims():
+    parsed = {"abstain": False, "claims": [
+        {"text": "الرد يكون خلال ستة أيام عمل من تاريخ العلم بالخرق.", "sources": [1]},
+        {"text": "لا يوجد أي سند لهذا الادعاء إطلاقاً.", "sources": []},
+    ]}
+
+    result = gate(parsed, SOURCE_NUMBERS, SOURCE_TEXTS)
+
+    assert result["status"] == "partial"
+    assert result["kept"] == [
+        {"text": "الرد يكون خلال ستة أيام عمل من تاريخ العلم بالخرق.",
+         "sources": [1], "copied": False},
+    ]
+    assert len(result["dropped"]) == 1
+    assert result["dropped"][0]["reason"] == "uncited"

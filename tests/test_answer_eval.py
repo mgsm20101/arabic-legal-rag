@@ -20,13 +20,16 @@ from legalrag.answer_eval import (  # noqa: E402
     ROWS_PATH,
     _check_rows_collision,
     _reaudit,
+    _regate,
     _rows_model_mismatch,
     _stats_for,
     _weights_line,
     main,
     rows_path,
     run,
+    run_claims,
 )
+from legalrag.claims import ClaimsGenerator  # noqa: E402
 from legalrag.evaluate import Question  # noqa: E402
 from legalrag.generate import Generator  # noqa: E402
 from legalrag.retrieve import Hit  # noqa: E402
@@ -251,7 +254,7 @@ def test_a_full_run_refuses_to_overwrite_a_different_models_rows(tmp_path, monke
     fake_rows_file.write_text(
         json.dumps([{"id": "Q1", "model": "ollama:other"}]), encoding="utf-8"
     )
-    monkeypatch.setattr(ae, "rows_path", lambda spec: fake_rows_file)
+    monkeypatch.setattr(ae, "rows_path", lambda spec, contract="text": fake_rows_file)
 
     def boom():
         raise AssertionError("load_questions must not run after a rows collision")
@@ -278,7 +281,7 @@ def test_report_only_warns_on_a_rows_model_mismatch_but_still_reports(tmp_path, 
          "text": "", "seconds": 1.0, "retrieved": [], "expected": []},
     ]), encoding="utf-8")
 
-    monkeypatch.setattr(ae, "rows_path", lambda spec: fake_rows_file)
+    monkeypatch.setattr(ae, "rows_path", lambda spec, contract="text": fake_rows_file)
     monkeypatch.setattr(ae, "load_docs", lambda path: [])
 
     code = main(["--model", "ollama:mine", "--report-only"])
@@ -324,3 +327,99 @@ def test_reaudit_recomputes_verdicts_from_saved_text_not_from_stored_flags():
     assert reaudited[0]["cited"] == [7]
     assert reaudited[0]["grounded"] is True
     assert reaudited[0]["cited_expected"] is True
+
+
+# --- Run 5's claims contract (--contract json) -----------------------------
+
+
+def test_the_json_contract_writes_its_own_rows_file_beside_run_4s():
+    """`--contract json` must never collide with Run 4's saved free-text
+    answers for the same model — same slug, with a `-json` suffix, so both
+    can be read back independently."""
+    assert rows_path("ollama:gemma3:4b", "json") == Path(
+        "runs/answer_eval-ollama-gemma3-4b-json.json"
+    )
+    assert rows_path("ollama:gemma3:4b") == Path("runs/answer_eval-ollama-gemma3-4b.json")
+    assert rows_path("ollama:gemma3:4b", "text") == rows_path("ollama:gemma3:4b")
+
+
+def test_run_claims_keeps_sources_in_rank_order_and_every_attempts_raw_text():
+    """Same retrieval contract as `run()`: rank order preserved, never
+    re-sorted by article number. Both attempts' raw text must survive even
+    though only the second one parsed — `report_claims` needs the first to
+    count retries and schema failures honestly."""
+    docs = [
+        {"id": "law-12", "text": "نص المادة الثانية عشرة"},
+        {"id": "law-7", "text": "نص المادة السابعة"},
+    ]
+    # The index hands back article 12 before article 7 — out of numeric
+    # order on purpose, so a bug that re-sorts by article number would show.
+    hit12 = Hit(id="law-12", law_name="", number=12, score=0.9, snippet="")
+    hit7 = Hit(id="law-7", law_name="", number=7, score=0.8, snippet="")
+    index = _StubIndex({"س1": [hit12, hit7]})
+
+    good = '{"abstain": false, "claims": [{"text": "الرد سبعة أيام.", "sources": [2]}]}'
+    model = _StubCallModel([
+        ("not json", {"output_tokens": 4, "output_s": 0.5}),
+        (good, {"output_tokens": 9, "output_s": 1.0}),
+    ])
+    generator = ClaimsGenerator(model=model)
+
+    rows = run_claims([_question("Q1", "س1")], docs, generator, "ollama:stub", index=index)
+
+    assert rows[0]["source_numbers"] == [12, 7]
+    assert rows[0]["raw"] == ["not json", good]
+    assert rows[0]["attempts"] == 2
+    assert rows[0]["schema_failure"] is False
+    assert rows[0]["model"] == "ollama:stub"
+    assert rows[0]["contract"] == "json"
+    assert rows[0]["stats"] == [
+        {"output_tokens": 4, "output_s": 0.5},
+        {"output_tokens": 9, "output_s": 1.0},
+    ]
+    assert rows[0]["gate"]["kept"] == [
+        {"text": "الرد سبعة أيام.", "sources": [2], "copied": False},
+    ]
+
+
+def test_report_only_reapplies_the_gate_to_saved_claims():
+    """The gate is model-free by design specifically so a fixed gate never
+    needs Ollama again — recomputed from the saved `parsed` answer and
+    `source_numbers`, the same argument `_reaudit` makes for the free-text
+    contract."""
+    docs = [{"id": "law-7", "text": "نص المادة السابعة"}]
+    rows = [{
+        "id": "Q1", "answerable": True, "source_numbers": [7], "expected": [7],
+        "parsed": {"abstain": False, "claims": [
+            {"text": "الرد سبعة أيام.", "sources": [1]},
+        ]},
+        # Deliberately wrong stored verdict — _regate must overwrite it.
+        "gate": {"status": "abstained", "kept": [], "dropped": [],
+                 "uncited": 0, "fabricated": 0, "ungrounded": 0,
+                 "ignored_on_abstain": 0},
+    }]
+
+    regated = _regate(rows, docs)
+
+    assert regated[0]["gate"]["status"] == "answered"
+    assert regated[0]["gate"]["kept"] == [
+        {"text": "الرد سبعة أيام.", "sources": [1], "copied": False},
+    ]
+
+
+def test_the_json_contract_with_an_hf_model_exits_2_before_loading_anything(monkeypatch, capsys):
+    """Schema-constrained decoding is not available on the transformers
+    path here — refused the same way a bad --model spec is, before
+    load_questions/load_docs/verify-refs cost anything."""
+    import legalrag.answer_eval as ae
+
+    def boom():
+        raise AssertionError("load_questions must not run for an incompatible contract")
+    monkeypatch.setattr(ae, "load_questions", boom)
+
+    code = main(["--model", "hf:" + DEFAULT_MODEL, "--contract", "json"])
+    out = capsys.readouterr().out
+
+    assert code == 2
+    assert "json" in out
+    assert "hf:" + DEFAULT_MODEL in out

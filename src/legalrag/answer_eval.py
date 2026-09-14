@@ -30,8 +30,9 @@ import time
 from datetime import date
 from pathlib import Path
 
-from .answer_report import report
-from .cite import audit
+from .answer_report import report, report_claims
+from .cite import audit, gate
+from .claims import CLAIMS_MAX_TOKENS, CLAIMS_SCHEMA, ClaimsGenerator
 from .dense import CACHE_PATH, CORPUS_PATH, DenseIndex, load_docs
 from .evaluate import binding_problem, corpus_laws, load_meta, load_questions
 from .generate import DEFAULT_MODEL, Generator, model_source, parse_model_spec, resolve_model
@@ -43,15 +44,24 @@ RUNS = Path("runs")
 ROWS_PATH = RUNS / "answer_eval.json"
 DEFAULT_SPEC = "hf:" + DEFAULT_MODEL  # Run 3's model, as a --model spec
 
+CONTRACTS = ("text", "json")  # "text": Run 3/4's free text; "json": Run 5's claims
 
-def rows_path(spec: str) -> Path:
+
+def rows_path(spec: str, contract: str = "text") -> Path:
     """Where a run's raw answers are saved.
 
-    The default spec keeps Run 3's exact file name, so `--report-only` with
-    no `--model` keeps reproducing that saved run. Any other spec gets its
-    own file, named from the spec itself — otherwise a second model's run
-    would silently overwrite the first's saved answers.
+    The default spec (under the "text" contract, the only one it can ever
+    appear under — see `main`) keeps Run 3's exact file name, so
+    `--report-only` with no `--model`/`--contract` keeps reproducing that
+    saved run. Any other (spec, contract) pair gets its own file, named
+    from the spec itself — otherwise a second run would silently overwrite
+    a previous one's saved answers. `contract="json"` (Run 5) always gets a
+    `-json` suffix, so it never collides with that same model's Run 3/4
+    free-text file.
     """
+    if contract == "json":
+        slug = re.sub(r"[^A-Za-z0-9._-]", "-", spec)
+        return RUNS / f"answer_eval-{slug}-json.json"
     if spec == DEFAULT_SPEC:
         return ROWS_PATH
     slug = re.sub(r"[^A-Za-z0-9._-]", "-", spec)
@@ -143,11 +153,74 @@ def run(questions, docs, generator: Generator, model_spec: str, k: int = TOP_K,
     return rows
 
 
-def _read_run_meta(model_spec: str) -> dict | None:
+def run_claims(questions, docs, generator: ClaimsGenerator, model_spec: str,
+               k: int = TOP_K, index: DenseIndex | None = None) -> list[dict]:
+    """The claims-JSON sibling of `run()` — Run 5's contract (EVAL.md,
+    commit ecd37f8). Same retrieval as `run()` (dense top-k, law articles
+    only, kept in rank order) and the same per-call stats bookkeeping; the
+    answer shape and the model-free check applied to it are what differ —
+    `cite.gate` runs immediately, so a saved row already carries its own
+    verdict the way a text-contract row's `cited`/`fabricated`/... do
+    (`audit`, called inside `run()`).
+    """
+    if index is None:
+        index = DenseIndex(docs, cache_path=CACHE_PATH)
+        index.save()
+    texts = {d["id"]: d["text"] for d in docs}
+
+    rows: list[dict] = []
+    for q in questions:
+        hits = index.search(q.question, k)
+        articles = [
+            {"number": article_number(h.id), "text": texts[h.id]}
+            for h in hits
+            if article_number(h.id) is not None
+        ]
+        source_numbers = [a["number"] for a in articles]
+        source_texts = [a["text"] for a in articles]
+
+        model = generator.model
+        before = len(getattr(model, "calls", []))
+        t = time.perf_counter()
+        ans = generator.answer(q.question, source_texts)
+        elapsed = time.perf_counter() - t
+        stats = _stats_for(model, before)
+
+        expected = {n for n in (article_number(a) for a in q.expected_articles) if n}
+        gate_result = gate(ans.parsed, source_numbers, source_texts)
+
+        row = {
+            "id": q.id,
+            "category": q.category,
+            "answerable": q.answerable,
+            "model": model_spec,
+            "contract": "json",
+            "question": q.question,
+            "source_numbers": source_numbers,
+            "expected": sorted(expected),
+            "raw": ans.raw,
+            "parsed": ans.parsed,
+            "attempts": ans.attempts,
+            "schema_failure": ans.schema_failure,
+            "seconds": elapsed,
+            "gate": gate_result,
+        }
+        if stats is not None:
+            row["stats"] = stats
+        rows.append(row)
+
+        n_claims = len(gate_result["kept"]) + len(gate_result["dropped"])
+        print(f"  {q.id} [{q.category:13}] {elapsed:5.1f}s  "
+              f"{gate_result['status']:9}  kept {len(gate_result['kept'])}/{n_claims}",
+              flush=True)
+    return rows
+
+
+def _read_run_meta(model_spec: str, contract: str = "text") -> dict | None:
     """The sibling `.meta.json` an `ollama:` run wrote next to its rows, or
     None when there isn't one (an `hf:` run, or an `ollama:` run saved
     before this file existed) — absence is not an error here."""
-    meta_path = RUNS / f"{rows_path(model_spec).stem}.meta.json"
+    meta_path = RUNS / f"{rows_path(model_spec, contract).stem}.meta.json"
     if not meta_path.exists():
         return None
     try:
@@ -156,7 +229,7 @@ def _read_run_meta(model_spec: str) -> dict | None:
         return None
 
 
-def _meta_for_rows(rows: list[dict]) -> dict | None:
+def _meta_for_rows(rows: list[dict], contract: str = "text") -> dict | None:
     """Which `.meta.json` belongs beside a report of `rows` — resolved from
     the model *actually recorded in the rows themselves*, not necessarily
     whatever `--model` the CLI was given: under a reported mismatch
@@ -168,7 +241,7 @@ def _meta_for_rows(rows: list[dict]) -> dict | None:
     a file on disk (`rows_path` lives in this module, not that one).
     """
     model_spec = rows[0]["model"] if rows and "model" in rows[0] else DEFAULT_SPEC
-    return _read_run_meta(model_spec)
+    return _read_run_meta(model_spec, contract)
 
 
 def _weights_line(model_spec: str) -> str | None:
@@ -222,15 +295,31 @@ def _rows_model_mismatch(rows: list[dict], model_spec: str) -> str | None:
     return existing
 
 
-def _check_rows_collision(rows_file: Path, model_spec: str) -> str | None:
-    """None if it is safe to (over)write `rows_file` for `model_spec` — a
-    message naming the model actually saved there otherwise.
+def _rows_contract_mismatch(rows: list[dict], contract: str) -> str | None:
+    """Analogous to `_rows_model_mismatch`, for `contract` — rows saved
+    before `--contract` existed carry no such field at all, and count as
+    `"text"`, the only contract there was then."""
+    if not rows:
+        return None
+    existing = rows[0].get("contract", "text")
+    if existing == contract:
+        return None
+    return existing
+
+
+def _check_rows_collision(rows_file: Path, model_spec: str, contract: str = "text") -> str | None:
+    """None if it is safe to (over)write `rows_file` for `(model_spec,
+    contract)` — a message naming what is actually saved there otherwise.
 
     Two different specs can slugify to the same file name: `rows_path` maps
     every character outside [A-Za-z0-9._-] to '-', so a spec built from one
-    kind of separator can collide with one built from another. Silently
-    overwriting a previous run's saved answers under those circumstances
-    would corrupt a different run's history.
+    kind of separator can collide with one built from another — and, since
+    `contract="json"` only changes the file name by a fixed `-json` suffix,
+    a `text` run of some model literally named `...-json` could in
+    principle land on the same path as a `json` run of a different model.
+    Silently overwriting a previous run's saved answers under either
+    circumstance would corrupt a different run's history, so both fields
+    are checked, not just the model.
     """
     if not rows_file.exists():
         return None
@@ -238,13 +327,19 @@ def _check_rows_collision(rows_file: Path, model_spec: str) -> str | None:
         existing = json.loads(rows_file.read_text(encoding="utf-8"))
     except ValueError:
         return None
-    mismatch = _rows_model_mismatch(existing, model_spec)
-    if mismatch is None:
+    model_mismatch = _rows_model_mismatch(existing, model_spec)
+    contract_mismatch = _rows_contract_mismatch(existing, contract)
+    if model_mismatch is None and contract_mismatch is None:
         return None
+    holds = []
+    if model_mismatch is not None:
+        holds.append(f"model {model_mismatch!r}")
+    if contract_mismatch is not None:
+        holds.append(f"contract {contract_mismatch!r}")
     return (
-        f"{rows_file} already holds answers for {mismatch!r}, not "
-        f"{model_spec!r}. Refusing to overwrite — two different --model "
-        f"specs must not share a rows file."
+        f"{rows_file} already holds answers for " + " and ".join(holds) +
+        f", not model {model_spec!r} / contract {contract!r}. Refusing to "
+        f"overwrite — two different runs must not share a rows file."
     )
 
 
@@ -274,6 +369,31 @@ def _reaudit(rows: list[dict], docs: list[dict]) -> list[dict]:
     return rows
 
 
+def _regate(rows: list[dict], docs: list[dict]) -> list[dict]:
+    """Recompute every claims row's gate verdict from its saved `parsed`
+    answer and `source_numbers`, in place — the claims-JSON sibling of
+    `_reaudit`, for the same reason: the gate is model-free specifically so
+    a fixed gate never needs Ollama again, and it has already changed shape
+    once before any real Run 5 number existed.
+
+    Source *text* is looked up fresh from the current corpus by article
+    number, exactly as `_reaudit` does — a saved row keeps `source_numbers`,
+    not the article text itself, so the gate's copied-source check
+    (`cite.copied_from_context`) always runs against the corpus as it is
+    now, not a second copy frozen at generation time.
+    """
+    by_number = {
+        n: d["text"]
+        for d in docs
+        if (n := article_number(d["id"])) is not None
+    }
+    for r in rows:
+        source_numbers = r["source_numbers"]
+        source_texts = [by_number.get(n, "") for n in source_numbers]
+        r["gate"] = gate(r["parsed"], source_numbers, source_texts)
+    return rows
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = argv or []
 
@@ -285,6 +405,14 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         model_spec = argv[i + 1]
 
+    contract = "text"
+    if "--contract" in argv:
+        i = argv.index("--contract")
+        if i + 1 >= len(argv):
+            print("--contract requires a value, e.g. --contract json")
+            return 2
+        contract = argv[i + 1]
+
     try:
         parse_model_spec(model_spec)
     except ValueError as e:
@@ -295,12 +423,26 @@ def main(argv: list[str] | None = None) -> int:
         print(str(e))
         return 2
 
-    rows_file = rows_path(model_spec)
+    if contract not in CONTRACTS:
+        print(f"unknown --contract {contract!r} — expected one of {CONTRACTS}")
+        return 2
+
+    if contract == "json" and not model_spec.startswith("ollama:"):
+        # Same reasoning as `generate.resolve_model`'s own refusal — checked
+        # again here, before anything loads, so a mismatched pair costs
+        # nothing rather than failing deep inside the "loading ..." block.
+        print(f"--contract json needs an ollama: model (got {model_spec!r}) — "
+              "schema-constrained decoding is not available on the "
+              "transformers path here")
+        return 2
+
+    rows_file = rows_path(model_spec, contract)
 
     if "--report-only" in argv:
         if not rows_file.exists():
             print(f"no saved run at {rows_file}. "
-                  f"Run `python tasks.py answer-eval --model {model_spec}` first.")
+                  f"Run `python tasks.py answer-eval --model {model_spec} "
+                  f"--contract {contract}` first.")
             return 2
         rows = json.loads(rows_file.read_text(encoding="utf-8"))
         mismatch = _rows_model_mismatch(rows, model_spec)
@@ -311,12 +453,19 @@ def main(argv: list[str] | None = None) -> int:
             # would be misleading.
             print(f"WARNING: {rows_file} holds answers for {mismatch!r}, not "
                   f"{model_spec!r} — reporting on what is actually saved there.")
+        if contract == "json":
+            # The gate is model-free by design so a fixed gate never needs
+            # Ollama again — see `_regate`.
+            rows = _regate(rows, load_docs(CORPUS_PATH))
+            print(f"re-gated {len(rows)} saved answers from {rows_file} "
+                  "(no model loaded)\n")
+            return report_claims(rows, meta=_meta_for_rows(rows, contract))
         rows = _reaudit(rows, load_docs(CORPUS_PATH))
         print(f"re-audited {len(rows)} saved answers from {rows_file} "
               "(no model loaded)\n")
-        return report(rows, meta=_meta_for_rows(rows))
+        return report(rows, meta=_meta_for_rows(rows, contract))
 
-    collision = _check_rows_collision(rows_file, model_spec)
+    collision = _check_rows_collision(rows_file, model_spec, contract)
     if collision is not None:
         print(collision)
         return 2
@@ -354,6 +503,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"questions  : {len(questions)} ({n_ooc} out_of_corpus)")
     print(f"retrieval  : dense, top-{TOP_K} (Run 2 winner)")
     print(f"generator  : {model_spec}")
+    print(f"contract   : {contract}")
     weights_line = _weights_line(model_spec)
     if weights_line is not None:
         print(weights_line)
@@ -362,10 +512,17 @@ def main(argv: list[str] | None = None) -> int:
     print(f"loading {model_spec} ...", flush=True)
     t = time.perf_counter()
     try:
-        model = resolve_model(model_spec)
-        generator = Generator(model=model)
-        print(f"  ready ({time.perf_counter() - t:.1f}s)\n", flush=True)
-        rows = run(questions, docs, generator, model_spec)
+        if contract == "json":
+            model = resolve_model(model_spec, max_new_tokens=CLAIMS_MAX_TOKENS,
+                                   fmt=CLAIMS_SCHEMA)
+            generator = ClaimsGenerator(model=model)
+            print(f"  ready ({time.perf_counter() - t:.1f}s)\n", flush=True)
+            rows = run_claims(questions, docs, generator, model_spec)
+        else:
+            model = resolve_model(model_spec)
+            generator = Generator(model=model)
+            print(f"  ready ({time.perf_counter() - t:.1f}s)\n", flush=True)
+            rows = run(questions, docs, generator, model_spec)
     except GeneratorUnavailable as e:
         # No traceback: this is an environment problem (missing dependency,
         # bad checkpoint, unreachable Ollama server, model not pulled), not
@@ -386,7 +543,9 @@ def main(argv: list[str] | None = None) -> int:
     if model_spec.startswith("ollama:"):
         _write_ollama_meta(model_spec, model, rows_file)
 
-    return report(rows, meta=_meta_for_rows(rows))
+    if contract == "json":
+        return report_claims(rows, meta=_meta_for_rows(rows, contract))
+    return report(rows, meta=_meta_for_rows(rows, contract))
 
 
 if __name__ == "__main__":

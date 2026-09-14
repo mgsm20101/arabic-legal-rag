@@ -215,7 +215,7 @@ def parse_model_spec(spec: str) -> tuple[str, str]:
     )
 
 
-def resolve_model(spec: str, max_new_tokens: int = MAX_NEW_TOKENS):
+def resolve_model(spec: str, max_new_tokens: int = MAX_NEW_TOKENS, fmt: dict | None = None):
     """`spec` names the generation runtime: `hf:<repo>` loads a transformers
     checkpoint in-process via `load_model`; `ollama:<name>` talks to a local
     Ollama server instead via `ollama.ollama_chat` — the two runtimes ADR-023
@@ -223,10 +223,24 @@ def resolve_model(spec: str, max_new_tokens: int = MAX_NEW_TOKENS):
     `"model"` field both need to be: one value that round-trips between them.
     Parsing and validating `spec` itself is `parse_model_spec`'s job; this
     is only the dispatch on top of it.
+
+    `fmt` is Run 5's schema-constrained decoding request
+    (`claims.CLAIMS_SCHEMA`) — meaningful only for the `ollama:` runtime,
+    the only one of the two with any such feature. Passing it for `hf:` is
+    rejected outright rather than silently ignored: a caller that thinks it
+    asked for constrained JSON and got free text back would have no way to
+    find out short of parsing failures downstream, well after the model
+    already ran.
     """
     prefix, name = parse_model_spec(spec)
 
     if prefix == "hf":
+        if fmt is not None:
+            raise ValueError(
+                f"model spec {spec!r} is hf:, but the claims contract needs "
+                "an ollama: model — schema-constrained decoding is not "
+                "available on the transformers path here"
+            )
         return load_model(name, max_new_tokens)
 
     family = name.partition(":")[0]
@@ -240,7 +254,7 @@ def resolve_model(spec: str, max_new_tokens: int = MAX_NEW_TOKENS):
     # from silence — the underlying behaviour is Ollama's to fix, not this
     # client's to work around.
     think = False if family == "qwen3" else None
-    return ollama_chat(name, num_predict=max_new_tokens, think=think)
+    return ollama_chat(name, num_predict=max_new_tokens, think=think, fmt=fmt)
 
 
 class Generator:

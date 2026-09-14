@@ -177,3 +177,127 @@ def audit(
         "uncited": uncited,
         "grounded": not fabricated and not ungrounded and not uncited,
     }
+
+
+def _gate_one_claim(
+    claim: dict, source_numbers: list[int | None], source_texts: list[str], k: int,
+) -> tuple[dict | None, dict | None]:
+    """One claim from the claims contract, checked against the rules
+    `gate` documents — returns `(kept, None)` or `(None, dropped)`, never
+    both, so a caller can never double-count a claim."""
+    text = claim.get("text", "")
+    sources = claim.get("sources") or []
+
+    if not sources:
+        return None, {"text": text, "sources": sources, "reason": "uncited"}
+
+    if any(s < 1 or s > k for s in sources):
+        return None, {"text": text, "sources": sources, "reason": "fabricated"}
+
+    own_texts = [source_texts[s - 1] for s in sources]
+    own_numbers = {source_numbers[s - 1] for s in sources if source_numbers[s - 1] is not None}
+    copied = copied_from_context(text, own_texts)
+
+    mentioned = citations(text)
+    if any(n not in own_numbers for n in mentioned) and not copied:
+        return None, {"text": text, "sources": sources, "reason": "ungrounded"}
+
+    return {"text": text, "sources": sources, "copied": copied}, None
+
+
+def gate(
+    parsed: dict | None,
+    source_numbers: list[int | None],
+    source_texts: list[str],
+) -> dict:
+    """Run 5's model-free gate (EVAL.md, commit ecd37f8): decide which
+    claims of a claims-JSON answer survive to be shown, without trusting the
+    model to have followed `sources` correctly — the claims-shaped sibling
+    of `audit`, checked the same way: against what was actually retrieved,
+    never against the model's word for it.
+
+    `source_numbers[i]` / `source_texts[i]` describe source ``i + 1`` — the
+    numbering `claims.format_sources` showed the model, 1-based, in
+    retrieval rank order; `k = len(source_texts)`. `source_numbers[i]` is
+    `None` for a source with no article number of its own (an issuance
+    article). Rules, applied in this order so one claim is never dropped
+    for two reasons at once:
+
+    1. no `sources` at all -> dropped, ``uncited``.
+    2. any `sources` entry outside ``1..k`` -> dropped, ``fabricated`` (the
+       model pointed at a source that was never shown to it).
+    3. the claim's text names an article ("مادة N", strict or loose form,
+       via `citations`) that is not one of the article numbers of its OWN
+       cited sources -> dropped, ``ungrounded`` — UNLESS the claim's text is
+       copied verbatim out of one of those same sources
+       (`copied_from_context`). Egyptian statutes cite themselves
+       ("استثناء من حكم المادة (14) من هذا القانون"), so a copied sentence
+       can legitimately name an article that is not the one it was filed
+       under; that is the law, not the model inventing a citation. This is
+       the same exemption `audit` already applies to free text, carried
+       over to the claims shape.
+
+    A claim that survives is ``{"text", "sources", "copied": bool}`` — kept
+    regardless of `copied`, per Run 5's recorded meaning change: in Run 3/4
+    a citation sitting inside copied text was not counted, because the
+    citation was part of the copied prose itself. Here the source is a
+    *separate* field the model fills in alongside the quote, so a claim
+    that quotes its source verbatim and correctly names that source counts
+    as grounded. `copied` is reported as its own rate in
+    `answer_report.report_claims`, never folded into a pass/fail number.
+
+    `status` is ``"abstained"`` when nothing is kept — whether because
+    `abstain: true` said so, every claim was dropped, or `parsed is None`
+    (two failed JSON attempts; the row's own `schema_failure` records that
+    case) — ``"partial"`` when some were dropped and some kept, and
+    ``"answered"`` when none were dropped. **This is the gate trap the
+    pre-registration names, and `report_claims` prints beside every one of
+    these numbers for exactly this reason:** a gate that drops every claim
+    scores "0 fabricated, 0 ungrounded" the same way a model that never
+    says anything would. Coverage and dropped-by-reason counts are what
+    tell the difference from a genuinely clean run.
+    """
+    if parsed is None:
+        return {
+            "status": "abstained", "kept": [], "dropped": [],
+            "uncited": 0, "fabricated": 0, "ungrounded": 0, "ignored_on_abstain": 0,
+        }
+
+    claims = parsed.get("claims") or []
+
+    if parsed.get("abstain"):
+        # The claims that came with an explicit abstention are not run
+        # through the rules above at all — only counted, so a reader can
+        # see the model said "no" while still writing claims anyway.
+        return {
+            "status": "abstained", "kept": [], "dropped": [],
+            "uncited": 0, "fabricated": 0, "ungrounded": 0,
+            "ignored_on_abstain": len(claims),
+        }
+
+    k = len(source_texts)
+    kept: list[dict] = []
+    dropped: list[dict] = []
+    for claim in claims:
+        keep, drop = _gate_one_claim(claim, source_numbers, source_texts, k)
+        if keep is not None:
+            kept.append(keep)
+        else:
+            dropped.append(drop)
+
+    if not kept:
+        status = "abstained"
+    elif dropped:
+        status = "partial"
+    else:
+        status = "answered"
+
+    return {
+        "status": status,
+        "kept": kept,
+        "dropped": dropped,
+        "uncited": sum(1 for d in dropped if d["reason"] == "uncited"),
+        "fabricated": sum(1 for d in dropped if d["reason"] == "fabricated"),
+        "ungrounded": sum(1 for d in dropped if d["reason"] == "ungrounded"),
+        "ignored_on_abstain": 0,
+    }

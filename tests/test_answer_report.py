@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from legalrag.answer_report import report  # noqa: E402
+from legalrag.answer_report import report, report_claims  # noqa: E402
 
 
 def _row(qid, *, answerable=True, abstained=False, cited=(), strict=(),
@@ -162,3 +162,140 @@ def test_the_report_prints_gpu_share_quantization_and_digest_from_meta():
     assert "  GPU share                          : 55%" in out
     assert "  quantization                       : Q4_K_M" in out
     assert "  digest                             : abcdef123456" in out  # first 12 chars
+
+
+# --- Run 5's claims report (--contract json), EVAL.md commit ecd37f8 -------
+
+
+def _claims_row(qid, *, answerable=True, expected=(), source_numbers=(),
+                 kept=(), dropped=(), fabricated=0, uncited=0, ungrounded=0,
+                 ignored_on_abstain=0, status=None, schema_failure=False,
+                 attempts=1, seconds=1.0):
+    kept = list(kept)
+    dropped = list(dropped)
+    if status is None:
+        # Mirrors `cite.gate`'s own status rule: nothing kept is an
+        # abstention regardless of why; kept and dropped together is
+        # partial; kept with nothing dropped is answered.
+        status = "abstained" if not kept else ("partial" if dropped else "answered")
+    return {
+        "id": qid, "answerable": answerable, "expected": list(expected),
+        "source_numbers": list(source_numbers), "model": "ollama:gemma3:4b",
+        "contract": "json", "attempts": attempts, "schema_failure": schema_failure,
+        "seconds": seconds,
+        "gate": {
+            "status": status, "kept": kept, "dropped": dropped,
+            "uncited": uncited, "fabricated": fabricated, "ungrounded": ungrounded,
+            "ignored_on_abstain": ignored_on_abstain,
+        },
+    }
+
+
+def _claims_run(rows, meta=None):
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        code = report_claims(rows, meta=meta)
+    return code, buf.getvalue()
+
+
+def _answerable_claims_rows(n_hit: int, n_total: int = 15) -> list[dict]:
+    """`n_hit` answerable rows keep one claim citing the expected article
+    (source 1 -> article 7); the rest keep nothing at all."""
+    hits = [
+        _claims_row(f"Q{i}", expected=[7], source_numbers=[7, 12],
+                    kept=[{"text": "الرد سبعة أيام.", "sources": [1], "copied": False}])
+        for i in range(1, n_hit + 1)
+    ]
+    misses = [
+        _claims_row(f"Q{i}", expected=[7], source_numbers=[7, 12])
+        for i in range(n_hit + 1, n_total + 1)
+    ]
+    return hits + misses
+
+
+def _abstained_ooc_rows(n: int = 5, start: int = 16) -> list[dict]:
+    return [
+        _claims_row(f"Q{i}", answerable=False, source_numbers=[3, 4])
+        for i in range(start, start + n)
+    ]
+
+
+def test_the_claims_report_prints_coverage_beside_every_grounding_number():
+    """The gate trap (EVAL.md Run 5): a gate that drops every claim scores
+    "0 fabricated" the same way a genuinely clean run does. Coverage and the
+    dropped-by-reason counts must always be printed, not only on failure."""
+    rows = _answerable_claims_rows(10) + _abstained_ooc_rows()
+
+    _, out = _claims_run(rows)
+
+    assert "coverage" in out
+    assert "10/15" in out            # 10 of 15 answerable kept >= 1 claim
+    assert "fabricated" in out
+    assert "dropped" in out or "uncited" in out
+    assert "schema failures" in out
+    assert "copy their source" in out or "copied" in out
+
+
+def test_adoption_requires_zero_fabricated_sources():
+    rows = _answerable_claims_rows(9) + [
+        _claims_row(
+            "Q10", expected=[7], source_numbers=[7, 12],
+            kept=[{"text": "الرد سبعة أيام.", "sources": [1], "copied": False}],
+            dropped=[{"text": "بلا سند", "sources": [9], "reason": "fabricated"}],
+            fabricated=1,
+        ),
+    ] + _abstained_ooc_rows()
+
+    code, out = _claims_run(rows)
+
+    assert "ADOPT for the app: NO" in out
+    assert "fabricated" in out.split("ADOPT for the app:")[1]
+    assert code == 1
+
+
+def test_adoption_requires_b2_of_at_least_80_percent():
+    """Fabricated stays 0 and 10/15 still cite the expected article — only
+    B2 (3/5, below the 80% floor) should sink the verdict."""
+    rows = _answerable_claims_rows(10) + _abstained_ooc_rows(3, start=16) + [
+        _claims_row(f"Q{i}", answerable=False, source_numbers=[3, 4],
+                    kept=[{"text": "نص غير ذي صلة بالسؤال.", "sources": [1], "copied": False}])
+        for i in range(19, 21)
+    ]
+
+    code, out = _claims_run(rows)
+
+    assert "ADOPT for the app: NO" in out
+    assert "B2" in out.split("ADOPT for the app:")[1]
+    assert code == 1
+
+
+def test_adoption_requires_the_expected_article_on_at_least_10_answerable_questions():
+    """fabricated=0 and B2=5/5 both pass; only 9 of 15 cite article 7."""
+    rows = _answerable_claims_rows(9) + _abstained_ooc_rows()
+
+    code, out = _claims_run(rows)
+
+    reason = out.split("ADOPT for the app:")[1]
+    assert "ADOPT for the app: NO" in out
+    assert "9" in reason and "10" in reason
+    assert code == 1
+
+
+def test_a_gate_that_drops_everything_is_not_adopted():
+    """A gate that drops every claim looks clean on fabricated/ungrounded
+    alone (both zero) and even B2 is trivially satisfied — every answerable
+    question ends up abstained too. Coverage (0/15) is what shows the
+    difference, and the adoption rule itself must not be fooled: nothing
+    ever cites the expected article, so it is still NO."""
+    rows = [
+        _claims_row(f"Q{i}", expected=[7], source_numbers=[7, 12],
+                    dropped=[{"text": "نص", "sources": [], "reason": "uncited"}],
+                    uncited=1)
+        for i in range(1, 16)
+    ] + _abstained_ooc_rows()
+
+    code, out = _claims_run(rows)
+
+    assert "0/15" in out
+    assert "ADOPT for the app: NO" in out
+    assert code == 1

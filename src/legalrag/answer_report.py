@@ -188,3 +188,110 @@ def report(rows: list[dict], meta: dict | None = None) -> int:
     print("\nSmall sample. Read the caveats in EVAL.md before quoting any of this,")
     print("starting with the one that matters most: the corpus is not the gazette text.")
     return 0 if (b1 and b2) else 1
+
+
+# --- Run 5 — claims JSON + gate (EVAL.md, commit ecd37f8) ------------------
+#
+# Fixed here, not computed after seeing a run's numbers — the pre-
+# registration commits to these three conditions before any real Run 5
+# number existed, specifically so a threshold cannot be chosen after seeing
+# which one the run happens to clear.
+FABRICATED_MAX = 0
+B2_MIN = 0.80
+# gemma3:4b's own Run 4 count, free-text contract (EVAL.md) — the bar Run
+# 5's JSON shape has to clear, not beat by an arbitrary margin: citing the
+# expected article on fewer of the 15 answerable questions than free text
+# already did would be a regression in the one thing retrieval bounds, not
+# a tradeoff worth taking for a stricter answer shape.
+CITED_EXPECTED_MIN = 10
+
+
+def _cites_expected(row: dict) -> bool:
+    """Does any claim `row` *kept* cite a source whose article number is
+    one of `row["expected"]`? Only a kept claim counts — a dropped one was
+    never shown to a reader, so it cannot be the thing that made this
+    question's answer correct."""
+    expected = set(row["expected"])
+    if not expected:
+        return False
+    source_numbers = row["source_numbers"]
+    for claim in row["gate"]["kept"]:
+        for s in claim["sources"]:
+            if 1 <= s <= len(source_numbers) and source_numbers[s - 1] in expected:
+                return True
+    return False
+
+
+def report_claims(rows: list[dict], meta: dict | None = None) -> int:
+    """Run 5's report (EVAL.md, commit ecd37f8): the claims-JSON contract
+    and its model-free gate, scored against the same three fixed
+    quantities `report` uses — 15 answerable questions, 5 out_of_corpus —
+    but read through `row["gate"]`, not the free-text contract's
+    `row["cited"]`/`"fabricated"`/... (a claims row carries no such fields).
+
+    **The gate trap, printed unconditionally (EVAL.md's own name for it):**
+    a gate that drops every claim would score zero fabricated and zero
+    ungrounded the same way a genuinely clean run does — coverage and the
+    dropped-by-reason counts are what tell the two apart, so they are
+    printed beside the adoption numbers every time, not only when adoption
+    fails.
+    """
+    answerable = [r for r in rows if r["answerable"]]
+    out_of_corpus = [r for r in rows if not r["answerable"]]
+
+    print("\n" + "=" * 68)
+    print("  Run 5 contract - claims JSON + gate (EVAL.md, ecd37f8)")
+    print("=" * 68)
+
+    covered = [r for r in answerable if r["gate"]["kept"]]
+    false_abstain = [r for r in answerable if r["gate"]["status"] == "abstained"]
+    correct_abstain = [r for r in out_of_corpus if r["gate"]["status"] == "abstained"]
+    hit = [r for r in answerable if _cites_expected(r)]
+
+    print(f"  coverage (>=1 kept claim)          : {_pct(len(covered), len(answerable))}")
+    print(f"  false abstention on answerable     : {_pct(len(false_abstain), len(answerable))}")
+    b2 = (len(correct_abstain) / len(out_of_corpus)) if out_of_corpus else 0.0
+    print(f"  B2 - abstained on out_of_corpus     : "
+          f"{_pct(len(correct_abstain), len(out_of_corpus))}    (criterion: >= 80%)")
+    print(f"  cited the expected article         : {_pct(len(hit), len(answerable))}"
+          f"    (criterion: >= {CITED_EXPECTED_MIN} of {len(answerable)})")
+
+    fabricated = sum(r["gate"]["fabricated"] for r in rows)
+    uncited = sum(r["gate"]["uncited"] for r in rows)
+    ungrounded = sum(r["gate"]["ungrounded"] for r in rows)
+    print(f"  fabricated claims                  : {fabricated}    (criterion: 0)")
+    print(f"  dropped - uncited / ungrounded      : {uncited} / {ungrounded}")
+
+    schema_failures = sum(1 for r in rows if r["schema_failure"])
+    print(f"  schema failures                     : {schema_failures}")
+
+    kept_total = [c for r in rows for c in r["gate"]["kept"]]
+    copied = [c for c in kept_total if c.get("copied")]
+    print(f"  kept claims that copy their source : {_pct(len(copied), len(kept_total))}")
+
+    n_answered = sum(1 for r in rows if r["gate"]["status"] == "answered")
+    n_partial = sum(1 for r in rows if r["gate"]["status"] == "partial")
+    n_abstained = sum(1 for r in rows if r["gate"]["status"] == "abstained")
+    print(f"  status - answered / partial / abstained : {n_answered} / {n_partial} / "
+          f"{n_abstained}  (of {len(rows)})")
+
+    _print_runtime_and_meta(rows, meta)
+
+    # Same three conditions as the pre-registration, applied exactly: no
+    # partial credit, no rounding a near-miss up.
+    failed = []
+    if fabricated != FABRICATED_MAX:
+        failed.append(f"fabricated {fabricated} != {FABRICATED_MAX}")
+    if b2 < B2_MIN:
+        failed.append(f"B2 {b2:.0%} < {B2_MIN:.0%}")
+    if len(hit) < CITED_EXPECTED_MIN:
+        failed.append(f"cited expected {len(hit)} < {CITED_EXPECTED_MIN}")
+
+    adopted = not failed
+    if adopted:
+        print("\n  ADOPT for the app: YES")
+    else:
+        print(f"\n  ADOPT for the app: NO — {'; '.join(failed)}")
+
+    print("\nSmall sample. Read the caveats in EVAL.md before quoting any of this.")
+    return 0 if adopted else 1

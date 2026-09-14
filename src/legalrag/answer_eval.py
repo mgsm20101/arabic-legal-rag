@@ -34,7 +34,7 @@ from .cite import audit
 from .dense import CACHE_PATH, CORPUS_PATH, DenseIndex, load_docs
 from .evaluate import binding_problem, corpus_laws, load_meta, load_questions
 from .generate import DEFAULT_MODEL, Generator, model_source, resolve_model
-from .ollama import GeneratorUnavailable, health
+from .ollama import GeneratorUnavailable, run_metadata
 
 TOP_K = 5
 
@@ -67,27 +67,40 @@ def article_number(doc_id: str) -> int | None:
     return int(num) if book == "law" and num.isdigit() else None
 
 
-def _stats_for(generator: Generator, articles: list[dict]) -> dict | None:
-    """The runtime's stats for the `generator.answer(question, articles)`
-    call that was just made, or None if it did not call the model at all.
+def _stats_for(model, before: int) -> list[dict] | None:
+    """Every call `model` made since `before` — a count of its `calls` list
+    taken just before the question was asked — or None if this runtime
+    keeps no such list at all (the hf: runtime is a plain function).
 
-    Must be called *after* `generator.answer` returns, so a non-empty
-    `articles` call reads that call's own fresh stats, not the previous
-    one's. `Generator.answer` returns early on empty `articles` — the
-    abstention rule — without touching the model, so `last_stats` on the
-    model object would still hold whatever question was last actually
-    answered; reading it unconditionally would silently mislabel this row
-    with someone else's tokens/s, truncation and cut flags.
+    Counting from a call-count snapshot, not from whether the question's
+    articles were empty, is what stays correct once one question can make
+    more than one call: Run 5 retries once on invalid JSON, so `calls`
+    holds both the cut first attempt and the retry, where reading only
+    `last_stats` would silently drop the first one. Must be called *after*
+    the question's `generator.answer` returns, so `before` refers to a
+    count taken strictly earlier.
     """
-    if not articles:
+    calls = getattr(model, "calls", None)
+    if calls is None:
         return None
-    stats = getattr(generator.model, "last_stats", None)
-    return dict(stats) if stats is not None else None
+    return calls[before:]
 
 
-def run(questions, docs, generator: Generator, model_spec: str, k: int = TOP_K) -> list[dict]:
-    index = DenseIndex(docs, cache_path=CACHE_PATH)
-    index.save()
+def _calls_of(row: dict) -> list[dict]:
+    """A row's `stats`, normalized to a list of per-call dicts regardless of
+    whether it was saved as Run 4's single dict or the list this module now
+    writes — `report()` must keep reading Run 4's saved files unchanged."""
+    s = row.get("stats")
+    if s is None:
+        return []
+    return [s] if isinstance(s, dict) else s
+
+
+def run(questions, docs, generator: Generator, model_spec: str, k: int = TOP_K,
+        index: DenseIndex | None = None) -> list[dict]:
+    if index is None:
+        index = DenseIndex(docs, cache_path=CACHE_PATH)
+        index.save()
     texts = {d["id"]: d["text"] for d in docs}
     corpus_numbers = {n for n in (article_number(d["id"]) for d in docs) if n}
 
@@ -99,10 +112,12 @@ def run(questions, docs, generator: Generator, model_spec: str, k: int = TOP_K) 
             for h in hits
             if article_number(h.id) is not None
         ]
+        model = generator.model
+        before = len(getattr(model, "calls", []))
         t = time.perf_counter()
         ans = generator.answer(q.question, articles)
         elapsed = time.perf_counter() - t
-        stats = _stats_for(generator, articles)
+        stats = _stats_for(model, before)
 
         retrieved = {a["number"] for a in articles}
         result = audit(ans.text, corpus_numbers, retrieved,
@@ -129,6 +144,19 @@ def run(questions, docs, generator: Generator, model_spec: str, k: int = TOP_K) 
         print(f"  {q.id} [{q.category:13}] {elapsed:5.1f}s  {state}  cited {cited}",
               flush=True)
     return rows
+
+
+def _read_run_meta(model_spec: str) -> dict | None:
+    """The sibling `.meta.json` an `ollama:` run wrote next to its rows, or
+    None when there isn't one (an `hf:` run, or an `ollama:` run saved
+    before this file existed) — absence is not an error here."""
+    meta_path = RUNS / f"{rows_path(model_spec).stem}.meta.json"
+    if not meta_path.exists():
+        return None
+    try:
+        return json.loads(meta_path.read_text(encoding="utf-8"))
+    except ValueError:
+        return None
 
 
 def report(rows: list[dict]) -> int:
@@ -211,19 +239,47 @@ def report(rows: list[dict]) -> int:
     # Only an `ollama:` run ever carries `stats` at all (the hf: runtime
     # exposes no such attribute — see `_stats_for`, above). Within one such
     # run, a question answered without calling the model (no articles
-    # retrieved) has no `stats` of its own; the rest do.
-    stat_rows = [r["stats"] for r in rows if r.get("stats")]
-    if stat_rows:
-        with_rate = [s for s in stat_rows
-                     if s.get("output_tokens") is not None and s.get("output_s")]
+    # retrieved) has `stats == []`, which is falsy; the rest have at least
+    # one call. `_calls_of` normalizes Run 4's single dict and the list this
+    # module now writes into the same shape, so aggregation below does not
+    # need to know which format a given row was saved in.
+    stat_rows = [r for r in rows if r.get("stats")]
+    all_calls = [c for r in stat_rows for c in _calls_of(r)]
+    if all_calls:
+        if any(c.get("load_s") is not None for c in all_calls):
+            adjusted = [
+                r["seconds"] - sum(c.get("load_s") or 0 for c in _calls_of(r))
+                for r in rows
+            ]
+            mean_adj = sum(adjusted) / max(len(adjusted), 1)
+            print(f"  mean seconds excl. load            : {mean_adj:.1f}")
+
+        with_rate = [c for c in all_calls
+                     if c.get("output_tokens") is not None and c.get("output_s")]
         if with_rate:
-            tokens = sum(s["output_tokens"] for s in with_rate)
-            secs = sum(s["output_s"] for s in with_rate)
+            tokens = sum(c["output_tokens"] for c in with_rate)
+            secs = sum(c["output_s"] for c in with_rate)
             print(f"  mean output tokens/s               : {tokens / secs:.1f}")
-        n_truncated = sum(1 for s in stat_rows if s.get("truncated"))
-        n_cut = sum(1 for s in stat_rows if s.get("cut"))
+        n_truncated = sum(1 for c in all_calls if c.get("truncated"))
+        n_cut = sum(1 for c in all_calls if c.get("cut"))
         print(f"  prompts truncated by num_ctx       : {n_truncated}")
         print(f"  answers cut by the token cap       : {n_cut}")
+
+        # More than one call for a question is a retry (Run 5 retries once
+        # on invalid JSON) — worth surfacing on its own, since a model that
+        # retries often is slower than its mean seconds alone would suggest.
+        retries = sum(max(0, len(_calls_of(r)) - 1) for r in stat_rows)
+        print(f"  model calls                        : {len(all_calls)}")
+        print(f"  retries (more than 1 call)         : {retries}")
+
+    meta = _read_run_meta(model_spec)
+    if meta is not None:
+        if meta.get("gpu_share") is not None:
+            print(f"  GPU share                          : {meta['gpu_share']:.0%}")
+        if meta.get("quantization"):
+            print(f"  quantization                       : {meta['quantization']}")
+        if meta.get("digest"):
+            print(f"  digest                             : {meta['digest'][:12]}")
 
     print("\nSmall sample. Read the caveats in EVAL.md before quoting any of this,")
     print("starting with the one that matters most: the corpus is not the gazette text.")
@@ -249,29 +305,20 @@ def _weights_line(model_spec: str) -> str | None:
     return f"weights    : {model_source(repo)}"
 
 
-def _write_ollama_meta(model_spec: str, rows_file: Path) -> Path:
+def _write_ollama_meta(model_spec: str, chat, rows_file: Path) -> Path:
     """Record what actually served an `ollama:` run alongside its answers.
 
-    GPU share is looked up by name from `/api/ps` rather than trusted from
-    the request: whether a candidate model fit on a 4 GB card is a fact
+    `run_metadata` looks the loaded model up by name from `/api/ps` rather
+    than trusting anything the request itself claimed: whether a candidate
+    model fit on a 4 GB card, and which build's digest answered, are facts
     about the server at run time, not something the client can assert.
     """
-    name = model_spec.partition(":")[2]
-    info = health()
-    gpu_share = next(
-        (m.get("gpu_share") for m in info.get("loaded", []) if m.get("name") == name),
-        None,
-    )
+    meta = run_metadata(chat)
+    meta["model"] = model_spec  # the full spec, consistent with rows' "model"
+    meta["date"] = date.today().isoformat()
     meta_path = RUNS / f"{rows_file.stem}.meta.json"
     meta_path.write_text(
-        json.dumps({
-            "model": model_spec,
-            "ollama_version": info.get("version"),
-            "gpu_share": gpu_share,
-            "date": date.today().isoformat(),
-        }, ensure_ascii=False, indent=1),
-        encoding="utf-8",
-    )
+        json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"model metadata saved to {meta_path}")
     return meta_path
 
@@ -388,7 +435,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"\nanswers saved to {rows_file} ({len(rows)} rows)")
 
     if model_spec.startswith("ollama:"):
-        _write_ollama_meta(model_spec, rows_file)
+        _write_ollama_meta(model_spec, model, rows_file)
 
     return report(rows)
 

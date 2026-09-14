@@ -127,6 +127,10 @@ def test_a_model_spec_picks_the_runtime_without_loading_anything(monkeypatch):
     assert isinstance(qwen3, OllamaChat)
     assert qwen3.model == "qwen3:4b"
     assert qwen3.think is False
+    # `ollama_chat` takes no default num_predict on purpose (a silent one
+    # would silently borrow this project's own cap for an unrelated
+    # caller) — resolve_model must still pass the real one through.
+    assert qwen3.num_predict == generate_mod.MAX_NEW_TOKENS
 
     # Not qwen3 — `think` is left unset, since its effect on other model
     # families' output is not documented.

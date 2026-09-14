@@ -19,13 +19,16 @@ from legalrag.answer_eval import (  # noqa: E402
     _weights_line,
     report,
     rows_path,
+    run,
 )
+from legalrag.evaluate import Question  # noqa: E402
 from legalrag.generate import Generator  # noqa: E402
+from legalrag.retrieve import Hit  # noqa: E402
 
 
 def _row(qid, *, answerable=True, abstained=False, cited=(), strict=(),
-         fabricated=(), ungrounded=(), uncited=(), expected=()):
-    return {
+         fabricated=(), ungrounded=(), uncited=(), expected=(), stats=None):
+    row = {
         "id": qid, "category": "direct", "answerable": answerable,
         "abstained": abstained, "cited": list(cited), "strict": list(strict),
         "fabricated": list(fabricated), "ungrounded": list(ungrounded),
@@ -34,6 +37,9 @@ def _row(qid, *, answerable=True, abstained=False, cited=(), strict=(),
         "grounded": not (fabricated or ungrounded or uncited),
         "seconds": 1.0, "text": "", "retrieved": [7],
     }
+    if stats is not None:
+        row["stats"] = stats
+    return row
 
 
 def _run(rows):
@@ -108,23 +114,30 @@ def test_each_model_writes_its_own_rows_file_and_the_default_keeps_run_3s():
 
 
 def test_a_question_answered_without_calling_the_model_carries_no_stats():
-    """`Generator.answer` returns early on empty `articles` (the abstention
-    rule) without ever touching the model, so `last_stats` on the model
-    object is stale — left over from whatever question was last actually
-    answered. Reading it unconditionally would silently mislabel this row
-    with someone else's tokens/s, truncation and cut flags."""
-    class StaleStatsModel:
-        """A model whose `last_stats` predates this call — it is never
-        invoked here, exactly like the real runtime on an empty-articles
-        question."""
-        last_stats = {"output_tokens": 99, "output_s": 1.0, "cut": True}
+    """A question the model was not called for must report `[]`, never a
+    previous question's numbers — and a runtime with no `calls` list at all
+    (the hf: runtime is a plain function) must report None, not crash.
 
-    g = Generator(model=StaleStatsModel())
+    `before` is a snapshot of `len(model.calls)` taken just before the
+    question was asked (see `run`); `_stats_for` no longer looks at
+    `Generator` or `articles` at all, so it stays correct once a single
+    question can make more than one call (Run 5's retry)."""
+    class NoCallsModel:
+        """The hf: runtime's shape: a plain callable, no `calls` list."""
 
-    assert _stats_for(g, []) is None
-    assert _stats_for(g, [{"number": 7, "text": "نص المادة"}]) == {
-        "output_tokens": 99, "output_s": 1.0, "cut": True,
-    }
+    class CallTrackingModel:
+        def __init__(self):
+            self.calls = [{"output_tokens": 99, "output_s": 1.0, "cut": True}]
+
+    assert _stats_for(NoCallsModel(), before=0) is None
+
+    tracked = CallTrackingModel()
+    # Nothing was appended after this snapshot -> no calls for this question.
+    assert _stats_for(tracked, before=len(tracked.calls)) == []
+    # Everything from the start -> the one call already recorded.
+    assert _stats_for(tracked, before=0) == [
+        {"output_tokens": 99, "output_s": 1.0, "cut": True},
+    ]
 
 
 def test_an_hf_spec_with_no_repo_name_prints_no_weights_line():
@@ -145,3 +158,113 @@ def test_an_hf_spec_with_a_repo_name_prints_a_weights_line():
     line = _weights_line("hf:Qwen/Qwen2.5-1.5B-Instruct")
     assert line is not None
     assert line.startswith("weights    : ")
+
+
+def _question(qid, question, *, answerable=True, category="direct"):
+    return Question(
+        id=qid, category=category, question=question,
+        expected_articles=[], expected_keywords=[],
+        answerable=answerable, ref_status="verified",
+    )
+
+
+class _StubIndex:
+    """Returns fixed hits keyed by question text. A question mapped to `[]`
+    means nothing was retrieved for it at all — not even an issuance
+    article — so `run` builds an empty `articles` list for it."""
+
+    def __init__(self, hits_by_question):
+        self._hits_by_question = hits_by_question
+
+    def search(self, query, k):
+        return self._hits_by_question.get(query, [])
+
+
+class _StubCallModel:
+    """A model whose `calls` list grows by one caller-supplied stats dict
+    per call, consumed in order — the shape `_stats_for`/`run` rely on."""
+
+    def __init__(self, replies):
+        self._replies = list(replies)  # [(reply_text, stats_dict), ...]
+        self.calls: list[dict] = []
+
+    def __call__(self, messages):
+        text, stats = self._replies.pop(0)
+        self.calls.append(stats)
+        return text
+
+
+def test_run_attaches_each_questions_own_model_calls_to_its_row():
+    """Each row's stats must be exactly the calls made answering THAT
+    question — not the model's cumulative state, and not another question's
+    numbers. Q3 retrieves no law article at all, so the model is never
+    called for it and its stats must be `[]`, not stale or missing."""
+    docs = [{"id": "law-7", "text": "نص المادة السابعة"}]
+    hit7 = Hit(id="law-7", law_name="", number=7, score=1.0, snippet="")
+
+    index = _StubIndex({"س1": [hit7], "س2": [hit7], "س3": []})
+    model = _StubCallModel([
+        ("جواب1 [مادة 7].", {"output_tokens": 10, "output_s": 1.0}),
+        ("جواب2 [مادة 7].", {"output_tokens": 20, "output_s": 2.0}),
+    ])
+    generator = Generator(model=model)
+    questions = [
+        _question("Q1", "س1"),
+        _question("Q2", "س2"),
+        _question("Q3", "س3", answerable=False, category="out_of_corpus"),
+    ]
+
+    rows = run(questions, docs, generator, "ollama:stub-test-model", index=index)
+
+    assert rows[0]["stats"] == [{"output_tokens": 10, "output_s": 1.0}]
+    assert rows[1]["stats"] == [{"output_tokens": 20, "output_s": 2.0}]
+    assert rows[2]["stats"] == []
+
+
+def test_report_prints_the_runtime_lines_from_per_call_stats():
+    """Aggregation is per call, not per row: a cut call and a truncated call
+    in two different rows must both count, and the tokens/s line is the sum
+    of output over the sum of seconds across every call."""
+    rows = [
+        _row("Q1", cited=[7], strict=[7], stats=[
+            {"output_tokens": 10, "output_s": 2.0, "truncated": True, "cut": False},
+        ]),
+        _row("Q2", cited=[7], strict=[7], stats=[
+            {"output_tokens": 30, "output_s": 3.0, "truncated": False, "cut": True},
+        ]),
+    ] + OOC
+    _, out = _run(rows)
+
+    assert "  mean output tokens/s               : 8.0" in out  # (10+30)/(2+3)
+    assert "  prompts truncated by num_ctx       : 1" in out
+    assert "  answers cut by the token cap       : 1" in out
+    assert "  model calls                        : 2" in out
+    assert "  retries (more than 1 call)         : 0" in out
+
+
+def test_report_counts_retries_as_calls_beyond_the_first_per_question():
+    rows = [
+        _row("Q1", cited=[7], strict=[7], stats=[
+            {"output_tokens": 5, "output_s": 1.0, "done_reason": "length"},
+            {"output_tokens": 15, "output_s": 1.0, "done_reason": "stop"},
+        ]),
+    ] + OOC
+    _, out = _run(rows)
+
+    assert "  model calls                        : 2" in out
+    assert "  retries (more than 1 call)         : 1" in out
+
+
+def test_report_still_reads_run_4_rows_whose_stats_are_a_dict():
+    """Run 4's saved rows carry `stats` as a single dict, not a list —
+    `report()` must keep reading those exactly as before this feature."""
+    rows = [
+        _row("Q1", cited=[7], strict=[7], stats={
+            "output_tokens": 67, "output_s": 5.0, "truncated": False, "cut": False,
+        }),
+    ] + OOC
+    _, out = _run(rows)
+
+    assert "  mean output tokens/s               : 13.4" in out
+    assert "  model calls                        : 1" in out
+    assert "  retries (more than 1 call)         : 0" in out

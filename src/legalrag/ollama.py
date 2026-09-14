@@ -77,6 +77,11 @@ class OllamaChat:
         self.timeout = timeout
         self._client = client
         self.last_stats: dict | None = None
+        # Every call's stats, in order — not just the latest. Run 5 retries
+        # once on invalid JSON, so a single question can make more than one
+        # call, and `last_stats` alone would hide a cut first attempt behind
+        # a successful retry.
+        self.calls: list[dict] = []
 
     def _ensure_client(self) -> httpx.Client:
         if self._client is None:
@@ -114,7 +119,9 @@ class OllamaChat:
             raise GeneratorUnavailable(_error_message(resp, self.model, self.host))
 
         data = resp.json()
-        self.last_stats = _stats(data, self.num_ctx)
+        stats = _stats(data, self.num_ctx)
+        self.last_stats = stats
+        self.calls.append(stats)
         return data["message"]["content"].strip()
 
 
@@ -156,13 +163,20 @@ def ollama_chat(
     model: str,
     host: str | None = None,
     *,
-    num_predict: int = 512,
+    num_predict: int,
     num_ctx: int = 4096,
     fmt: dict | str | None = None,
     think: bool | None = None,
     timeout: float = 600.0,
     client: httpx.Client | None = None,
 ) -> OllamaChat:
+    """Build an `OllamaChat` for `model` on a local Ollama server.
+
+    `num_predict` has no default: a silent one here would silently pick this
+    project's own token cap for an unrelated caller. `host` defaults to
+    `OLLAMA_HOST` (the module constant, itself `$OLLAMA_HOST` or localhost)
+    when not given explicitly.
+    """
     return OllamaChat(
         model=model,
         host=host or OLLAMA_HOST,
@@ -176,12 +190,15 @@ def ollama_chat(
 
 
 def health(host: str | None = None, client: httpx.Client | None = None) -> dict:
-    """Is the server up, and how much of each loaded model sits on the GPU.
+    """Is the server up, and what does it currently have loaded.
 
     `size_vram / size` on a 4 GB card is the number that says whether a
     candidate model in Run 4 runs fast (on the GPU) or falls back to the
-    much slower CPU path — not something `/api/chat`'s own timings reveal
-    on their own.
+    much slower CPU path — not something `/api/chat`'s own timings reveal on
+    their own. `digest` and `quantization` (`details.quantization_level`)
+    are recorded too, so a saved run's metadata can say *which* build of
+    "gemma3:4b" actually answered — Ollama updates a tag's bytes in place on
+    a re-pull, so the name alone does not pin that down.
     """
     h = host or OLLAMA_HOST
     owns_client = client is None
@@ -193,23 +210,79 @@ def health(host: str | None = None, client: httpx.Client | None = None) -> dict:
         except httpx.TransportError as e:
             return {"reachable": False, "error": str(e)}
 
-        version = None
-        if 200 <= version_resp.status_code < 300:
-            version = version_resp.json().get("version")
+        try:
+            version = None
+            if 200 <= version_resp.status_code < 300:
+                version = version_resp.json().get("version")
 
-        loaded = []
-        if 200 <= ps_resp.status_code < 300:
-            for m in ps_resp.json().get("models", []):
-                size = m.get("size") or 0
-                size_vram = m.get("size_vram") or 0
-                loaded.append({
-                    "name": m.get("name"),
-                    "size": size,
-                    "size_vram": size_vram,
-                    "gpu_share": (size_vram / size) if size else 0.0,
-                })
+            loaded = []
+            if 200 <= ps_resp.status_code < 300:
+                for m in ps_resp.json().get("models", []):
+                    size = m.get("size") or 0
+                    size_vram = m.get("size_vram") or 0
+                    details = m.get("details") or {}
+                    loaded.append({
+                        "name": m.get("name"),
+                        "size": size,
+                        "size_vram": size_vram,
+                        # None, not 0.0: a share of zero is a measurement: a
+                        # missing or zero `size` is the absence of one.
+                        "gpu_share": (size_vram / size) if size else None,
+                        "digest": m.get("digest"),
+                        "quantization": details.get("quantization_level"),
+                    })
+        except ValueError as e:
+            # `.json()` on a truncated or non-JSON body raises here. A
+            # health check reporting that badly-formed response as an
+            # unhandled exception would be worse than just saying so.
+            return {"reachable": False, "error": f"malformed response from Ollama: {e}"}
 
         return {"reachable": True, "version": version, "loaded": loaded}
     finally:
         if owns_client:
             c.close()
+
+
+def _matches_spec(loaded_name: str, spec_name: str) -> bool:
+    """Ollama reports an untagged pull's name with `:latest` appended, so
+    `ollama:llama3` (spec_name `"llama3"`) must still find `"llama3:latest"`
+    in `/api/ps` — but only when the spec itself carried no tag; a spec that
+    already names a tag must match that tag exactly."""
+    if loaded_name == spec_name:
+        return True
+    return ":" not in spec_name and loaded_name == f"{spec_name}:latest"
+
+
+def run_metadata(chat: OllamaChat, client: httpx.Client | None = None) -> dict:
+    """What actually served this run, worth pinning to disk next to its
+    answers: the Ollama build, how much of the model sat on the GPU, and
+    enough of the model's identity (digest, quantization) that "gemma3:4b"
+    a month from now is provably comparable to today's — a tag can be
+    re-pulled to different bytes, but a digest cannot.
+
+    Reuses `chat`'s own client when `client` is not given, rather than
+    `health`'s usual fresh one: `chat` may hold a test double (or simply an
+    already-open connection to the right host), and defaulting to a brand
+    new real `httpx.Client` here would silently bypass it.
+    """
+    info = health(host=chat.host, client=client if client is not None else chat._ensure_client())
+    if not info.get("reachable"):
+        return {
+            "model": chat.model, "ollama_version": None, "gpu_share": None,
+            "digest": None, "quantization": None,
+            "reachable": False, "error": info.get("error"),
+        }
+
+    match = next(
+        (m for m in info.get("loaded", []) if _matches_spec(m.get("name") or "", chat.model)),
+        None,
+    )
+    return {
+        "model": chat.model,
+        "ollama_version": info.get("version"),
+        "gpu_share": match.get("gpu_share") if match else None,
+        "digest": match.get("digest") if match else None,
+        "quantization": match.get("quantization") if match else None,
+        "reachable": True,
+        "error": None,
+    }

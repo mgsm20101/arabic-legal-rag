@@ -24,19 +24,36 @@ Run: ``python tasks.py answer-eval``
 from __future__ import annotations
 
 import json
+import re
 import sys
 import time
+from datetime import date
 from pathlib import Path
 
 from .cite import audit
 from .dense import CACHE_PATH, CORPUS_PATH, DenseIndex, load_docs
 from .evaluate import binding_problem, corpus_laws, load_meta, load_questions
-from .generate import DEFAULT_MODEL, Generator
+from .generate import DEFAULT_MODEL, Generator, resolve_model
+from .ollama import GeneratorUnavailable, health
 
 TOP_K = 5
 
 RUNS = Path("runs")
 ROWS_PATH = RUNS / "answer_eval.json"
+
+
+def rows_path(spec: str) -> Path:
+    """Where a run's raw answers are saved.
+
+    The default spec keeps Run 3's exact file name, so `--report-only` with
+    no `--model` keeps reproducing that saved run. Any other spec gets its
+    own file, named from the spec itself — otherwise a second model's run
+    would silently overwrite the first's saved answers.
+    """
+    if spec == "hf:" + DEFAULT_MODEL:
+        return ROWS_PATH
+    slug = re.sub(r"[^A-Za-z0-9._-]", "-", spec)
+    return RUNS / f"answer_eval-{slug}.json"
 
 
 def _pct(n: int, d: int) -> str:
@@ -50,7 +67,7 @@ def article_number(doc_id: str) -> int | None:
     return int(num) if book == "law" and num.isdigit() else None
 
 
-def run(questions, docs, generator: Generator, k: int = TOP_K) -> list[dict]:
+def run(questions, docs, generator: Generator, model_spec: str, k: int = TOP_K) -> list[dict]:
     index = DenseIndex(docs, cache_path=CACHE_PATH)
     index.save()
     texts = {d["id"]: d["text"] for d in docs}
@@ -67,25 +84,31 @@ def run(questions, docs, generator: Generator, k: int = TOP_K) -> list[dict]:
         t = time.perf_counter()
         ans = generator.answer(q.question, articles)
         elapsed = time.perf_counter() - t
+        # `generator.model` is already resolved (never None here), so this
+        # reads the runtime's own last-call timings without loading anything.
+        # A plain function (the `hf:` runtime) simply has no such attribute.
+        stats = getattr(generator.model, "last_stats", None)
 
         retrieved = {a["number"] for a in articles}
         result = audit(ans.text, corpus_numbers, retrieved,
                        context=[a["text"] for a in articles])
         expected = {n for n in (article_number(a) for a in q.expected_articles) if n}
 
-        rows.append(
-            {
-                "id": q.id,
-                "category": q.category,
-                "answerable": q.answerable,
-                "text": ans.text,
-                "seconds": elapsed,
-                "retrieved": sorted(retrieved),
-                "expected": sorted(expected),
-                "cited_expected": bool(expected & set(result["cited"])),
-                **result,
-            }
-        )
+        row = {
+            "id": q.id,
+            "category": q.category,
+            "answerable": q.answerable,
+            "model": model_spec,
+            "text": ans.text,
+            "seconds": elapsed,
+            "retrieved": sorted(retrieved),
+            "expected": sorted(expected),
+            "cited_expected": bool(expected & set(result["cited"])),
+            **result,
+        }
+        if stats is not None:
+            row["stats"] = dict(stats)
+        rows.append(row)
         state = "ABSTAIN" if result["abstained"] else "answer "
         cited = result["cited"] or "-"
         print(f"  {q.id} [{q.category:13}] {elapsed:5.1f}s  {state}  cited {cited}",
@@ -160,6 +183,8 @@ def report(rows: list[dict]) -> int:
     print("\n" + "=" * 68)
     print("  beyond the criteria")
     print("=" * 68)
+    model_spec = rows[0]["model"] if rows and "model" in rows[0] else "hf:" + DEFAULT_MODEL
+    print(f"  model                               : {model_spec}")
     hit = [r for r in scored if r["cited_expected"]]
     strict = [r for r in scored if r["strict"]]
     print(f"  cited the expected article         : {_pct(len(hit), len(scored))}"
@@ -168,19 +193,71 @@ def report(rows: list[dict]) -> int:
     mean_s = sum(r["seconds"] for r in rows) / max(len(rows), 1)
     print(f"  mean seconds per answer            : {mean_s:.1f}")
 
+    # Only an `ollama:` run carries `stats` (see `run`, above) — a run's rows
+    # either all have it or none do, so any row with it stands for the batch.
+    stat_rows = [r["stats"] for r in rows if r.get("stats")]
+    if stat_rows:
+        with_rate = [s for s in stat_rows
+                     if s.get("output_tokens") is not None and s.get("output_s")]
+        if with_rate:
+            tokens = sum(s["output_tokens"] for s in with_rate)
+            secs = sum(s["output_s"] for s in with_rate)
+            print(f"  mean output tokens/s                : {tokens / secs:.1f}")
+        n_truncated = sum(1 for s in stat_rows if s.get("truncated"))
+        n_cut = sum(1 for s in stat_rows if s.get("cut"))
+        print(f"  prompts truncated by num_ctx        : {n_truncated}")
+        print(f"  answers cut by the token cap        : {n_cut}")
+
     print("\nSmall sample. Read the caveats in EVAL.md before quoting any of this,")
     print("starting with the one that matters most: the corpus is not the gazette text.")
     return 0 if (b1 and b2) else 1
 
 
+def _write_ollama_meta(model_spec: str, rows_file: Path) -> Path:
+    """Record what actually served an `ollama:` run alongside its answers.
+
+    GPU share is looked up by name from `/api/ps` rather than trusted from
+    the request: whether a candidate model fit on a 4 GB card is a fact
+    about the server at run time, not something the client can assert.
+    """
+    name = model_spec.partition(":")[2]
+    info = health()
+    gpu_share = next(
+        (m.get("gpu_share") for m in info.get("loaded", []) if m.get("name") == name),
+        None,
+    )
+    meta_path = RUNS / f"{rows_file.stem}.meta.json"
+    meta_path.write_text(
+        json.dumps({
+            "model": model_spec,
+            "ollama_version": info.get("version"),
+            "gpu_share": gpu_share,
+            "date": date.today().isoformat(),
+        }, ensure_ascii=False, indent=1),
+        encoding="utf-8",
+    )
+    print(f"model metadata saved to {meta_path}")
+    return meta_path
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = argv or []
 
-    if "--report-only" in argv:
-        if not ROWS_PATH.exists():
-            print(f"no saved run at {ROWS_PATH}. Run `python tasks.py answer-eval` first.")
+    model_spec = "hf:" + DEFAULT_MODEL
+    if "--model" in argv:
+        i = argv.index("--model")
+        if i + 1 >= len(argv):
+            print("--model requires a value, e.g. --model ollama:qwen3:4b")
             return 2
-        rows = json.loads(ROWS_PATH.read_text(encoding="utf-8"))
+        model_spec = argv[i + 1]
+    rows_file = rows_path(model_spec)
+
+    if "--report-only" in argv:
+        if not rows_file.exists():
+            print(f"no saved run at {rows_file}. "
+                  f"Run `python tasks.py answer-eval --model {model_spec}` first.")
+            return 2
+        rows = json.loads(rows_file.read_text(encoding="utf-8"))
         # Re-audit rather than replay the stored verdicts. The audit has been
         # wrong twice already — once on B1's wording, once on citations lifted
         # out of copied statute text — and each time the answers themselves
@@ -200,7 +277,7 @@ def main(argv: list[str] | None = None) -> int:
                 context=[by_number[n] for n in retrieved if n in by_number],
             ))
             r["cited_expected"] = bool(set(r["expected"]) & set(r["cited"]))
-        print(f"re-audited {len(rows)} saved answers from {ROWS_PATH} "
+        print(f"re-audited {len(rows)} saved answers from {rows_file} "
               "(no model loaded)\n")
         return report(rows)
 
@@ -236,15 +313,20 @@ def main(argv: list[str] | None = None) -> int:
     n_ooc = sum(1 for q in questions if not q.answerable)
     print(f"questions  : {len(questions)} ({n_ooc} out_of_corpus)")
     print(f"retrieval  : dense, top-{TOP_K} (Run 2 winner)")
-    print(f"generator  : {DEFAULT_MODEL}, local CPU, greedy\n")
+    print(f"generator  : {model_spec}\n")
 
-    print(f"loading {DEFAULT_MODEL} ...", flush=True)
+    print(f"loading {model_spec} ...", flush=True)
     t = time.perf_counter()
-    generator = Generator()
-    _ = generator.model
-    print(f"  ready ({time.perf_counter() - t:.1f}s)\n", flush=True)
-
-    rows = run(questions, docs, generator)
+    try:
+        generator = Generator(model=resolve_model(model_spec))
+        print(f"  ready ({time.perf_counter() - t:.1f}s)\n", flush=True)
+        rows = run(questions, docs, generator, model_spec)
+    except GeneratorUnavailable as e:
+        # No traceback: this is an environment problem (server not running,
+        # model not pulled), not a bug, and the message already says what to
+        # do about it.
+        print(str(e))
+        return 5
 
     # Persist before reporting. The first run of this eval cost 45 minutes of
     # CPU and kept none of the answers, so the one question worth asking after
@@ -252,9 +334,12 @@ def main(argv: list[str] | None = None) -> int:
     # paying for the whole run again. The report is cheap to recompute; the
     # generation is not.
     RUNS.mkdir(exist_ok=True)
-    ROWS_PATH.write_text(
+    rows_file.write_text(
         json.dumps(rows, ensure_ascii=False, indent=1), encoding="utf-8")
-    print(f"\nanswers saved to {ROWS_PATH} ({len(rows)} rows)")
+    print(f"\nanswers saved to {rows_file} ({len(rows)} rows)")
+
+    if model_spec.startswith("ollama:"):
+        _write_ollama_meta(model_spec, rows_file)
 
     return report(rows)
 

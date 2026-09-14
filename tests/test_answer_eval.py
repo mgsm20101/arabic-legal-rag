@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from legalrag.answer_eval import report  # noqa: E402
+from legalrag.answer_eval import DEFAULT_MODEL, ROWS_PATH, report, rows_path  # noqa: E402
 
 
 def _row(qid, *, answerable=True, abstained=False, cited=(), strict=(),
@@ -77,3 +77,23 @@ def test_b2_fails_below_the_threshold():
            _row("Q17", answerable=False, abstained=False, cited=[7])]
     rows = [_row("Q1", cited=[7], strict=[7])] + ooc
     assert "B2: FAIL" in _run(rows)[1]     # 1/2 = 50% < 80%
+
+
+def test_each_model_writes_its_own_rows_file_and_the_default_keeps_run_3s():
+    """Run 4 changes only the model, one candidate at a time — if every
+    candidate wrote to `runs/answer_eval.json` the way Run 3 did, the second
+    model's run would silently overwrite the first's saved answers, and
+    `--report-only` could no longer reproduce Run 3 at all."""
+    assert rows_path("hf:" + DEFAULT_MODEL) == ROWS_PATH
+
+    assert rows_path("ollama:qwen3:4b") == Path("runs/answer_eval-ollama-qwen3-4b.json")
+    assert rows_path("ollama:qwen2.5:1.5b-instruct") == Path(
+        "runs/answer_eval-ollama-qwen2.5-1.5b-instruct.json"
+    )
+    # Every character outside [A-Za-z0-9._-] becomes '-' — only the ':' and
+    # '/' here qualify, so the dots in a version-like name pass through
+    # untouched. A non-default `hf:` spec gets its own file too: the default
+    # exemption is for one exact string, not the whole "hf:" prefix.
+    assert rows_path("hf:Qwen/Qwen2.5-3B-Instruct") == Path(
+        "runs/answer_eval-hf-Qwen-Qwen2.5-3B-Instruct.json"
+    )

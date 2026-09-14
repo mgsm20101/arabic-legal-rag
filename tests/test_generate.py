@@ -11,6 +11,8 @@ and a meaningless number.
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from legalrag.cite import ABSTAIN_MARKER, audit  # noqa: E402
@@ -19,7 +21,9 @@ from legalrag.generate import (  # noqa: E402
     Generator,
     build_messages,
     format_articles,
+    resolve_model,
 )
+from legalrag.ollama import OllamaChat  # noqa: E402
 
 ARTICLES = [
     {"number": 7, "text": "يلتزم المتحكم بإبلاغ المركز خلال اثنتين وسبعين ساعة."},
@@ -96,3 +100,39 @@ def test_a_recalled_article_fails_the_audit_end_to_end():
     r = audit(a.text, set(range(1, 50)), set(a.article_numbers))
     assert r["ungrounded"] == [30]
     assert r["grounded"] is False
+
+
+def test_a_model_spec_picks_the_runtime_without_loading_anything(monkeypatch):
+    """Run 4 changes only the model; `resolve_model` is the switch. Deciding
+    which runtime a spec means must not itself load a checkpoint or touch the
+    network — the test suite has to stay model-free and offline."""
+    import legalrag.generate as generate_mod
+
+    calls = []
+
+    def fake_load_model(name, max_new_tokens):
+        calls.append((name, max_new_tokens))
+        return "STUB-HF-MODEL"
+
+    monkeypatch.setattr(generate_mod, "load_model", fake_load_model)
+
+    hf_model = resolve_model("hf:Qwen/Qwen2.5-1.5B-Instruct")
+    assert hf_model == "STUB-HF-MODEL"
+    assert calls == [("Qwen/Qwen2.5-1.5B-Instruct", generate_mod.MAX_NEW_TOKENS)]
+
+    # qwen3 thinks by default; unchecked, its thinking tokens would silently
+    # eat the 128-token cap before a citation is ever written.
+    qwen3 = resolve_model("ollama:qwen3:4b")
+    assert isinstance(qwen3, OllamaChat)
+    assert qwen3.model == "qwen3:4b"
+    assert qwen3.think is False
+
+    # Not qwen3 — `think` is left unset, since its effect on other model
+    # families' output is not documented.
+    qwen25 = resolve_model("ollama:qwen2.5:7b-instruct")
+    assert isinstance(qwen25, OllamaChat)
+    assert qwen25.model == "qwen2.5:7b-instruct"
+    assert qwen25.think is None
+
+    with pytest.raises(ValueError):
+        resolve_model("bogus:x")

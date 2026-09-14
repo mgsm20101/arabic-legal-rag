@@ -8,12 +8,14 @@ the exact set of articles the retriever handed over, and `cite` has no model in
 it, so the check holds regardless of what generated the text.
 
 **Local, on CPU, by constraint not by preference.** `llama-cpp-python` has no
-wheel for Python 3.14 at all and Ollama is not installed, so the runtime is
-`transformers` on the torch that is already here. That fixes the size: a 3B
-instruct model is what a CPU answers 20 questions with in minutes rather than
-hours. The number that matters for M2 is citation discipline, and a small model
-measures that honestly — arguably more honestly, since a larger one hides
-grounding failures behind fluency.
+wheel for Python 3.14 at all, so the runtime here is `transformers` on the
+torch that is already here — one of two runtimes `resolve_model` below now
+chooses between; a local Ollama server is the other (ADR-023; ADR-024 will
+hold the measured choice). That fixes the size: a 3B instruct model is what
+a CPU answers 20 questions with in minutes rather than hours. The number
+that matters for M2 is citation discipline, and a small model measures that
+honestly — arguably more honestly, since a larger one hides grounding
+failures behind fluency.
 
 **The prompt asks for one citation form and the audit measures two.** The gap
 between `[مادة N]` and every other way Arabic cites an article is the model's
@@ -28,6 +30,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .cite import ABSTAIN_MARKER
+from .ollama import ollama_chat
 
 # Measured, not chosen by size. Qwen2.5-3B-Instruct was tried first and is
 # unusable here: its checkpoint is bfloat16, this CPU has no native bf16, so
@@ -49,7 +52,10 @@ DTYPE = "float32"
 MAX_NEW_TOKENS = 128
 
 # Greedy. A temperature would make the citation numbers themselves vary between
-# runs, and B1 is a claim about the system, not about one sample of it.
+# runs, and B1 is a claim about the system, not about one sample of it. Used
+# below as `do_sample = TEMPERATURE > 0`. `ollama.py` fixes the same 0.0/seed
+# 0 as its own literal rather than importing this one: `ollama_chat` is
+# imported from there into here, so the reverse import would be a cycle.
 TEMPERATURE = 0.0
 
 SYSTEM = f"""أنت مساعد قانوني. تجيب **فقط** من نصوص المواد المعطاة لك أدناه.
@@ -113,12 +119,43 @@ def load_model(name: str = DEFAULT_MODEL, max_new_tokens: int = MAX_NEW_TOKENS):
         inputs = tok([prompt], return_tensors="pt")
         with torch.no_grad():
             out = model.generate(
-                **inputs, max_new_tokens=max_new_tokens, do_sample=False,
-                pad_token_id=tok.eos_token_id)
+                **inputs, max_new_tokens=max_new_tokens,
+                do_sample=TEMPERATURE > 0, pad_token_id=tok.eos_token_id)
         return tok.decode(out[0][inputs["input_ids"].shape[1]:],
                           skip_special_tokens=True).strip()
 
     return run
+
+
+def resolve_model(spec: str, max_new_tokens: int = MAX_NEW_TOKENS):
+    """`spec` names the generation runtime: `hf:<repo>` loads a transformers
+    checkpoint in-process via `load_model`; `ollama:<name>` talks to a local
+    Ollama server instead via `ollama.ollama_chat` — the two runtimes ADR-023
+    added. A single string is what a `--model` CLI flag and a saved run's
+    `"model"` field both need to be: one value that round-trips between them.
+
+    The part of `spec` after `ollama:` may itself contain a colon (Ollama tags
+    look like `qwen3:4b`), so only the *first* colon separates the prefix.
+    """
+    prefix, _, rest = spec.partition(":")
+
+    if prefix == "hf":
+        return load_model(rest, max_new_tokens)
+
+    if prefix == "ollama":
+        name = rest
+        family = name.partition(":")[0]
+        # qwen3 thinks by default, and unlike an ordinary reply, thinking
+        # tokens would silently consume the 128-token cap and the time
+        # budget before any citation is written. `think` is left unset for
+        # every other family because its effect on a non-thinking model's
+        # output is not documented.
+        think = False if family == "qwen3" else None
+        return ollama_chat(name, num_predict=max_new_tokens, think=think)
+
+    raise ValueError(
+        f"unknown model spec {spec!r} — expected 'hf:<repo>' or 'ollama:<name>'"
+    )
 
 
 class Generator:

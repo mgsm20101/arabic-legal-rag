@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>اسأل مستنداتك — كل جملة بمصدرها</title>
+<link rel="stylesheet" href="app.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<a class="skip-link" href="#question">انتقل إلى السؤال</a>
+
+<svg class="sprite" aria-hidden="true" focusable="false">
+  <symbol id="i-seal" viewBox="0 0 24 24"><path d="M12 3l7 3v5.5c0 4.3-2.9 8.1-7 9.5-4.1-1.4-7-5.2-7-9.5V6z"/><path d="m8.8 12.2 2.2 2.2 4.2-4.4"/></symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 15V4.5"/><path d="M7.5 9 12 4.5 16.5 9"/><path d="M4.5 14.5v3A2.5 2.5 0 0 0 7 20h10a2.5 2.5 0 0 0 2.5-2.5v-3"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M13.5 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5z"/><path d="M13.5 3v5.5H19"/></symbol>
+  <symbol id="i-page" viewBox="0 0 24 24"><path d="M13.5 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5z"/><path d="M9 13h6M9 16.5h4"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4.5 7h15"/><path d="M9.5 7V5A1.5 1.5 0 0 1 11 3.5h2A1.5 1.5 0 0 1 14.5 5v2"/><path d="m6.5 7 .9 12a1.5 1.5 0 0 0 1.5 1.5h6.2a1.5 1.5 0 0 0 1.5-1.5l.9-12"/><path d="M10.25 11v5.5M13.75 11v5.5"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="M19 12H5.5"/><path d="M11 6.5 5.5 12l5.5 5.5"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5.5v13M5.5 12h13"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="m6.5 6.5 11 11M17.5 6.5l-11 11"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+  <symbol id="i-partial" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5a8.5 8.5 0 0 0 0 17z" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-abstain" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M8.5 12h7"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.3 4.4 3 17.2A2 2 0 0 0 4.7 20h14.6a2 2 0 0 0 1.7-2.8L13.7 4.4a2 2 0 0 0-3.4 0z"/><path d="M12 9.5v4M12 16.8v.2"/></symbol>
+  <symbol id="i-retry" viewBox="0 0 24 24"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3"/><path d="M4.5 4.5v4h4"/></symbol>
+</svg>
+
+<header class="app-header" id="app-header">
+  <div class="brand">
+    <svg class="brand-mark" aria-hidden="true" focusable="false"><use href="#i-seal"></use></svg>
+    <div class="brand-text">
+      <h1>اسأل مستنداتك — كل جملة بمصدرها</h1>
+      <p class="subtitle">محلي بالكامل · الإجابة من المستندات المرفوعة فقط · كل جملة معروضة لها مصدر تحقّق منه الكود</p>
+    </div>
+  </div>
+  <p class="health" id="health" data-state="pending">
+    <span class="health-dot" aria-hidden="true"></span>
+    <span id="health-text">جارٍ فحص النموذج…</span>
+  </p>
+</header>
+
+<main class="layout" id="layout">
+
+  <section class="panel docs" id="docs-panel" aria-labelledby="docs-title">
+    <div class="panel-head">
+      <h2 class="panel-title" id="docs-title">المستندات <span class="count" id="docs-count" hidden></span></h2>
+    </div>
+
+    <form class="upload" id="upload-form" novalidate>
+      <label class="field-label" for="file-input">مستند جديد <span class="req" aria-hidden="true">*</span></label>
+      <div class="file-picker" id="file-picker">
+        <input class="file-input" type="file" id="file-input" name="file" accept=".pdf,.txt" required aria-describedby="file-hint file-error">
+        <span class="file-face" aria-hidden="true">
+          <svg class="icon" focusable="false"><use href="#i-file"></use></svg>
+          <span class="file-name" id="file-name">اختر ملفاً أو أفلته هنا</span>
+        </span>
+      </div>
+      <p class="hint" id="file-hint">PDF أو TXT · حتى 20 م.ب</p>
+      <p class="field-error" id="file-error" hidden></p>
+      <button class="btn btn-primary btn-block" type="submit" id="upload-btn" disabled>
+        <svg class="icon" aria-hidden="true" focusable="false"><use href="#i-upload"></use></svg>
+        <span class="btn-label" data-idle="رفع" data-busy="جارٍ الرفع…">رفع</span>
+      </button>
+    </form>
+
+    <div class="docs-body">
+      <p class="list-caption" id="docs-caption" hidden>المستندات المحدَّدة هي نطاق السؤال.</p>
+      <ul class="doc-list" id="doc-list" aria-labelledby="docs-title" aria-describedby="docs-caption"></ul>
+      <div class="empty-state" id="docs-empty" hidden>
+        <svg class="empty-mark" aria-hidden="true" focusable="false"><use href="#i-file"></use></svg>
+        <p>لا توجد مستندات بعد. ارفع ملف PDF أو TXT للبدء.</p>
+      </div>
+      <div class="load-error" id="docs-error" hidden>
+        <p id="docs-error-text"></p>
+        <button class="btn btn-quiet btn-sm" type="button" id="docs-retry">
+          <svg class="icon" aria-hidden="true" focusable="false"><use href="#i-retry"></use></svg>
+          <span class="btn-label">إعادة المحاولة</span>
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel chat" id="chat-panel" aria-labelledby="chat-title">
+    <div class="panel-head">
+      <h2 class="panel-title" id="chat-title">المحادثة</h2>
+      <button class="btn btn-quiet btn-sm" type="button" id="new-chat" disabled>
+        <svg class="icon" aria-hidden="true" focusable="false"><use href="#i-plus"></use></svg>
+        <span class="btn-label">محادثة جديدة</span>
+      </button>
+    </div>
+
+    <div class="thread-scroll">
+      <div class="thread-intro" id="thread-intro">
+        <svg class="intro-mark" aria-hidden="true" focusable="false"><use href="#i-seal"></use></svg>
+        <p class="intro-title">اسأل عن مستنداتك</p>
+        <p class="intro-text">تأتي الإجابة جملاً، ومع كل جملة مصدرها في المستند. اضغط على المصدر لتقرأ نصه الأصلي.</p>
+      </div>
+      <div class="thread" id="thread" role="log" aria-live="polite" aria-labelledby="chat-title"></div>
+    </div>
+
+    <form class="composer" id="ask-form" novalidate>
+      <div class="composer-body">
+        <label class="field-label" for="question">سؤالك <span class="req" aria-hidden="true">*</span></label>
+        <textarea id="question" name="question" rows="3" maxlength="500" required
+          placeholder="اكتب سؤالاً عن المستندات المحدَّدة…"
+          aria-describedby="question-error scope-note question-hint question-count"></textarea>
+        <p class="field-error" id="question-error" hidden></p>
+        <div class="composer-foot">
+          <div class="composer-notes">
+            <p class="scope-note" id="scope-note" data-tone="muted">جارٍ تحميل المستندات…</p>
+            <p class="hint" id="question-hint"><kbd lang="en">Enter</kbd> للإرسال · <kbd lang="en">Shift</kbd>+<kbd lang="en">Enter</kbd> لسطر جديد</p>
+          </div>
+          <span class="counter" id="question-count" data-tone="muted">0/500</span>
+          <button class="btn btn-primary" type="submit" id="ask-btn" disabled>
+            <svg class="icon" aria-hidden="true" focusable="false"><use href="#i-send"></use></svg>
+            <span class="btn-label" data-idle="اسأل" data-busy="جارٍ الإجابة…">اسأل</span>
+          </button>
+        </div>
+      </div>
+    </form>
+  </section>
+
+  <aside class="source-panel" id="source-panel" aria-labelledby="source-title" hidden>
+    <div class="source-head">
+      <p class="eyebrow">
+        <svg class="icon" aria-hidden="true" focusable="false"><use href="#i-page"></use></svg>
+        <span>المصدر</span>
+      </p>
+      <button class="btn btn-quiet btn-sm" type="button" id="source-close">
+        <svg class="icon" aria-hidden="true" focusable="false"><use href="#i-close"></use></svg>
+        <span class="btn-label">إغلاق</span>
+      </button>
+    </div>
+    <h2 class="source-title" id="source-title" tabindex="-1"></h2>
+    <dl class="source-meta">
+      <div class="meta-item"><dt>الموضع</dt><dd id="source-label"></dd></div>
+      <div class="meta-item" id="source-page-row"><dt>الصفحة</dt><dd id="source-page"></dd></div>
+    </dl>
+    <blockquote class="source-text" id="source-text"></blockquote>
+    <p class="source-foot">نص المقطع كما استُخرج من المستند.</p>
+  </aside>
+
+</main>
+
+<div class="scrim" id="scrim" aria-hidden="true" hidden></div>
+<div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
+
+<footer class="app-footer" id="app-footer">
+  <p>للعرض فقط — ليست استشارة قانونية. الإجابات مولّدة آلياً من المستندات المرفوعة وقد تكون ناقصة.</p>
+</footer>
+
+<template id="tpl-icon">
+  <svg class="icon" aria-hidden="true" focusable="false"><use href="#i-check"></use></svg>
+</template>
+
+<template id="tpl-doc-skeleton">
+  <li class="doc doc-skeleton" aria-hidden="true">
+    <span class="sk sk-box"></span>
+    <span class="doc-body">
+      <span class="sk sk-line sk-w-70"></span>
+      <span class="sk sk-line sk-thin sk-w-45"></span>
+    </span>
+  </li>
+</template>
+
+<template id="tpl-doc">
+  <li class="doc">
+    <input class="doc-check" type="checkbox" checked>
+    <div class="doc-body">
+      <label class="doc-title"><bdi class="doc-title-text"></bdi></label>
+      <p class="doc-meta">
+        <span class="doc-kind"></span>
+        <span class="doc-pages"></span>
+        <span class="doc-size"></span>
+        <time class="doc-date"></time>
+      </p>
+    </div>
+    <button class="btn btn-quiet btn-danger btn-sm doc-delete" type="button">
+      <svg class="icon" aria-hidden="true" focusable="false"><use href="#i-trash"></use></svg>
+      <span class="btn-label" data-idle="حذف" data-busy="جارٍ الحذف…">حذف</span>
+    </button>
+  </li>
+</template>
+
+<template id="tpl-doc-pending">
+  <li class="doc doc-pending">
+    <span class="sk sk-box" aria-hidden="true"></span>
+    <div class="doc-body">
+      <p class="doc-title"><bdi class="pending-name"></bdi></p>
+      <p class="doc-meta"><span>جارٍ تجهيز المستند…</span><span class="elapsed" aria-hidden="true" hidden></span></p>
+      <span class="sk sk-progress" aria-hidden="true"></span>
+    </div>
+  </li>
+</template>
+
+<template id="tpl-exchange">
+  <article class="exchange">
+    <div class="question">
+      <p class="question-label">سؤالك</p>
+      <p class="question-text"></p>
+    </div>
+    <div class="answer" data-status="loading" aria-busy="true">
+      <div class="skeleton" aria-hidden="true">
+        <span class="sk sk-line sk-w-95"></span>
+        <span class="sk sk-line sk-w-80"></span>
+        <span class="sk sk-line sk-w-55"></span>
+      </div>
+      <p class="loading-text">جارٍ البحث في المستندات وصياغة الإجابة…<span class="elapsed" aria-hidden="true" hidden></span></p>
+    </div>
+  </article>
+</template>
+
+<template id="tpl-cite">
+  <button class="cite" type="button" aria-controls="source-panel" aria-expanded="false">
+    <svg class="icon" aria-hidden="true" focusable="false"><use href="#i-page"></use></svg>
+    <span class="cite-label"></span>
+  </button>
+</template>
+</body>
+</html>

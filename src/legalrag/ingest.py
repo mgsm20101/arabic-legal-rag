@@ -186,6 +186,17 @@ def _split_issuance(
     ]
 
 
+def article_headers(text: str) -> list[tuple[int, int, str, int]]:
+    """Every article header `parse` splits `text` on, in document order:
+    ``(start, body_start, book, number)``.
+
+    The same scan `parse` runs, exposed for a caller that needs a header's
+    POSITION — the upload chunker maps it to a page — so what counts as a
+    header is never re-implemented outside this module.
+    """
+    return _headers(text)
+
+
 def extraction_problems(text: str, name: str) -> list[str]:
     """Catch the three ways Arabic PDF extraction fails *plausibly*.
 

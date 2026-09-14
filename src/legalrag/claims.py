@@ -452,3 +452,36 @@ def build_generators(spec: str, contract: str) -> ClaimsGenerator:
             spec, max_new_tokens=RELEVANCE_MAX_TOKENS, fmt=RELEVANCE_SCHEMA)
         return ClaimsGenerator(model=claims_model, relevance_model=relevance_model)
     return ClaimsGenerator(model=claims_model)
+
+
+def final_abstain_reason(
+    abstain_reason: str | None, parsed: dict | None, gate_result: dict,
+) -> str | None:
+    """Why an answer ended with nothing to show, or None when it kept a claim.
+
+    `ClaimsAnswer.abstain_reason` only names what the generator decided
+    before any claim existed. The gate can still empty an answer afterwards,
+    and a count of the generator's reasons alone misses that: in Run 6
+    (EVAL.md) Q012's three claims were all dropped as ungrounded, and its
+    row carried no reason at all. The first of these that applies:
+
+    1. the generator's own reason: "no_sources", "relevance_no" or
+       "relevance_failure";
+    2. "schema_failure": two invalid claims-JSON attempts (`parsed is None`);
+    3. "model_abstained": the claims reply itself said `abstain: true`;
+    4. "all_dropped": `cite.gate` kept nothing and dropped something;
+    5. "no_claims": the gate kept nothing and had nothing to drop;
+    6. None.
+
+    `gate_result` is `cite.gate`'s verdict on `parsed`. Deliberately not
+    wired into `answer_report` yet: a saved run's report must not change.
+    """
+    if abstain_reason:
+        return abstain_reason
+    if parsed is None:
+        return "schema_failure"
+    if parsed.get("abstain"):
+        return "model_abstained"
+    if not gate_result["kept"]:
+        return "all_dropped" if gate_result["dropped"] else "no_claims"
+    return None

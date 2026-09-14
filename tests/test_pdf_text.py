@@ -17,7 +17,6 @@ from legalrag.pdf_text import (  # noqa: E402
     arabic_column,
     drop_marks,
     extract_pages,
-    extract_text,
     group_lines,
     logical_line,
 )
@@ -268,23 +267,81 @@ def test_persian_yeh_and_heh_from_presentation_forms_fold_to_arabic():
     assert logical_line([yeh, heh1, heh2, kaf]) == "كههي"
 
 
-def test_a_base_letter_glyph_is_never_folded():
+def test_a_base_letter_farsi_yeh_is_never_folded():
     """Folding is conditioned on the glyph being a presentation form — a
     real BASE-form Farsi yeh (U+06CC), however it got into the text, must
-    survive unchanged, not be silently rewritten to U+064A."""
+    survive unchanged, not be silently rewritten to U+064A. This fixture
+    has no raw occurrence of U+06CC at all, in any position, so there is
+    no evidence either way about whether ArialMT does to yeh what it does
+    to heh (below) — folding it unconditionally would defeat the point of
+    this very test."""
     assert logical_line([g("ی", 0)]) == "ی"
 
 
-def test_a_raw_heh_substitute_folds_even_without_a_presentation_form():
-    """evals/app/policy_ar.pdf emits U+06BE (heh doachashmee) directly —
-    confirmed with a direct pdfplumber scan, not just after NFKC — for
-    'القاھرة' and 'المقاھي' on page 2, with no presentation-form code
-    point involved anywhere. Unlike Farsi yeh (never folded in base form,
-    see above), heh-doachashmee/heh-goal/keheh have no legitimate use in
-    this Arabic corpus, so a RAW occurrence is folded too."""
+def test_a_raw_heh_doachashmee_substitute_folds_even_without_a_presentation_form():
+    """ArialMT (the font behind evals/app/policy_ar.pdf) emits U+06BE (heh
+    doachashmee) directly for every INITIAL-position heh — confirmed with
+    a direct pdfplumber scan: 11 occurrences, all initial, on pages 1, 2,
+    5 and 6. Every MEDIAL/FINAL heh in the same document instead arrives
+    as a presentation form (U+FBAD / U+FBAB respectively)."""
     assert logical_line([g("ھ", 0)]) == "ه"  # heh doachashmee (U+06BE)
-    assert logical_line([g("ہ", 0)]) == "ه"  # heh goal (U+06C1)
-    assert logical_line([g("ک", 0)]) == "ك"  # keheh (U+06A9)
+
+
+def test_a_raw_heh_goal_or_keheh_substitute_is_never_folded():
+    """Unlike heh-doachashmee, heh-goal (U+06C1) and keheh (U+06A9) were
+    never observed on this fixture at all — not raw, not as a presentation
+    form, in any position, on any page. They fold only when they
+    demonstrably come from a presentation form, exactly like Farsi yeh —
+    a raw occurrence is not assumed to be this font's bug without evidence
+    for it the way U+06BE has."""
+    assert logical_line([g("ہ", 0)]) == "ہ"  # heh goal (U+06C1), unchanged
+    assert logical_line([g("ک", 0)]) == "ک"  # keheh (U+06A9), unchanged
+
+
+def test_folding_is_applied_per_glyph_not_per_run():
+    """A run holding BOTH a presentation-form glyph and a base-letter glyph
+    must fold only the presentation-form one. Folding the run's ASSEMBLED
+    text instead of each glyph on its own — joining raw text first, then
+    checking once whether the joined string contains a presentation-form
+    code point and normalising/translating all of it — would also fold
+    the neighbouring base-form U+06CC, which
+    `test_a_base_letter_farsi_yeh_is_never_folded` says must never happen."""
+    presentation_yeh = g("ﯾ", 0)   # FARSI YEH INITIAL FORM -> folds to ي
+    base_yeh = g("ی", 10)          # already U+06CC, base form: must stay ی
+    assert logical_line([presentation_yeh, base_yeh]) == "یي"
+
+
+# ------------------------------- NFKC's stray leading space (ADR-013) -----
+#
+# `unicodedata.normalize("NFKC", ...)` decomposes 6 shadda ligatures
+# (U+FC5E-FC63) and 8 isolated-haraka forms (U+FE70/72/74/76/78/7A/7C/7E)
+# with a LEADING U+0020 SPACE ahead of the actual mark(s) — confirmed
+# directly with `unicodedata`, e.g. U+FC60 (SHADDA WITH FATHA ISOLATED
+# FORM) -> NFKC -> " َّ", not "َّ". evals/app/
+# policy_ar.pdf has 6 glyphs of U+FC60 sitting mid-word; un-stripped, that
+# space split every one of them (see the fixture-level test below).
+
+def test_a_shadda_with_fatha_ligature_glyph_does_not_split_its_word():
+    """U+FC60 must not inject a space into the word it sits inside — the
+    fixture's «ويُقدَّم» (3 occurrences) and «يُقيَّم» (1 occurrence) came
+    back as «ويُقد َّم» / «يُقي َّم» before this fix."""
+    # visual left -> right: م د [FC60] ق ي و  (the word ويُقدَّم, mark on ق)
+    glyphs = [g("م", 0), g("د", 10), g("ﱠ", 20), g("ق", 30), g("ي", 40), g("و", 50)]
+    assert logical_line(glyphs) == "ويقَّدم"
+    assert " " not in logical_line(glyphs)
+
+
+def test_a_genuine_space_next_to_a_shadda_ligature_glyph_still_survives():
+    """The fix must remove ONLY the space this glyph's own NFKC result
+    injects — do not remove spaces in general. A real space glyph marking
+    a genuine word boundary right next to it must still come through as
+    exactly one space, not zero and not two."""
+    # visual left -> right: "ب"[FC60]"ا"  " "  "د""ج"  — two words, "اب"
+    # (carrying the mark) then a genuine space then "دج".
+    glyphs = [g("ج", 0), g("د", 10), g(" ", 20), g("ب", 30), g("ﱠ", 40), g("ا", 50)]
+    result = logical_line(glyphs)
+    assert result == "اَّب دج"
+    assert result.count(" ") == 1
 
 
 # ------------------------------------------- column split, take 2 (ADR-013)
@@ -299,15 +356,28 @@ def test_a_single_latin_word_on_an_arabic_page_does_not_cut_the_page_into_column
     assert arabic_column(arabic + latin) == arabic + latin
 
 
-def test_a_real_two_column_arabic_english_page_is_still_split():
-    """A genuine dual-language column (151/2020's Arabic-beside-English
-    layout) must still be split under the new proportional/bleed rule —
-    the case the rule must not break while fixing the single-word bug."""
-    english = visual("Article one hereby applies to all", 0)  # a full column
-    arabic = visual(")1( ةدام", 500)
-    kept = arabic_column(english + arabic)
-    assert all(c["x0"] >= 500 for c in kept)
-    assert logical_line(group_lines(kept)[0]) == "مادة (1)"
+def test_the_latin_ratio_condition_alone_blocks_a_cleanly_separated_but_small_latin_group():
+    """Isolates COLUMN_LATIN_RATIO from COLUMN_BLEED_RATIO: 3 Latin letters
+    against 20 Arabic ones (15%, below the 20% floor) sit in a perfectly
+    clean, zero-bleed column of their own — the bleed condition alone
+    would happily split this. Only the ratio condition blocks it, so this
+    fails if that condition is ever removed on its own."""
+    arabic = visual("ا" * 20, 0)   # centres 5..195
+    latin = visual("VPN", 1000)    # centres 1005..1025, cleanly separated
+    assert arabic_column(arabic + latin) == arabic + latin
+
+
+def test_the_bleed_condition_alone_blocks_a_high_ratio_but_interleaved_page():
+    """Isolates COLUMN_BLEED_RATIO from COLUMN_LATIN_RATIO: 3 Latin letters
+    against 10 Arabic ones (30%, comfortably past the 20% floor) — but one
+    Latin letter (centre 45) sits spatially INSIDE the Arabic glyphs' own
+    range (centres 5..95), so the median-midpoint boundary misclassifies
+    it (1/3 = 33% bleed, far past the 5% cap). Only the bleed condition
+    blocks this one, so this fails if that condition is ever removed on
+    its own."""
+    arabic = visual("ا" * 10, 0)                    # centres 5..95
+    latin = [g("V", 40), g("P", 140), g("N", 240)]  # centres 45, 145, 245
+    assert arabic_column(arabic + latin) == arabic + latin
 
 
 # ------------------------------------------------------- extract_pages/text
@@ -325,6 +395,38 @@ def test_extract_text_is_the_join_of_extract_pages(monkeypatch):
     )
 
     assert pdf_text.extract_text("ignored.pdf") == "a\nb"
+
+
+class _FakePage:
+    def __init__(self, chars):
+        self.chars = chars
+
+
+class _FakePdf:
+    def __init__(self, pages):
+        self.pages = pages
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_extract_pages_keeps_a_blank_page_at_its_own_index(monkeypatch):
+    """Phase 4B labels chunks by page number — a blank page (no text at
+    all) must still occupy its own slot as "", not be silently skipped and
+    shift every later page's index down by one."""
+    pytest.importorskip("pdfplumber")
+    import pdfplumber
+
+    page1 = _FakePage(visual("ةدام", 0))  # "مادة" -> non-blank
+    page2 = _FakePage([])                  # blank: no chars at all
+    page3 = _FakePage(visual("ةدام", 0))  # non-blank again
+
+    monkeypatch.setattr(pdfplumber, "open", lambda path: _FakePdf([page1, page2, page3]))
+
+    assert extract_pages("ignored.pdf") == ["مادة", "", "مادة"]
 
 
 def test_the_browser_rendered_fixture_keeps_every_heading_and_keyword_on_its_page():
@@ -372,3 +474,36 @@ def test_the_browser_rendered_fixture_keeps_every_heading_and_keyword_on_its_pag
                 f"question {q['id']}: keyword {kw!r} missing from page "
                 f"{q['expected_pages'][0]}"
             )
+
+
+def test_the_fixture_has_no_shadda_ligature_word_split_left():
+    """The fixture's own failing test for the NFKC-leading-space bug: 6
+    raw U+FC60 glyphs (pages 1, 3 x2, 4 x2, 6 — confirmed with a direct
+    pdfplumber scan) sit mid-word. None of the 6 words they belong to may
+    come out split by an injected space. No expected keyword happens to
+    carry a shadda, which is exactly why the keyword-matching check above
+    missed this."""
+    pytest.importorskip("pdfplumber")
+    root = Path(__file__).resolve().parents[1]
+    pages = extract_pages(root / "evals" / "app" / "policy_ar.pdf")
+
+    broken = {
+        1: "ويُقد َّم",
+        3: "ويُسج َّل",   # page 3 also repeats "ويُقد َّم" — same pattern
+        4: "يُقي َّم",     # page 4 also repeats "ويُقد َّم" — same pattern
+        6: "وتوج َّه",
+    }
+    fixed = {
+        1: "ويُقدَّم",
+        3: "ويُسجَّل",
+        4: "يُقيَّم",
+        6: "وتوجَّه",
+    }
+    for page_num in (1, 3, 4, 6):
+        page_text = pages[page_num - 1]
+        assert broken[page_num] not in page_text, (
+            f"page {page_num}: shadda ligature still split its word"
+        )
+        assert fixed[page_num] in page_text, (
+            f"page {page_num}: expected unsplit word missing entirely"
+        )

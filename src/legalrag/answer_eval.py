@@ -33,7 +33,7 @@ from pathlib import Path
 from .cite import audit
 from .dense import CACHE_PATH, CORPUS_PATH, DenseIndex, load_docs
 from .evaluate import binding_problem, corpus_laws, load_meta, load_questions
-from .generate import DEFAULT_MODEL, Generator, resolve_model
+from .generate import DEFAULT_MODEL, Generator, model_source, resolve_model
 from .ollama import GeneratorUnavailable, health
 
 TOP_K = 5
@@ -330,7 +330,12 @@ def main(argv: list[str] | None = None) -> int:
     n_ooc = sum(1 for q in questions if not q.answerable)
     print(f"questions  : {len(questions)} ({n_ooc} out_of_corpus)")
     print(f"retrieval  : dense, top-{TOP_K} (Run 2 winner)")
-    print(f"generator  : {model_spec}\n")
+    print(f"generator  : {model_spec}")
+    if model_spec.startswith("hf:"):
+        # Provenance: a local copy under models/ (task 1.2) or the hub id
+        # transformers will resolve from the HF cache instead.
+        print(f"weights    : {model_source(model_spec.partition(':')[2])}")
+    print()
 
     print(f"loading {model_spec} ...", flush=True)
     t = time.perf_counter()

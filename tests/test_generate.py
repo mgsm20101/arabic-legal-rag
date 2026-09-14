@@ -21,6 +21,7 @@ from legalrag.generate import (  # noqa: E402
     Generator,
     build_messages,
     format_articles,
+    model_source,
     resolve_model,
 )
 from legalrag.ollama import OllamaChat  # noqa: E402
@@ -154,3 +155,34 @@ def test_an_empty_model_name_is_rejected_not_silently_loaded(monkeypatch):
     for spec in ("hf", "hf:", "hf:   ", "ollama", "ollama:", "ollama:   "):
         with pytest.raises(ValueError):
             resolve_model(spec)
+
+
+def test_a_model_present_under_models_dir_loads_from_disk_not_the_hub(tmp_path):
+    """Weights now live inside the project under models/ (task 1.2) —
+    when a repo's files are there, `load_model` must read them from disk
+    instead of going to the HF hub cache."""
+    model_dir = tmp_path / "Qwen2.5-1.5B-Instruct"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text("{}")
+
+    source = model_source("Qwen/Qwen2.5-1.5B-Instruct", models_dir=tmp_path)
+    assert source == str(model_dir)
+
+
+def test_a_model_absent_locally_falls_back_to_its_hub_id(tmp_path):
+    """No local copy under models/ — the hub id is returned unchanged, so
+    transformers resolves it from the HF cache exactly as before this
+    feature existed. `tmp_path` is empty, so nothing is found there."""
+    source = model_source("Qwen/Qwen2.5-1.5B-Instruct", models_dir=tmp_path)
+    assert source == "Qwen/Qwen2.5-1.5B-Instruct"
+
+
+def test_an_explicit_directory_is_used_as_given(tmp_path):
+    """A caller that already names a directory (not a hub id) is trusted
+    outright — no models_dir guessing games layered on top of an explicit
+    path, and no config.json required at that path either."""
+    explicit_dir = tmp_path / "somewhere-else"
+    explicit_dir.mkdir()
+
+    source = model_source(str(explicit_dir), models_dir=tmp_path / "models")
+    assert source == str(explicit_dir)

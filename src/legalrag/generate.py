@@ -27,10 +27,18 @@ must run on a fresh clone with no download and no torch.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
+from pathlib import Path
 
 from .cite import ABSTAIN_MARKER
 from .ollama import ollama_chat
+
+# Weights live inside the project (task 1.2), not only in the machine's HF
+# cache — git-ignored, since they are too large to commit. The spec identity
+# (`hf:Qwen/Qwen2.5-1.5B-Instruct`) does not change based on where the bytes
+# happen to be; only `model_source` below does.
+MODELS_DIR = Path(os.environ.get("LEGALRAG_MODELS_DIR", "models"))
 
 # Measured, not chosen by size. Qwen2.5-3B-Instruct was tried first and is
 # unusable here: its checkpoint is bfloat16, this CPU has no native bf16, so
@@ -94,6 +102,26 @@ def build_messages(question: str, articles: list[dict]) -> list[dict]:
     ]
 
 
+def model_source(name: str, models_dir: Path | None = None) -> str:
+    """Where to actually read `name`'s weights from.
+
+    Local-first: `name` itself may already be a directory (an explicit path,
+    trusted as given); otherwise `models_dir/<name's last path segment>` is
+    tried (`"Qwen/Qwen2.5-1.5B-Instruct"` -> `models/Qwen2.5-1.5B-Instruct`)
+    and used only if it looks like a real checkpoint (`config.json` present).
+    Falling through to `name` unchanged lets transformers resolve it from the
+    HF hub cache, exactly as before this function existed — a repo not yet
+    copied into `models/` still works.
+    """
+    d = MODELS_DIR if models_dir is None else models_dir
+    if Path(name).is_dir():
+        return name
+    candidate = d / name.split("/")[-1]
+    if (candidate / "config.json").exists():
+        return str(candidate)
+    return name
+
+
 def load_model(name: str = DEFAULT_MODEL, max_new_tokens: int = MAX_NEW_TOKENS):
     """A callable messages -> str, backed by transformers on CPU."""
     try:
@@ -105,10 +133,11 @@ def load_model(name: str = DEFAULT_MODEL, max_new_tokens: int = MAX_NEW_TOKENS):
             "  python tasks.py setup      (or: pip install -r requirements.txt)"
         ) from e
 
-    tok = AutoTokenizer.from_pretrained(name)
+    source = model_source(name)
+    tok = AutoTokenizer.from_pretrained(source)
     # No `device_map`: it makes `accelerate` a hard dependency and buys nothing,
     # because the torch here is a CPU-only build and loads to CPU by default.
-    model = AutoModelForCausalLM.from_pretrained(name, dtype=DTYPE)
+    model = AutoModelForCausalLM.from_pretrained(source, dtype=DTYPE)
     model.eval()
 
     def run(messages: list[dict]) -> str:

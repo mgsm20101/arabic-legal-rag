@@ -5,14 +5,19 @@ Every case here is a defect that was actually observed while ingesting the
 keys the extractor reads, so no PDF fixture is needed.
 """
 
+import json
 import sys
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from legalrag.pdf_text import (  # noqa: E402
     arabic_column,
     drop_marks,
+    extract_pages,
+    extract_text,
     group_lines,
     logical_line,
 )
@@ -216,3 +221,154 @@ def test_drop_marks_leaves_short_lines_alone():
     """Two glyphs give no reliable median; never guess on a short line."""
     line = sized("ام", 0, bottom=100.0)
     assert drop_marks(line) == line
+
+
+# --------------------------------- presentation forms (evals/app/policy_ar.pdf)
+#
+# Edge (the browser that rendered policy_ar.pdf) encodes 572 of page 1's 965
+# Arabic glyphs as contextual presentation forms (U+FB50-FDFF, U+FE70-FEFF).
+# The old ARABIC_LETTER range (U+0600-06FF only) treated every one of them as
+# non-Arabic: never reversed, never folded, and the extractor matched zero
+# headings and zero keywords on the fixture (evals/app/README.md). Code
+# points below are confirmed against `unicodedata` directly, not guessed:
+# isolated presentation forms of م ا د ة (U+FEE1, U+FE8D, U+FEA9, U+FE93)
+# each NFKC-decompose to exactly their base letter.
+
+def test_presentation_form_glyphs_are_read_as_arabic_and_reversed():
+    """A page built entirely from presentation-form glyphs must still be
+    classified as Arabic and reversed into logical order, the same as the
+    base-letter case `test_arabic_run_is_reversed_into_logical_order` pins."""
+    # Isolated presentation forms of teh marbuta, dal, alef, meem, laid out
+    # visually left -> right (rightmost-first logical reading, same layout
+    # as `visual("ةدام")` in the base-letter test above).
+    glyphs = [g("ﺓ", 0), g("ﺩ", 10), g("ﺍ", 20), g("ﻡ", 30)]
+    assert logical_line(glyphs) == "مادة"
+
+
+def test_a_presentation_form_lam_alef_ligature_expands_in_logical_order():
+    """U+FEFB is ONE glyph whose NFKC decomposition is TWO characters
+    ('لا'), already in logical order — the presentation-form sibling of
+    `test_lam_alef_ligature_survives_as_one_glyph`'s ToUnicode-mapped
+    ligature. Folding happens per glyph, so reversing glyph ORDER (never
+    the string) must not also re-reverse what NFKC expanded."""
+    # visual left -> right: ى ل و [FEFB -> لا] ا
+    glyphs = [g("ى", 0), g("ل", 10), g("و", 20), g("ﻻ", 30), g("ا", 40)]
+    assert logical_line(glyphs) == "الاولى"
+
+
+def test_persian_yeh_and_heh_from_presentation_forms_fold_to_arabic():
+    """The font maps yeh/heh/kaf presentation forms so that NFKC alone
+    still leaves Persian/Urdu code points (ی U+06CC, ھ U+06BE, ہ U+06C1,
+    ک U+06A9) instead of Arabic ones — 'أيام' never matched 'أیام'
+    downstream (evals/app/README.md). Folding must apply on top of NFKC."""
+    yeh = g("ﯾ", 0)    # FARSI YEH INITIAL FORM -> NFKC ی (U+06CC)
+    heh1 = g("ﮪ", 10)  # HEH DOACHASHMEE ISOLATED FORM -> NFKC ھ (U+06BE)
+    heh2 = g("ﮦ", 20)  # HEH GOAL ISOLATED FORM -> NFKC ہ (U+06C1)
+    kaf = g("ﮎ", 30)   # KEHEH ISOLATED FORM -> NFKC ک (U+06A9)
+    assert logical_line([yeh, heh1, heh2, kaf]) == "كههي"
+
+
+def test_a_base_letter_glyph_is_never_folded():
+    """Folding is conditioned on the glyph being a presentation form — a
+    real BASE-form Farsi yeh (U+06CC), however it got into the text, must
+    survive unchanged, not be silently rewritten to U+064A."""
+    assert logical_line([g("ی", 0)]) == "ی"
+
+
+def test_a_raw_heh_substitute_folds_even_without_a_presentation_form():
+    """evals/app/policy_ar.pdf emits U+06BE (heh doachashmee) directly —
+    confirmed with a direct pdfplumber scan, not just after NFKC — for
+    'القاھرة' and 'المقاھي' on page 2, with no presentation-form code
+    point involved anywhere. Unlike Farsi yeh (never folded in base form,
+    see above), heh-doachashmee/heh-goal/keheh have no legitimate use in
+    this Arabic corpus, so a RAW occurrence is folded too."""
+    assert logical_line([g("ھ", 0)]) == "ه"  # heh doachashmee (U+06BE)
+    assert logical_line([g("ہ", 0)]) == "ه"  # heh goal (U+06C1)
+    assert logical_line([g("ک", 0)]) == "ك"  # keheh (U+06A9)
+
+
+# ------------------------------------------- column split, take 2 (ADR-013)
+
+def test_a_single_latin_word_on_an_arabic_page_does_not_cut_the_page_into_columns():
+    """A single Latin word inline in Arabic prose must never trigger a
+    column split — evals/app/policy_ar.pdf page 2 has 'VPN', 'Wi-Fi' and
+    'Microsoft Teams' inline in Arabic text, and the old rule (any Latin
+    letter at all) cut roughly half the page's Arabic glyphs silently."""
+    arabic = visual("ا" * 40, 0)   # a full line's worth of Arabic prose
+    latin = visual("VPN", 500)     # one Latin word, far to the right
+    assert arabic_column(arabic + latin) == arabic + latin
+
+
+def test_a_real_two_column_arabic_english_page_is_still_split():
+    """A genuine dual-language column (151/2020's Arabic-beside-English
+    layout) must still be split under the new proportional/bleed rule —
+    the case the rule must not break while fixing the single-word bug."""
+    english = visual("Article one hereby applies to all", 0)  # a full column
+    arabic = visual(")1( ةدام", 500)
+    kept = arabic_column(english + arabic)
+    assert all(c["x0"] >= 500 for c in kept)
+    assert logical_line(group_lines(kept)[0]) == "مادة (1)"
+
+
+# ------------------------------------------------------- extract_pages/text
+
+def test_extract_text_is_the_join_of_extract_pages(monkeypatch):
+    """`extract_text` must do nothing more than join `extract_pages`'
+    output with blank pages dropped — the whole point of splitting the
+    function is that the combined document text can never diverge from
+    the per-page text the upload pipeline chunks on."""
+    import legalrag.pdf_text as pdf_text
+
+    monkeypatch.setattr(
+        pdf_text, "extract_pages",
+        lambda path, keep_latin=False, line_tol=None: ["a", "", "b"],
+    )
+
+    assert pdf_text.extract_text("ignored.pdf") == "a\nb"
+
+
+def test_the_browser_rendered_fixture_keeps_every_heading_and_keyword_on_its_page():
+    """evals/app/policy_ar.pdf (README.md) is the failing test the upload
+    pipeline had to pass: the first extraction matched zero headings and
+    zero keywords, though the page count was already right. Presentation
+    forms, Persian code points and the column cut (all fixed above) are
+    exactly what this fixture exercises."""
+    pytest.importorskip("pdfplumber")
+    from legalrag.normalize import evaluation_normalize  # noqa: E402
+
+    root = Path(__file__).resolve().parents[1]
+    pages = extract_pages(root / "evals" / "app" / "policy_ar.pdf")
+    assert len(pages) == 6
+
+    normalized = [evaluation_normalize(p) for p in pages]
+
+    headings = {
+        1: ["أولاً", "ثانياً"],
+        2: ["ثالثاً", "رابعاً"],
+        3: ["خامساً", "سادساً"],
+        4: ["سابعاً", "ثامناً"],
+        5: ["تاسعاً", "عاشراً"],
+        6: ["حادي عشر", "ثاني عشر"],
+    }
+    for page_num, words in headings.items():
+        page_text = normalized[page_num - 1]
+        for word in words:
+            assert evaluation_normalize(word) in page_text, (
+                f"heading {word!r} missing from page {page_num}"
+            )
+
+    questions_path = root / "evals" / "app" / "questions.jsonl"
+    questions = [
+        json.loads(line)
+        for line in questions_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    for q in questions:
+        if not q["answerable"]:
+            continue
+        page_text = normalized[q["expected_pages"][0] - 1]
+        for kw in q["expected_keywords"]:
+            assert evaluation_normalize(kw) in page_text, (
+                f"question {q['id']}: keyword {kw!r} missing from page "
+                f"{q['expected_pages'][0]}"
+            )

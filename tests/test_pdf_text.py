@@ -5,8 +5,11 @@ Every case here is a defect that was actually observed while ingesting the
 keys the extractor reads, so no PDF fixture is needed.
 """
 
+import hashlib
 import json
+import re
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
 import pytest
@@ -17,6 +20,7 @@ from legalrag.pdf_text import (  # noqa: E402
     arabic_column,
     drop_marks,
     extract_pages,
+    extract_text,
     group_lines,
     logical_line,
 )
@@ -311,33 +315,17 @@ def test_folding_is_applied_per_glyph_not_per_run():
     assert logical_line([presentation_yeh, base_yeh]) == "یي"
 
 
-# ------------------------------- NFKC's stray leading space (ADR-013) -----
-#
-# `unicodedata.normalize("NFKC", ...)` decomposes 6 shadda ligatures
-# (U+FC5E-FC63) and 8 isolated-haraka forms (U+FE70/72/74/76/78/7A/7C/7E)
-# with a LEADING U+0020 SPACE ahead of the actual mark(s) — confirmed
-# directly with `unicodedata`, e.g. U+FC60 (SHADDA WITH FATHA ISOLATED
-# FORM) -> NFKC -> " َّ", not "َّ". evals/app/
-# policy_ar.pdf has 6 glyphs of U+FC60 sitting mid-word; un-stripped, that
-# space split every one of them (see the fixture-level test below).
-
 def test_a_shadda_with_fatha_ligature_glyph_does_not_split_its_word():
-    """U+FC60 must not inject a space into the word it sits inside — the
-    fixture's «ويُقدَّم» (3 occurrences) and «يُقيَّم» (1 occurrence) came
-    back as «ويُقد َّم» / «يُقي َّم» before this fix."""
-    # visual left -> right: م د [FC60] ق ي و  (the word ويُقدَّم, mark on ق)
+    """U+FC60's own NFKC-injected space must not land inside the word it sits in."""
+    # visual left -> right: م د [FC60] ق ي و  ->  logical: و ي ق [FC60] د م
     glyphs = [g("م", 0), g("د", 10), g("ﱠ", 20), g("ق", 30), g("ي", 40), g("و", 50)]
     assert logical_line(glyphs) == "ويقَّدم"
     assert " " not in logical_line(glyphs)
 
 
 def test_a_genuine_space_next_to_a_shadda_ligature_glyph_still_survives():
-    """The fix must remove ONLY the space this glyph's own NFKC result
-    injects — do not remove spaces in general. A real space glyph marking
-    a genuine word boundary right next to it must still come through as
-    exactly one space, not zero and not two."""
-    # visual left -> right: "ب"[FC60]"ا"  " "  "د""ج"  — two words, "اب"
-    # (carrying the mark) then a genuine space then "دج".
+    """A real word-boundary space glyph next to U+FC60 must still come through as exactly one space."""
+    # visual left -> right: ج د [space] ب [FC60] ا  ->  logical: ا [FC60] ب [space] د ج
     glyphs = [g("ج", 0), g("د", 10), g(" ", 20), g("ب", 30), g("ﱠ", 40), g("ا", 50)]
     result = logical_line(glyphs)
     assert result == "اَّب دج"
@@ -380,6 +368,18 @@ def test_the_bleed_condition_alone_blocks_a_high_ratio_but_interleaved_page():
     assert arabic_column(arabic + latin) == arabic + latin
 
 
+def test_arabic_glyphs_crossing_the_divider_alone_block_the_split():
+    """The bleed check has two halves; the test above only ever puts a
+    LATIN glyph on the wrong side. Here one ARABIC letter sits far into
+    the Latin column (1/11 = 9% arabic bleed, past the 5% cap) while every
+    Latin letter stays cleanly on its own side (0% latin bleed) — only
+    deleting `arabic_bleed > COLUMN_BLEED_RATIO` specifically would miss
+    this and split."""
+    arabic = visual("ا" * 10, 0) + [g("ا", 500)]     # centres 5..95, then 505
+    latin = [g("V", 200), g("P", 210), g("N", 220)]  # centres 205, 215, 225
+    assert arabic_column(arabic + latin) == arabic + latin
+
+
 # ------------------------------------------------------- extract_pages/text
 
 def test_extract_text_is_the_join_of_extract_pages(monkeypatch):
@@ -397,9 +397,31 @@ def test_extract_text_is_the_join_of_extract_pages(monkeypatch):
     assert pdf_text.extract_text("ignored.pdf") == "a\nb"
 
 
+def test_extract_text_passes_keep_latin_and_line_tol_through_to_extract_pages(monkeypatch):
+    """The stub above ignores both arguments — pin that a real call site
+    passing non-default values actually reaches `extract_pages` with them."""
+    import legalrag.pdf_text as pdf_text
+
+    seen = {}
+
+    def fake_extract_pages(path, keep_latin=False, line_tol=None):
+        seen["keep_latin"] = keep_latin
+        seen["line_tol"] = line_tol
+        return []
+
+    monkeypatch.setattr(pdf_text, "extract_pages", fake_extract_pages)
+
+    pdf_text.extract_text("ignored.pdf", keep_latin=True, line_tol=2.5)
+
+    assert seen == {"keep_latin": True, "line_tol": 2.5}
+
+
 class _FakePage:
     def __init__(self, chars):
         self.chars = chars
+
+    def close(self):
+        pass
 
 
 class _FakePdf:
@@ -427,6 +449,46 @@ def test_extract_pages_keeps_a_blank_page_at_its_own_index(monkeypatch):
     monkeypatch.setattr(pdfplumber, "open", lambda path: _FakePdf([page1, page2, page3]))
 
     assert extract_pages("ignored.pdf") == ["مادة", "", "مادة"]
+
+
+class _ClosablePage:
+    """A page that records its own name when closed, and can raise on
+    `.chars` access instead of returning real glyphs — pdfplumber keeps a
+    page's parsed content in memory until `.close()` is called (measured:
+    293 MB at 150 pages, 1.03 GB at 600, on an app machine with ~3 GB
+    free), so every page must be closed, including one that raises."""
+
+    def __init__(self, chars, name, closed, raises=False):
+        self._chars = chars
+        self.name = name
+        self._closed = closed
+        self._raises = raises
+
+    @property
+    def chars(self):
+        if self._raises:
+            raise RuntimeError(f"boom on {self.name}")
+        return self._chars
+
+    def close(self):
+        self._closed.append(self.name)
+
+
+def test_extract_pages_closes_every_page_even_when_a_later_page_raises(monkeypatch):
+    pytest.importorskip("pdfplumber")
+    import pdfplumber
+
+    closed: list[str] = []
+    page1 = _ClosablePage(visual("ةدام", 0), "p1", closed)
+    page2 = _ClosablePage([], "p2", closed, raises=True)
+    page3 = _ClosablePage(visual("ةدام", 0), "p3", closed)
+
+    monkeypatch.setattr(pdfplumber, "open", lambda path: _FakePdf([page1, page2, page3]))
+
+    with pytest.raises(RuntimeError):
+        extract_pages("ignored.pdf")
+
+    assert closed == ["p1", "p2"]  # p3 never reached; both p1 and p2 closed
 
 
 def test_the_browser_rendered_fixture_keeps_every_heading_and_keyword_on_its_page():
@@ -477,12 +539,10 @@ def test_the_browser_rendered_fixture_keeps_every_heading_and_keyword_on_its_pag
 
 
 def test_the_fixture_has_no_shadda_ligature_word_split_left():
-    """The fixture's own failing test for the NFKC-leading-space bug: 6
-    raw U+FC60 glyphs (pages 1, 3 x2, 4 x2, 6 — confirmed with a direct
-    pdfplumber scan) sit mid-word. None of the 6 words they belong to may
-    come out split by an injected space. No expected keyword happens to
-    carry a shadda, which is exactly why the keyword-matching check above
-    missed this."""
+    """6 raw U+FC60 glyphs sit mid-word across 4 pages (1, 3 x2, 4 x2, 6);
+    none of the 4 distinct words checked here (one per page) may come out
+    split by an injected space — no expected keyword carries a shadda,
+    which is why the keyword-matching check above missed this."""
     pytest.importorskip("pdfplumber")
     root = Path(__file__).resolve().parents[1]
     pages = extract_pages(root / "evals" / "app" / "policy_ar.pdf")
@@ -507,3 +567,77 @@ def test_the_fixture_has_no_shadda_ligature_word_split_left():
         assert fixed[page_num] in page_text, (
             f"page {page_num}: expected unsplit word missing entirely"
         )
+
+
+_ARABIC_LETTER = re.compile("[؀-ۿ]")
+_EDGE_PUNCT = ".,،؛:؟!()[]{}«»\"'"
+
+
+def _arabic_words(text: str) -> list[str]:
+    """Whitespace-split `text` (already run through `evaluation_normalize`
+    on the caller's side) into Arabic-letter words, edge punctuation
+    stripped from each token — used only to compare the PDF's extracted
+    words against the plain-text source's, where a token's leading/
+    trailing punctuation can legitimately land differently (e.g. a
+    sentence-final period landing as its own glyph run in the PDF)."""
+    words = []
+    for w in text.split():
+        w = w.strip(_EDGE_PUNCT)
+        if _ARABIC_LETTER.search(w):
+            words.append(w)
+    return words
+
+
+def test_the_fixtures_extracted_words_match_its_plain_text_source_in_order():
+    """The SEQUENCE of Arabic words extracted from the PDF must equal the
+    plain-text source's — a stronger guard than the keyword-substring
+    checks above, and the one that catches a mutant removing the
+    NFKC-leading-space fix (no expected keyword happens to carry a
+    shadda, so that check alone misses it: 774 words instead of 768)."""
+    pytest.importorskip("pdfplumber")
+    from legalrag.normalize import evaluation_normalize  # noqa: E402
+
+    root = Path(__file__).resolve().parents[1]
+    pdf_text = extract_text(root / "evals" / "app" / "policy_ar.pdf")
+    txt_source = (root / "evals" / "app" / "policy_ar.txt").read_text(encoding="utf-8")
+
+    pdf_words = _arabic_words(evaluation_normalize(pdf_text))
+    txt_words = _arabic_words(evaluation_normalize(txt_source))
+
+    assert len(pdf_words) == 768
+    assert pdf_words == txt_words
+
+
+# ------------------------------------------------- statute corpus hash -----
+
+def test_the_statute_corpus_hash_is_unchanged(tmp_path):
+    """Regression guard on the real corpus, not just the fixture:
+    COLUMN_LATIN_RATIO set to an unreasonable value (say 1.25) passes the
+    rest of the suite but silently changes what `ingest.main` writes for
+    the real statute PDF. Skipped when the raw PDF or the real processed
+    corpus is absent (fresh clone, CI) — both are gitignored and must
+    never be committed."""
+    pytest.importorskip("pdfplumber")
+    root = Path(__file__).resolve().parents[1]
+    raw_pdf = root / "data" / "raw" / "law-151-2020-personal-data-protection.pdf"
+    real_output = root / "data" / "processed" / "articles.jsonl"
+    if not raw_pdf.exists() or not real_output.exists():
+        pytest.skip("data/raw or data/processed corpus is absent (gitignored)")
+
+    from legalrag import ingest  # noqa: E402
+
+    text = ingest._read_raw(raw_pdf)
+    articles = ingest.parse(text, raw_pdf.name, law_name="قانون حماية البيانات الشخصية")
+
+    # Written exactly like `ingest.main` writes OUT_PATH (plain "w" text
+    # mode, no `newline=""`): on Windows this is what actually produced
+    # the real, committed corpus's CRLF line endings, so reproducing that
+    # same write is what keeps this hash comparable to it.
+    scratch_output = tmp_path / "articles.jsonl"
+    with scratch_output.open("w", encoding="utf-8") as fh:
+        for a in articles:
+            fh.write(json.dumps(asdict(a), ensure_ascii=False) + "\n")
+
+    assert hashlib.sha256(scratch_output.read_bytes()).hexdigest() == (
+        "d11ce900418b4e9725d1fc727b2880c7062a16d225e62351181c93e7fd3dc32a"
+    )

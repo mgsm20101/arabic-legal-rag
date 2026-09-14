@@ -24,57 +24,24 @@ Three details separate a correct reconstruction from a plausible-looking one:
 Measured on the 151/2020 dual-language PDFs: (2) alone accounts for every
 mis-spelled word found, and (3) for every duplicated article number.
 
-A browser-rendered PDF (``evals/app/policy_ar.pdf``, ADR-023) broke two
+A browser-rendered PDF (``evals/app/policy_ar.pdf``, ADR-023) broke four
 further assumptions the scanned/printed statute PDFs never exercised:
 
-4. **Contextual presentation forms are still Arabic.** Edge encodes 572 of
-   page 1's 965 Arabic glyphs as U+FB50-FDFF/U+FE70-FEFF presentation forms
-   instead of plain U+0600-06FF letters. The old range treated every one of
-   them as non-Arabic — never reversed, never emitted — and the extractor
-   matched zero headings and zero keywords although the page count was
-   right.
-5. **NFKC alone does not undo a font's Persian substitution.** ArialMT's
-   Farsi-yeh presentation forms, and its medial/final heh-doachashmee
-   presentation forms, NFKC-decompose to Persian/Urdu code points
-   (``ی`` U+06CC, ``ھ`` U+06BE) instead of their Arabic look-alikes
-   (``ي``, ``ه``) — so ``أيام`` never matched ``أیام``. Folding those two
-   letters, on top of NFKC, and ONLY for glyphs that were presentation
-   forms in the first place (a base-form glyph must otherwise survive
-   untouched), fixes it — except point 6. ``_PERSIAN_TO_ARABIC`` also
-   covers heh-goal (``ہ`` U+06C1) and keheh (``ک`` U+06A9) the same way, on
-   general principle — this font was never observed to emit either one,
-   in any form, anywhere in the fixture.
-6. **ArialMT only routes heh-doachashmee through a presentation form in
-   MEDIAL/FINAL position.** In INITIAL position it emits plain base-block
-   U+06BE directly instead — confirmed with a direct pdfplumber scan: 11
-   occurrences, all initial-position, on pages 1, 2, 5 and 6, while every
-   medial/final heh in the same document arrives as U+FBAD/U+FBAB
-   (presentation forms, handled by point 5 above). U+06BE is folded
-   whenever it appears — presentation form or raw — for exactly this
-   reason. Farsi yeh keeps the presentation-form-only rule: this fixture
-   has no raw occurrence of it at all, in any position, so there is no
-   evidence either way about whether ArialMT does the same thing to
-   yeh — and folding a base-form U+06CC unconditionally would defeat the
-   point `test_a_base_letter_farsi_yeh_is_never_folded` exists to pin.
-   See ``_fold_presentation_form``.
-7. **NFKC injects a stray leading space for some presentation forms.**
-   ``unicodedata.normalize("NFKC", ...)`` decomposes the 6 shadda
-   ligatures (U+FC5E-FC63) and the 8 isolated-haraka forms
-   (U+FE70/72/74/76/78/7A/7C/7E) as a LEADING U+0020 SPACE followed by the
-   actual mark(s) — a Unicode Character Database quirk, confirmed
-   directly with ``unicodedata``. This fixture has 6 glyphs of U+FC60
-   (SHADDA WITH FATHA) sitting mid-word, and un-stripped that space split
-   every one of them: ``ويُقدَّم`` (pages 1, 3, 4) into ``ويُقد َّم``,
-   ``ويُسجَّل`` (page 3) into ``ويُسج َّل``, ``يُقيَّم`` (page 4) into
-   ``يُقي َّم``, and ``وتوجَّه`` (page 6) into ``وتوج َّه``. Stripped from
-   exactly these 14 glyphs' own NFKC result, never from text in general —
-   see ``_NFKC_LEADING_SPACE``.
-8. **A single foreign word is not a second column.** ``arabic_column``
-   split a page on ANY Latin glyph, with no check that the page actually
-   had two columns. A single Latin word inline in Arabic prose (page 2:
-   ``VPN``, ``Wi-Fi``, ``Microsoft Teams``) lost about half its Arabic text
-   to a boundary that was never there. See ``arabic_column`` for the
-   proportional/bleed rule that replaces it.
+4. **Contextual presentation forms are still Arabic.** Edge encodes 572
+   of page 1's 965 glyphs as U+FB50-FDFF/U+FE70-FEFF; the old
+   U+0600-06FF-only range missed all of them. See ``ARABIC_LETTER``.
+5. **NFKC alone does not undo a font's Persian substitution — and ArialMT
+   sometimes skips NFKC's path entirely.** Farsi-yeh and medial/final heh
+   presentation forms NFKC-decompose to Persian code points; ArialMT's
+   INITIAL-position heh instead arrives as raw base-block U+06BE, with no
+   presentation form at all. See ``_fold_presentation_form``.
+6. **NFKC injects a stray leading space for some presentation forms.** 6
+   shadda ligatures and 8 isolated-haraka forms decompose with a leading
+   U+0020 ahead of the mark, splitting a mid-word glyph in two. See
+   ``_NFKC_LEADING_SPACE``.
+7. **A single foreign word is not a second column.** ``arabic_column``
+   used to split on any Latin glyph at all, dropping half the Arabic text
+   on a page with just one English word. See ``arabic_column``.
 """
 
 from __future__ import annotations
@@ -98,35 +65,22 @@ MIRRORED = {ord(a): b for a, b in
             [("(", ")"), (")", "("), ("[", "]"), ("]", "["),
              ("{", "}"), ("}", "{"), ("<", ">"), (">", "<")]}
 
-# U+0600-06FF (Arabic) and U+0750-077F/U+08A0-08FF (its Supplement and
-# Extended-A blocks) are base letters. U+FB50-FDFF/U+FE70-FEFF (Presentation
-# Forms A/B) are the SAME letters shaped for a specific joining position —
-# Edge encodes 572 of 965 Arabic glyphs on evals/app/policy_ar.pdf's page 1
-# this way. Excluding them is what made the first extraction of that PDF
-# match zero headings: they were never recognised as Arabic, so never
-# reversed, never folded, never emitted as anything sensible.
+# Arabic base blocks + presentation forms A/B (module docstring, point 4).
+# \u escapes, not literal characters: several render as invisible glyphs.
 ARABIC_LETTER = re.compile(
-    "[؀-ۿݐ-ݿࢠ-ࣿﭐ-﷿ﹰ-﻿]"
+    "[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFC]"
 )
 LATIN = re.compile(r"[A-Za-z]")
 
-# A glyph in this range is a CONTEXTUAL FORM, not a base letter — only such
-# a glyph is unconditionally eligible for folding (`_fold_presentation_form`
-# below). A base-form glyph is folded only in the one measured exception,
-# U+06BE (`_ALWAYS_FOLD_RAW` below) — every other Persian look-alike in
-# `_PERSIAN_TO_ARABIC`, in base form, must never be folded
-# (`test_a_base_letter_farsi_yeh_is_never_folded`,
-# `test_a_raw_heh_goal_or_keheh_substitute_is_never_folded`).
-_PRESENTATION_FORM = re.compile("[ﭐ-﷿ﹰ-﻿]")
+# A glyph in this range is a CONTEXTUAL FORM, eligible for folding
+# (`_fold_presentation_form`) — U+FEFD/FEFE are unassigned and U+FEFF is
+# the BOM, so the second range stops at U+FEFC, the last real one.
+_PRESENTATION_FORM = re.compile("[\uFB50-\uFDFF\uFE70-\uFEFC]")
 
-# NFKC decomposes these 14 presentation forms — 6 shadda ligatures
-# (U+FC5E-FC63) and 8 isolated-haraka forms (U+FE70/72/74/76/78/7A/7C/7E) —
-# with a LEADING U+0020 SPACE ahead of the actual mark(s): a Unicode
-# Character Database quirk, confirmed directly with `unicodedata`, e.g.
-# U+FC60 (SHADDA WITH FATHA ISOLATED FORM) -> NFKC -> " َّ", not
-# "َّ". evals/app/policy_ar.pdf has 6 glyphs of U+FC60 sitting
-# mid-word; left in, that space split every one of the words it sits inside
-# once this glyph joined its neighbours (module docstring, point 7).
+# NFKC decomposes these 14 presentation forms — 6 shadda ligatures and 8
+# isolated-haraka forms — with a LEADING U+0020 SPACE ahead of the actual
+# mark(s), splitting a mid-word glyph in two (module docstring, point 6).
+# Confirmed directly with `unicodedata`, not guessed.
 _NFKC_LEADING_SPACE = frozenset(
     chr(cp) for cp in (
         0xFC5E, 0xFC5F, 0xFC60, 0xFC61, 0xFC62, 0xFC63,
@@ -134,39 +88,22 @@ _NFKC_LEADING_SPACE = frozenset(
     )
 )
 
-# Yeh/heh/kaf presentation forms NFKC-decompose to Persian/Urdu code
-# points, not their Arabic look-alikes — confirmed with `unicodedata`, not
-# guessed: U+FBFE (FARSI YEH INITIAL FORM) -> NFKC -> U+06CC, U+FBAA (HEH
-# DOACHASHMEE ISOLATED) -> U+06BE, U+FBA6 (HEH GOAL ISOLATED) -> U+06C1,
-# U+FB8E (KEHEH ISOLATED) -> U+06A9 — general Unicode facts, not all
-# necessarily emitted by ArialMT (see `_ALWAYS_FOLD_RAW` below for what was
-# actually measured). Left alone, ``أيام`` (U+064A yeh) never matches this
-# font's ``أیام`` (U+06CC yeh) — see evals/app/README.md.
-_PERSIAN_TO_ARABIC = str.maketrans({"ی": "ي", "ھ": "ه", "ہ": "ه", "ک": "ك"})
+# Persian/Urdu look-alikes -> Arabic equivalents (`_ALWAYS_FOLD_RAW` below
+# says what ArialMT actually emits); \u escapes for the look-alike pairs.
+_PERSIAN_TO_ARABIC = str.maketrans({
+    "\u06CC": "\u064A",  # farsi yeh       -> arabic yeh
+    "\u06BE": "\u0647",  # heh doachashmee -> arabic heh
+    "\u06C1": "\u0647",  # heh goal        -> arabic heh
+    "\u06A9": "\u0643",  # keheh           -> arabic kaf
+})
 
-# Confirmed on evals/app/policy_ar.pdf with a direct pdfplumber scan (not
-# just after NFKC): ArialMT emits every INITIAL-position heh-doachashmee as
-# a RAW base-block U+06BE glyph, never routed through a presentation form at
-# all — 11 occurrences, pages 1 (6), 2 (2), 5 (2) and 6 (1). Every
-# MEDIAL/FINAL heh in the same document instead comes through as a
-# presentation form (U+FBAD / U+FBAB respectively), handled by the ordinary
-# presentation-form path above. So U+06BE is folded whenever it appears at
-# all, presentation form or raw.
-#
-# U+06C1 (heh goal) and U+06A9 (keheh) are deliberately NOT in this set:
-# neither was ever observed on this fixture — not raw, not as a
-# presentation form, in any position, on any page. Farsi yeh (U+06CC) is
-# excluded for the same reason: this fixture has no raw occurrence of it at
-# all, so there is no measured evidence that ArialMT does to yeh what it
-# does to heh — folding a base-form U+06CC unconditionally would also
-# defeat the point `test_a_base_letter_farsi_yeh_is_never_folded` pins. All
-# three fold normally via the presentation-form path when one is ever
-# reached (`_PERSIAN_TO_ARABIC` above still covers all four letters), just
-# never on a bare, unrouted raw glyph the way U+06BE is known to need.
-# Confirmed empirically that keeping only U+06BE here is safe for the
-# existing statute corpus: data/raw/*.pdf contain zero raw or
-# presentation-form occurrences of any of the four letters at all.
-_ALWAYS_FOLD_RAW = re.compile("[ھ]")
+# ArialMT emits every INITIAL-position heh-doachashmee as raw U+06BE, never
+# via a presentation form — 11 occurrences, pages 1/2/5/6 (confirmed with a
+# direct pdfplumber scan); medial/final heh arrives as U+FBAD/U+FBAB
+# instead. U+06C1 (heh goal), U+06A9 (keheh) and U+06CC (Farsi yeh) are NOT
+# here: none was ever observed raw on this fixture, and a base-form
+# occurrence of any of them is legitimate Persian text, not a bug to fix.
+_ALWAYS_FOLD_RAW = re.compile("\u06BE")
 
 # Fallback when a page has too few lines to measure its own spacing. Measured
 # on the 151/2020 PDF: within-line wobble stays under 0.5pt, line spacing is
@@ -188,48 +125,15 @@ def _is_latin(text: str) -> bool:
 
 
 def _fold_presentation_form(text: str) -> str:
-    """NFKC-expand a presentation-form glyph, strip the stray leading space
-    NFKC injects for a few of them, then fold this font's Persian
-    look-alikes to their Arabic equivalent — a no-op for a base-letter
-    glyph, except the one measured exception below (U+06BE).
+    """Fold one glyph: NFKC-expand a presentation form, strip the stray
+    leading space NFKC injects for some of them, then fold this font's
+    Persian look-alikes to Arabic. Applied PER GLYPH, never the assembled
+    line, so a lam-alef ligature still expands in place and a neighbouring
+    base-form glyph (or a genuine space glyph next to this one) is never
+    touched by either step.
 
-    Applied PER GLYPH, before glyphs are joined, for the same reason
-    reversal is per-glyph (module docstring, point 1): a lam-alef
-    presentation ligature (``U+FEFB``, ``U+FEF5``, ...) is ONE glyph whose
-    NFKC decomposition is TWO characters (``لا``, ``لآ``, ...), already in
-    logical order — folding the assembled line instead of the individual
-    glyph would risk normalising text a caller never classified as a
-    presentation form in the first place, and could not tell a base-form
-    ``ی`` (must survive untouched) from one that arrived via folding. The
-    same reasoning is why the leading-space strip below reads THIS glyph's
-    own original code point, never the assembled line: a real space glyph
-    marking a genuine word boundary next to one of these is a SEPARATE
-    glyph and must never be touched by it.
-
-    Checking for a presentation-form code point BEFORE normalising, rather
-    than just always normalising, is what keeps a base-letter glyph
-    byte-identical: NFKC is a no-op for plain Arabic letters here, but the
-    Persian fold below is not, and it must never touch a base-form ``ی``.
-
-    NFKC decomposes 14 specific presentation forms (6 shadda ligatures, 8
-    isolated-haraka forms — ``_NFKC_LEADING_SPACE``) with a LEADING SPACE
-    ahead of the actual mark(s), a Unicode Character Database quirk. Left
-    in, that space lands INSIDE a word once this glyph joins its
-    neighbours — this fixture's 6 uses of U+FC60 mid-word did exactly that
-    (module docstring, point 7). Stripped only from these 14 glyphs' own
-    NFKC result, never from text in general.
-
-    U+06BE (heh-doachashmee) is folded whenever it appears at all,
-    presentation form or raw (``_ALWAYS_FOLD_RAW`` above): ArialMT (the
-    font behind evals/app/policy_ar.pdf) only routes heh through a
-    presentation form in medial/final position — INITIAL-position heh
-    comes through as plain base-block U+06BE instead, confirmed with a
-    direct pdfplumber scan (11 occurrences, pages 1/2/5/6; every
-    medial/final heh in the same document is U+FBAD/U+FBAB). Farsi yeh
-    (U+06CC) is NOT folded in base form: unconditionally folding it would
-    defeat `test_a_base_letter_farsi_yeh_is_never_folded`'s own point, and
-    this fixture has no raw occurrence of it — in any position — to
-    measure either way.
+    Folds a base-form glyph only for U+06BE (`_ALWAYS_FOLD_RAW`) — a
+    base-form U+06CC is legitimate Persian text and must survive as-is.
     """
     is_presentation_form = bool(_PRESENTATION_FORM.search(text))
     if is_presentation_form:
@@ -438,13 +342,20 @@ def extract_pages(
     pages: list[str] = []
     with pdfplumber.open(str(path)) as pdf:
         for page in pdf.pages:
-            chars = page.chars if keep_latin else arabic_column(page.chars)
-            lines: list[str] = []
-            for line in group_lines(chars, line_tol):
-                text = logical_line(drop_marks(line), keep_latin=keep_latin).strip()
-                if text:
-                    lines.append(text)
-            pages.append("\n".join(lines))
+            try:
+                chars = page.chars if keep_latin else arabic_column(page.chars)
+                lines: list[str] = []
+                for line in group_lines(chars, line_tol):
+                    text = logical_line(drop_marks(line), keep_latin=keep_latin).strip()
+                    if text:
+                        lines.append(text)
+                pages.append("\n".join(lines))
+            finally:
+                # pdfplumber keeps a page's parsed content in memory until
+                # closed — 293 MB at 150 pages, 1.03 GB at 600 (measured),
+                # on an app machine with ~3 GB free. `finally` closes it
+                # even when this page's own extraction raised.
+                page.close()
     return pages
 
 

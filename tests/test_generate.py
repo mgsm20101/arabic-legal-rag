@@ -274,6 +274,14 @@ def test_a_missing_transformers_dependency_raises_generator_unavailable(monkeypa
     needs to be able to catch a missing dependency the same way it catches
     an unreachable Ollama server, and report it cleanly (exit 5) instead."""
     monkeypatch.setitem(sys.modules, "transformers", None)
+    # `load_model` does `import torch` before `from transformers import ...`.
+    # `sys.modules["transformers"] = None` makes that second import fail
+    # without ever touching disk, but the first one is a real import unless
+    # something is already registered under "torch" — and paying for that
+    # (measured: ~3.4s, most of this file's own runtime) buys nothing here,
+    # since what this test checks is the *transformers* import failing.
+    if "torch" not in sys.modules:
+        monkeypatch.setitem(sys.modules, "torch", types.ModuleType("torch"))
 
     with pytest.raises(GeneratorUnavailable):
         load_model("some/repo")
@@ -303,7 +311,7 @@ def test_a_bad_checkpoint_raises_generator_unavailable_not_a_raw_exception(monke
 
     with pytest.raises(GeneratorUnavailable) as exc_info:
         load_model("some/repo")
-    assert "some/repo" in str(exc_info.value) or "config.json" in str(exc_info.value)
+    assert "some/repo" in str(exc_info.value)
 
 
 def test_ollama_and_generate_agree_on_temperature():

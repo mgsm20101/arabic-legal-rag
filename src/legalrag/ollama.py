@@ -205,22 +205,50 @@ def health(host: str | None = None, client: httpx.Client | None = None) -> dict:
     c = client if client is not None else httpx.Client(timeout=HEALTH_TIMEOUT)
     try:
         try:
-            version_resp = c.get(f"{h}/api/version")
-            ps_resp = c.get(f"{h}/api/ps")
+            # `timeout=` is passed explicitly on both calls, not left to
+            # `c`'s own default: `run_metadata` below reuses a running
+            # `OllamaChat`'s client rather than building a fresh one, and
+            # that client's default timeout is the *generation* timeout (up
+            # to 600s) — a health check hanging that long instead of failing
+            # fast defeats the point of a separate, short HEALTH_TIMEOUT.
+            version_resp = c.get(f"{h}/api/version", timeout=HEALTH_TIMEOUT)
+            ps_resp = c.get(f"{h}/api/ps", timeout=HEALTH_TIMEOUT)
         except httpx.TransportError as e:
             return {"reachable": False, "error": str(e)}
 
         try:
+            # `.json()` succeeding is not the same as the *shape* being what
+            # the rest of this function assumes. A well-formed but wrong
+            # shape (a bare JSON list, `{"models": null}`, a string sitting
+            # where a model object belongs) would otherwise raise
+            # AttributeError/TypeError deep in the loop below, uncaught by
+            # the `except ValueError` this function already had for a
+            # non-JSON body. Raising ValueError from the same isinstance
+            # checks routes both failure modes through one handler instead
+            # of two.
             version = None
             if 200 <= version_resp.status_code < 300:
-                version = version_resp.json().get("version")
+                version_payload = version_resp.json()
+                if not isinstance(version_payload, dict):
+                    raise ValueError("'/api/version' response is not a JSON object")
+                version = version_payload.get("version")
 
             loaded = []
             if 200 <= ps_resp.status_code < 300:
-                for m in ps_resp.json().get("models", []):
+                ps_payload = ps_resp.json()
+                if not isinstance(ps_payload, dict):
+                    raise ValueError("'/api/ps' response is not a JSON object")
+                models = ps_payload.get("models", [])
+                if not isinstance(models, list):
+                    raise ValueError("'models' is not a list")
+                for m in models:
+                    if not isinstance(m, dict):
+                        raise ValueError("a 'models' entry is not a JSON object")
                     size = m.get("size") or 0
                     size_vram = m.get("size_vram") or 0
                     details = m.get("details") or {}
+                    if not isinstance(details, dict):
+                        details = {}
                     loaded.append({
                         "name": m.get("name"),
                         "size": size,
@@ -232,9 +260,9 @@ def health(host: str | None = None, client: httpx.Client | None = None) -> dict:
                         "quantization": details.get("quantization_level"),
                     })
         except ValueError as e:
-            # `.json()` on a truncated or non-JSON body raises here. A
-            # health check reporting that badly-formed response as an
-            # unhandled exception would be worse than just saying so.
+            # `.json()` on a truncated or non-JSON body raises here too. A
+            # health check reporting a badly-formed or wrong-shaped response
+            # as an unhandled exception would be worse than just saying so.
             return {"reachable": False, "error": f"malformed response from Ollama: {e}"}
 
         return {"reachable": True, "version": version, "loaded": loaded}

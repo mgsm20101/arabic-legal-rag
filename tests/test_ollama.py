@@ -322,6 +322,34 @@ def test_health_does_not_raise_on_a_malformed_json_response():
     assert isinstance(info["error"], str)
 
 
+def test_health_does_not_raise_on_well_formed_json_of_the_wrong_shape():
+    """`.json()` succeeding does not mean the shape this function assumes is
+    actually there. A JSON list where `/api/ps` should send an object,
+    `{"models": null}`, and a string sitting where a model object belongs
+    are all valid JSON — none of them raise the `ValueError` the existing
+    malformed-body handling already caught, so each would previously reach
+    `.get`/the `for` loop and blow up with AttributeError or TypeError
+    instead of a clean `reachable: False`."""
+    def _handler(ps_body):
+        def handler(request):
+            if request.url.path == "/api/version":
+                return httpx.Response(200, json={"version": "0.20.3"})
+            return httpx.Response(200, json=ps_body)
+        return handler
+
+    ps_is_a_list = health(client=_client(_handler(["not", "an", "object"])))
+    assert ps_is_a_list["reachable"] is False
+    assert isinstance(ps_is_a_list["error"], str)
+
+    models_is_null = health(client=_client(_handler({"models": None})))
+    assert models_is_null["reachable"] is False
+    assert isinstance(models_is_null["error"], str)
+
+    entry_is_a_string = health(client=_client(_handler({"models": ["oops"]})))
+    assert entry_is_a_string["reachable"] is False
+    assert isinstance(entry_is_a_string["error"], str)
+
+
 def test_run_metadata_matches_a_tagged_model_by_exact_name():
     handler = _ps_handler([
         {"name": "gemma3:4b", "size": 4_000_000_000, "size_vram": 2_000_000_000,

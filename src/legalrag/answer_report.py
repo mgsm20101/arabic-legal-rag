@@ -1,9 +1,10 @@
 """Console reports for the M2 answer evaluation — PRD M2/B1 and M2/B2.
 
-Split out of `answer_eval.py` (task 2.0): that module was past the project's
-800-line soft ceiling, and Run 5 adds a second report (`report_claims`)
-alongside this one — two reports belong in their own module, not bolted onto
-the file that does retrieval and generation wiring.
+Split out of `answer_eval.py` (task 2.0): that module (518 lines at the time)
+was past the ~500-line threshold the code review set for it, and Run 5 adds a
+second report (`report_claims`) alongside this one — two reports belong in
+their own module, not bolted onto the file that does retrieval and generation
+wiring.
 
 `report()` takes already-loaded `rows` and an optional `meta` dict — the
 sibling `.meta.json` an `ollama:` run wrote next to its rows. Reading `runs/`
@@ -250,6 +251,12 @@ def report_claims(rows: list[dict], meta: dict | None = None) -> int:
 
     print(f"  coverage (>=1 kept claim)          : {_pct(len(covered), len(answerable))}")
     print(f"  false abstention on answerable     : {_pct(len(false_abstain), len(answerable))}")
+    # The pre-run smoke test's Q017 risk (EVAL.md, ecd37f8): a model that
+    # sets abstain=true but hands over claims anyway is a different failure
+    # from simply not abstaining — worth its own line, since `report()`
+    # (the free-text contract) has no equivalent count to fold it into.
+    ignored_on_abstain = sum(r["gate"]["ignored_on_abstain"] for r in rows)
+    print(f"  claims ignored on an abstain=true   : {ignored_on_abstain}")
     b2 = (len(correct_abstain) / len(out_of_corpus)) if out_of_corpus else 0.0
     print(f"  B2 - abstained on out_of_corpus     : "
           f"{_pct(len(correct_abstain), len(out_of_corpus))}    (criterion: >= 80%)")

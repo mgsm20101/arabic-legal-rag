@@ -200,6 +200,22 @@ def test_a_source_number_outside_the_retrieved_list_counts_as_fabricated():
     assert result["kept"] == []
 
 
+def test_source_number_zero_is_fabricated_not_the_last_source():
+    """`sources[i] - 1` indexes into `source_texts`/`source_numbers` — a
+    caller that forgot the lower bound could let Python's negative-index
+    wraparound turn source 0 into the LAST source instead of catching it as
+    out of range."""
+    parsed = {"abstain": False, "claims": [
+        {"text": "الرد خلال ستة أيام عمل.", "sources": [0]},
+    ]}
+
+    result = gate(parsed, SOURCE_NUMBERS, SOURCE_TEXTS)
+
+    assert result["fabricated"] == 1
+    assert result["dropped"][0]["reason"] == "fabricated"
+    assert result["kept"] == []
+
+
 def test_a_claim_naming_an_article_it_does_not_cite_is_ungrounded():
     """Article 30 is not among the numbers of the claim's own cited sources
     ({7}) — any check that only asks "does 30 exist somewhere" would miss
@@ -217,10 +233,14 @@ def test_a_claim_naming_an_article_it_does_not_cite_is_ungrounded():
 
 def test_a_claim_quoting_its_own_source_may_name_the_articles_that_source_names():
     """Egyptian statutes cite themselves — a claim that copies its cited
-    source verbatim is not the model inventing a citation, it is the law
-    naming itself (the same exemption `audit` already gives free text via
-    `copied_from_context`). This is Run 5's recorded meaning change: the
-    claim is KEPT, with `copied` set so the rate is visible on its own."""
+    source verbatim and repeats the article number the source's own text
+    names is not the model inventing a citation, it is the law naming
+    itself. Kept because 14 is a number `citations()` finds in the
+    source's own text (`numbers_in_own_sources`), NOT merely because the
+    claim happens to be a copy — `copied` is recorded here too, but it is
+    not what licenses this claim; compare
+    `test_a_copied_claim_that_adds_an_article_no_source_names_is_ungrounded`,
+    where the claim is copied AND still dropped."""
     self_citing_text = (
         "استثناء من حكم المادة (14) من هذا القانون يجوز نقل البيانات "
         "بموافقة صريحة من صاحبها في جميع الأحوال دون استثناء يذكر."
@@ -233,6 +253,73 @@ def test_a_claim_quoting_its_own_source_may_name_the_articles_that_source_names(
 
     assert result["ungrounded"] == 0
     assert result["kept"] == [{"text": self_citing_text, "sources": [1], "copied": True}]
+
+
+def test_a_claim_may_name_an_article_that_its_own_source_names():
+    """The allowance follows the pre-registration's actual reason — "the
+    law cites itself" — not the wording of the earlier rule, which only
+    ever exempted a claim that was itself a verbatim copy. A PARAPHRASE
+    (never copied — see the `copied: False` below) that correctly names an
+    article its own cited source's text names is grounded on the same
+    reasoning; it was wrongly dropped before this fix, since the old rule's
+    exemption never triggered without a literal copy."""
+    source_text = (
+        "استثناء من حكم المادة (14) من هذا القانون، يجوز نقل البيانات "
+        "بموافقة صريحة."
+    )
+    paraphrase = "يوجد استثناء بموجب المادة 14 يسمح بنقل البيانات بموافقة صريحة من صاحبها."
+    parsed = {"abstain": False, "claims": [
+        {"text": paraphrase, "sources": [1]},
+    ]}
+
+    result = gate(parsed, [7], [source_text])
+
+    assert result["ungrounded"] == 0
+    assert result["kept"] == [{"text": paraphrase, "sources": [1], "copied": False}]
+
+
+def test_a_copied_claim_that_adds_an_article_no_source_names_is_ungrounded():
+    """The bug the fix closes: a claim built from a 60+ character copied
+    run PLUS one invented sentence ("وفقاً للمادة 99") used to have EVERY
+    article number it mentioned exempted, because `copied_from_context`
+    was checked once against the whole claim rather than per number. 99 is
+    not the cited source's own article number, and the source's own text
+    never names it either — dropped now, whether or not part of the claim
+    is copied."""
+    source_text = (
+        "استثناء من حكم المادة (14) من هذا القانون، يجوز نقل البيانات "
+        "بموافقة صريحة."
+    )
+    claim_text = source_text + " وفقاً للمادة 99."
+    parsed = {"abstain": False, "claims": [
+        {"text": claim_text, "sources": [1]},
+    ]}
+
+    result = gate(parsed, [7], [source_text])
+
+    assert result["ungrounded"] == 1
+    assert result["dropped"][0]["reason"] == "ungrounded"
+    assert result["kept"] == []
+
+
+def test_an_article_named_only_by_a_retrieved_source_the_claim_does_not_cite_is_ungrounded():
+    """The allowance is scoped to the claim's OWN cited sources — a number
+    some OTHER retrieved source's text happens to name does not license a
+    claim that never cited that source. Source 2's text below self-cites
+    article 30, but this claim cites only source 1."""
+    numbers = [7, 12]
+    texts = [
+        "يلتزم المتحكم بالإبلاغ خلال ستة أيام عمل من تاريخ العلم بالخرق.",
+        "استثناء من حكم المادة (30) من هذا القانون، يجوز للمركز الإعفاء من الإخطار.",
+    ]
+    parsed = {"abstain": False, "claims": [
+        {"text": "يلزم الإبلاغ خلال ستة أيام عمل [مادة 30].", "sources": [1]},
+    ]}
+
+    result = gate(parsed, numbers, texts)
+
+    assert result["ungrounded"] == 1
+    assert result["kept"] == []
 
 
 def test_a_response_whose_claims_are_all_removed_becomes_an_abstention():

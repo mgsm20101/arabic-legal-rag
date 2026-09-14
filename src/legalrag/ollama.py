@@ -249,13 +249,25 @@ def health(host: str | None = None, client: httpx.Client | None = None) -> dict:
                     details = m.get("details") or {}
                     if not isinstance(details, dict):
                         details = {}
+                    # Ollama itself always sends `size`/`size_vram` as
+                    # numbers, but nothing else guarantees it (a proxy, a
+                    # different server version) — dividing a string like
+                    # "4GB" would raise TypeError instead of the clean
+                    # `gpu_share: None` a value this function cannot use
+                    # should produce.
+                    size_is_number = isinstance(size, (int, float)) and not isinstance(size, bool)
+                    vram_is_number = (
+                        isinstance(size_vram, (int, float)) and not isinstance(size_vram, bool)
+                    )
+                    can_divide = size_is_number and vram_is_number and size
                     loaded.append({
                         "name": m.get("name"),
                         "size": size,
                         "size_vram": size_vram,
                         # None, not 0.0: a share of zero is a measurement: a
-                        # missing or zero `size` is the absence of one.
-                        "gpu_share": (size_vram / size) if size else None,
+                        # missing, zero, or non-numeric `size`/`size_vram`
+                        # is the absence of one.
+                        "gpu_share": (size_vram / size) if can_divide else None,
                         "digest": m.get("digest"),
                         "quantization": details.get("quantization_level"),
                     })

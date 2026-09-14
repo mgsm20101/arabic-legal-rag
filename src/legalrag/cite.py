@@ -196,10 +196,23 @@ def _gate_one_claim(
 
     own_texts = [source_texts[s - 1] for s in sources]
     own_numbers = {source_numbers[s - 1] for s in sources if source_numbers[s - 1] is not None}
+    # "القانون بيحيل على نفسه" licenses an article the SOURCE'S OWN TEXT
+    # names — not every number a claim happens to mention while some part
+    # of it is copied. Scoped to the claim's own cited sources only: a
+    # number some OTHER retrieved source names does not license a claim
+    # that never cited that source.
+    numbers_in_own_sources = {n for t in own_texts for n in citations(t)}
+    allowed = own_numbers | numbers_in_own_sources
+
+    # `copied` is still computed and still reported (`report_claims`'s own
+    # rate) — it just no longer decides what is allowed. See `gate`'s
+    # docstring for the bug this replaces: a claim built from a 60+
+    # character copied run plus one invented sentence used to have EVERY
+    # number it mentioned exempted, including one the source never named.
     copied = copied_from_context(text, own_texts)
 
     mentioned = citations(text)
-    if any(n not in own_numbers for n in mentioned) and not copied:
+    if any(n not in allowed for n in mentioned):
         return None, {"text": text, "sources": sources, "reason": "ungrounded"}
 
     return {"text": text, "sources": sources, "copied": copied}, None
@@ -227,23 +240,38 @@ def gate(
     2. any `sources` entry outside ``1..k`` -> dropped, ``fabricated`` (the
        model pointed at a source that was never shown to it).
     3. the claim's text names an article ("مادة N", strict or loose form,
-       via `citations`) that is not one of the article numbers of its OWN
-       cited sources -> dropped, ``ungrounded`` — UNLESS the claim's text is
-       copied verbatim out of one of those same sources
-       (`copied_from_context`). Egyptian statutes cite themselves
-       ("استثناء من حكم المادة (14) من هذا القانون"), so a copied sentence
-       can legitimately name an article that is not the one it was filed
-       under; that is the law, not the model inventing a citation. This is
-       the same exemption `audit` already applies to free text, carried
-       over to the claims shape.
+       via `citations`) that is not *allowed* -> dropped, ``ungrounded``. An
+       article number N is allowed only if N is the article number of one
+       of the claim's own cited sources, OR `citations` finds N in the TEXT
+       of one of those same sources (a source that cites itself, e.g.
+       "استثناء من حكم المادة (14) من هذا القانون" — Egyptian statutes do
+       this). The scope is always the claim's own cited sources: a number
+       named only by some OTHER retrieved source, one this claim did not
+       cite, is not allowed either.
 
-    A claim that survives is ``{"text", "sources", "copied": bool}`` — kept
-    regardless of `copied`, per Run 5's recorded meaning change: in Run 3/4
-    a citation sitting inside copied text was not counted, because the
-    citation was part of the copied prose itself. Here the source is a
-    *separate* field the model fills in alongside the quote, so a claim
-    that quotes its source verbatim and correctly names that source counts
-    as grounded. `copied` is reported as its own rate in
+       The exemption follows this reason, not the wording of an earlier
+       version of this rule, which instead exempted a claim outright
+       whenever `copied_from_context` found it copied — checked once,
+       against the whole claim, rather than per article number. That let a
+       claim built from a 60+ character copied run plus one *invented*
+       sentence ("...وفقاً للمادة 99") keep an article number no source
+       ever named, simply because *some* other part of the same claim was
+       copied. The fix cuts both ways: a copied claim that adds an article
+       none of its sources name is now ``ungrounded`` (it was wrongly kept
+       before), and a *paraphrase* — never copied at all — that correctly
+       names an article its own cited source's text names is now kept (it
+       was wrongly dropped before, since the old rule's exemption never
+       triggered without a literal copy).
+
+    A claim that survives is ``{"text", "sources", "copied": bool}`` —
+    `copied` (`copied_from_context` against the claim's own cited sources)
+    is still computed and still reported, it just no longer decides what is
+    allowed. Kept regardless of its value, per Run 5's recorded meaning
+    change: in Run 3/4 a citation sitting inside copied text was not
+    counted, because the citation was part of the copied prose itself. Here
+    the source is a *separate* field the model fills in alongside the
+    quote, so a claim that quotes its source verbatim and correctly names
+    that source counts as grounded. The rate is printed on its own in
     `answer_report.report_claims`, never folded into a pass/fail number.
 
     `status` is ``"abstained"`` when nothing is kept — whether because

@@ -350,6 +350,24 @@ def test_health_does_not_raise_on_well_formed_json_of_the_wrong_shape():
     assert isinstance(entry_is_a_string["error"], str)
 
 
+def test_health_gives_no_gpu_share_when_size_fields_are_not_numbers():
+    """Ollama itself always sends numeric `size`/`size_vram`, but nothing
+    guarantees a proxy or a different server build does — dividing a
+    string like "4GB" by another value must not raise TypeError, on
+    either side of the division."""
+    non_numeric_size = health(client=_client(_ps_handler([
+        {"name": "m", "size": "4GB", "size_vram": 2_000_000_000},
+    ])))
+    assert non_numeric_size["reachable"] is True
+    assert non_numeric_size["loaded"][0]["gpu_share"] is None
+
+    non_numeric_vram = health(client=_client(_ps_handler([
+        {"name": "m", "size": 4_000_000_000, "size_vram": "2GB"},
+    ])))
+    assert non_numeric_vram["reachable"] is True
+    assert non_numeric_vram["loaded"][0]["gpu_share"] is None
+
+
 def test_run_metadata_matches_a_tagged_model_by_exact_name():
     handler = _ps_handler([
         {"name": "gemma3:4b", "size": 4_000_000_000, "size_vram": 2_000_000_000,

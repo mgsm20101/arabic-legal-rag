@@ -423,3 +423,91 @@ def test_the_json_contract_with_an_hf_model_exits_2_before_loading_anything(monk
     assert code == 2
     assert "json" in out
     assert "hf:" + DEFAULT_MODEL in out
+
+
+def test_an_unknown_contract_exits_2_before_loading_anything(monkeypatch, capsys):
+    import legalrag.answer_eval as ae
+
+    def boom():
+        raise AssertionError("load_questions must not run for an unknown contract")
+    monkeypatch.setattr(ae, "load_questions", boom)
+
+    code = main(["--contract", "yaml"])
+    out = capsys.readouterr().out
+
+    assert code == 2
+    assert "yaml" in out
+
+
+def test_a_rows_file_saved_for_the_other_contract_is_refused_both_directions(
+    tmp_path, monkeypatch, capsys
+):
+    """`contract="json"` only changes a rows file's name by a fixed `-json`
+    suffix (`rows_path`) — a `text` run of a model literally named
+    `...-json` can land on the exact same path as a `json` run of a
+    differently-named model. Both directions must be refused, not just a
+    plain model-name mismatch."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "runs").mkdir()
+    collide_path = tmp_path / "runs" / "answer_eval-ollama-foo-json.json"
+
+    # Direction 1: "ollama:foo-json" under "text" already saved there;
+    # "ollama:foo" under "json" computes the exact same path.
+    collide_path.write_text(
+        json.dumps([{"id": "Q1", "model": "ollama:foo-json", "contract": "text"}]),
+        encoding="utf-8",
+    )
+    code = main(["--model", "ollama:foo", "--contract", "json"])
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "ollama:foo-json" in out
+    assert "text" in out
+
+    # Direction 2: the same path now holds "ollama:foo" under "json";
+    # "ollama:foo-json" under "text" computes the exact same path back.
+    collide_path.write_text(
+        json.dumps([{"id": "Q1", "model": "ollama:foo", "contract": "json"}]),
+        encoding="utf-8",
+    )
+    code = main(["--model", "ollama:foo-json", "--contract", "text"])
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "json" in out
+
+
+def test_report_only_json_through_main_re_applies_the_gate(tmp_path, monkeypatch, capsys):
+    """The CLI path, not only the `_regate` unit itself: `--report-only
+    --contract json` must actually reach `_regate` and print through
+    `report_claims` — a deliberately wrong saved verdict must come back
+    corrected, the same guarantee `_reaudit` already gives the text
+    contract."""
+    import legalrag.answer_eval as ae
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "runs").mkdir()
+    monkeypatch.setattr(ae, "load_docs", lambda path: [{"id": "law-7", "text": "نص المادة السابعة"}])
+
+    rows_file = tmp_path / "runs" / "answer_eval-ollama-stub-json.json"
+    rows_file.write_text(json.dumps([{
+        "id": "Q1", "answerable": True, "category": "direct",
+        "model": "ollama:stub", "contract": "json",
+        "source_numbers": [7], "expected": [7],
+        "parsed": {"abstain": False, "claims": [
+            {"text": "الرد سبعة أيام.", "sources": [1]},
+        ]},
+        "raw": ['{"abstain": false, "claims": [{"text": "الرد سبعة أيام.", "sources": [1]}]}'],
+        "attempts": 1, "schema_failure": False, "seconds": 1.0,
+        # Deliberately wrong stored verdict — the CLI path must overwrite
+        # it via _regate, not replay it.
+        "gate": {"status": "abstained", "kept": [], "dropped": [],
+                 "uncited": 0, "fabricated": 0, "ungrounded": 0,
+                 "ignored_on_abstain": 0},
+    }]), encoding="utf-8")
+
+    code = main(["--model", "ollama:stub", "--contract", "json", "--report-only"])
+    out = capsys.readouterr().out
+
+    assert "re-gated" in out
+    assert "coverage" in out
+    assert "1/1" in out  # the one answerable question now has a kept claim
+    assert code in (0, 1)

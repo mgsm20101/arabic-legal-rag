@@ -255,7 +255,11 @@ def test_adoption_requires_zero_fabricated_sources():
 
 def test_adoption_requires_b2_of_at_least_80_percent():
     """Fabricated stays 0 and 10/15 still cite the expected article — only
-    B2 (3/5, below the 80% floor) should sink the verdict."""
+    B2 (3/5, below the 80% floor) should sink the verdict. With only 5
+    out_of_corpus questions, B2 can only ever be a multiple of 20%, so 3/5
+    (60%) — one step below the 4/5 (80%) floor — IS the pinned boundary;
+    see test_adoption_at_exactly_the_pinned_thresholds_is_adopted for the
+    4/5 side of it."""
     rows = _answerable_claims_rows(10) + _abstained_ooc_rows(3, start=16) + [
         _claims_row(f"Q{i}", answerable=False, source_numbers=[3, 4],
                     kept=[{"text": "نص غير ذي صلة بالسؤال.", "sources": [1], "copied": False}])
@@ -299,3 +303,92 @@ def test_a_gate_that_drops_everything_is_not_adopted():
     assert "0/15" in out
     assert "ADOPT for the app: NO" in out
     assert code == 1
+
+
+def _boundary_rows(n_hit: int, n_b2: int, fabricate_last_hit: bool = False) -> list[dict]:
+    """15 answerable rows (Q1..Q15) — `n_hit` keep a claim citing the
+    expected article, the rest keep nothing — plus 5 out_of_corpus rows
+    (Q16..Q20), `n_b2` of which correctly abstain and the rest wrongly
+    answer. If `fabricate_last_hit`, the LAST hit row also carries one
+    fabricated-dropped claim, so cited-expected and B2 stay exactly at
+    `n_hit`/`n_b2` while fabricated goes from 0 to 1 — the one condition
+    a caller wants to flip in isolation.
+    """
+    answerable = []
+    for i in range(1, 16):
+        if i > n_hit:
+            answerable.append(_claims_row(f"Q{i}", expected=[7], source_numbers=[7, 12]))
+            continue
+        kept = [{"text": "الرد سبعة أيام.", "sources": [1], "copied": False}]
+        dropped, fabricated = [], 0
+        if fabricate_last_hit and i == n_hit:
+            dropped = [{"text": "بلا سند", "sources": [9], "reason": "fabricated"}]
+            fabricated = 1
+        answerable.append(_claims_row(
+            f"Q{i}", expected=[7], source_numbers=[7, 12],
+            kept=kept, dropped=dropped, fabricated=fabricated,
+        ))
+
+    ooc = []
+    for j, i in enumerate(range(16, 21)):
+        if j < n_b2:
+            ooc.append(_claims_row(f"Q{i}", answerable=False, source_numbers=[3, 4]))
+        else:
+            ooc.append(_claims_row(
+                f"Q{i}", answerable=False, source_numbers=[3, 4],
+                kept=[{"text": "نص غير ذي صلة بالسؤال.", "sources": [1], "copied": False}],
+            ))
+    return answerable + ooc
+
+
+def test_adoption_at_exactly_the_pinned_thresholds_is_adopted():
+    """10/15 cited-expected, 4/5 B2, 0 fabricated are the exact conditions
+    EVAL.md's pre-registration (ecd37f8) fixes — "at least 10", "B2 >= 80%".
+    A report that always prints NO, or that used `<=` where the
+    pre-registration means `<` (or the reverse, on the fabricated side),
+    would pass every other adoption test here and fail only this one."""
+    rows = _boundary_rows(n_hit=10, n_b2=4)
+
+    code, out = _claims_run(rows)
+
+    assert "ADOPT for the app: YES" in out
+    assert code == 0
+
+
+def test_adoption_fails_one_short_of_the_cited_expected_threshold():
+    """9/15, one below the pinned 10 — B2 and fabricated stay at their
+    passing values so only this condition can be responsible for the NO."""
+    rows = _boundary_rows(n_hit=9, n_b2=4)
+
+    code, out = _claims_run(rows)
+
+    assert "ADOPT for the app: NO" in out
+    reason = out.split("ADOPT for the app:")[1]
+    assert "9" in reason and "10" in reason
+    assert code == 1
+
+
+def test_adoption_fails_with_one_fabricated_claim_even_at_the_other_thresholds():
+    """10/15 cited-expected and 4/5 B2 both sit exactly at their pinned,
+    passing values — only the single fabricated claim should sink this."""
+    rows = _boundary_rows(n_hit=10, n_b2=4, fabricate_last_hit=True)
+
+    code, out = _claims_run(rows)
+
+    assert "ADOPT for the app: NO" in out
+    assert "fabricated" in out.split("ADOPT for the app:")[1]
+    assert code == 1
+
+
+def test_the_claims_report_prints_claims_ignored_alongside_an_explicit_abstention():
+    """The pre-run smoke test's Q017 risk (EVAL.md, ecd37f8): a model that
+    sets `abstain: true` but still hands over claims anyway is a different
+    failure than simply not abstaining, and `report()` (the text contract)
+    has no equivalent count — it must be visible here on its own, not
+    folded into `dropped` or `false abstention`."""
+    rows = _answerable_claims_rows(10) + _abstained_ooc_rows()
+    rows[0]["gate"]["ignored_on_abstain"] = 2
+
+    _, out = _claims_run(rows)
+
+    assert "ignored on an abstain=true   : 2" in out

@@ -1,0 +1,16 @@
+{
+  "split": "app-dev",
+  "document": "policy_ar",
+  "files": ["policy_ar.html", "policy_ar.pdf", "policy_ar.txt"],
+  "language": "ar",
+  "synthetic": true,
+  "license": "Authored for this repository; distributed under the repository's MIT license.",
+  "created": "2026-09-14",
+  "pages": 6,
+  "questions": 15,
+  "answerable": 10,
+  "out_of_doc": 5,
+  "categories": {"direct": 4, "paraphrase": 3, "colloquial": 3, "out_of_doc": 5},
+  "retrieval_hit": "a top-5 chunk whose text contains every expected keyword, both sides passed through evaluation_normalize",
+  "written_before": "any upload-pipeline or app code (ADR-023) — git history is the proof"
+}

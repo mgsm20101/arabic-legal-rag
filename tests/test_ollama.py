@@ -372,10 +372,20 @@ def test_run_metadata_is_unreachable_without_raising():
     assert isinstance(meta["error"], str)
 
 
-def test_ollama_chat_returns_a_chat_instance_without_touching_the_network():
+def test_ollama_chat_returns_a_chat_instance_without_touching_the_network(monkeypatch):
     """Building a client must be safe even when no server is running — the
-    network call happens on the first `__call__`, not at construction."""
+    network call happens on the first `__call__`, not at construction.
+
+    `httpx.Client` itself is monkeypatched to raise if constructed, so this
+    proves construction never creates one, rather than merely trusting the
+    absence of a crash as evidence of it.
+    """
+    def _must_not_construct(*args, **kwargs):
+        raise AssertionError("ollama_chat must not construct an httpx.Client")
+    monkeypatch.setattr(httpx, "Client", _must_not_construct)
+
     chat = ollama_chat("qwen3:4b", num_predict=NUM_PREDICT)
+
     assert isinstance(chat, OllamaChat)
     assert chat.model == "qwen3:4b"
     assert chat.last_stats is None

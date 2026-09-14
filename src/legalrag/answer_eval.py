@@ -33,13 +33,14 @@ from pathlib import Path
 from .cite import audit
 from .dense import CACHE_PATH, CORPUS_PATH, DenseIndex, load_docs
 from .evaluate import binding_problem, corpus_laws, load_meta, load_questions
-from .generate import DEFAULT_MODEL, Generator, model_source, resolve_model
+from .generate import DEFAULT_MODEL, Generator, model_source, parse_model_spec, resolve_model
 from .ollama import GeneratorUnavailable, run_metadata
 
 TOP_K = 5
 
 RUNS = Path("runs")
 ROWS_PATH = RUNS / "answer_eval.json"
+DEFAULT_SPEC = "hf:" + DEFAULT_MODEL  # Run 3's model, as a --model spec
 
 
 def rows_path(spec: str) -> Path:
@@ -50,7 +51,7 @@ def rows_path(spec: str) -> Path:
     own file, named from the spec itself — otherwise a second model's run
     would silently overwrite the first's saved answers.
     """
-    if spec == "hf:" + DEFAULT_MODEL:
+    if spec == DEFAULT_SPEC:
         return ROWS_PATH
     slug = re.sub(r"[^A-Za-z0-9._-]", "-", spec)
     return RUNS / f"answer_eval-{slug}.json"
@@ -104,6 +105,13 @@ def run(questions, docs, generator: Generator, model_spec: str, k: int = TOP_K,
     texts = {d["id"]: d["text"] for d in docs}
     corpus_numbers = {n for n in (article_number(d["id"]) for d in docs) if n}
 
+    # Provenance belongs on the row, not only in the console header
+    # (`_weights_line`): a saved run should be able to answer "what did
+    # this actually load from?" on its own. Same for every row in one run,
+    # so it is resolved once rather than per question.
+    prefix, name = parse_model_spec(model_spec)
+    weights = model_source(name) if prefix == "hf" else None
+
     rows: list[dict] = []
     for q in questions:
         hits = index.search(q.question, k)
@@ -136,6 +144,8 @@ def run(questions, docs, generator: Generator, model_spec: str, k: int = TOP_K,
             "cited_expected": bool(expected & set(result["cited"])),
             **result,
         }
+        if weights is not None:
+            row["weights"] = weights
         if stats is not None:
             row["stats"] = stats
         rows.append(row)
@@ -226,7 +236,7 @@ def report(rows: list[dict]) -> int:
     print("\n" + "=" * 68)
     print("  beyond the criteria")
     print("=" * 68)
-    model_spec = rows[0]["model"] if rows and "model" in rows[0] else "hf:" + DEFAULT_MODEL
+    model_spec = rows[0]["model"] if rows and "model" in rows[0] else DEFAULT_SPEC
     print(f"  model                              : {model_spec}")
     hit = [r for r in scored if r["cited_expected"]]
     strict = [r for r in scored if r["strict"]]
@@ -291,16 +301,17 @@ def _weights_line(model_spec: str) -> str | None:
     nothing sensible to show.
 
     A spec with no repo name after `hf:` (`"hf:"`, or all whitespace) is
-    invalid — `resolve_model` rejects it — but that happens later, in the
-    timed "loading ..." block below. Calling `model_source` on it here first
-    would print a blank `weights    :` line before the real error, and
-    `Path("").is_dir()` resolving to the current directory makes that not
-    even reliably blank. Validate before resolving, not after.
+    invalid — `parse_model_spec` rejects it, `main` now checks that before
+    this is ever called — but this stays defensive on its own: calling
+    `model_source` on such a spec would print a blank `weights    :` line,
+    and `Path("").is_dir()` resolving to the current directory makes that
+    not even reliably blank.
     """
     if not model_spec.startswith("hf:"):
         return None
-    repo = model_spec.partition(":")[2]
-    if not repo.strip():
+    try:
+        _, repo = parse_model_spec(model_spec)
+    except ValueError:
         return None
     return f"weights    : {model_source(repo)}"
 
@@ -323,16 +334,92 @@ def _write_ollama_meta(model_spec: str, chat, rows_file: Path) -> Path:
     return meta_path
 
 
+def _rows_model_mismatch(rows: list[dict], model_spec: str) -> str | None:
+    """The model recorded in `rows`'s first row, when it differs from
+    `model_spec` — None when they agree, `rows` is empty, or `rows` predates
+    the "model" field entirely (Run 3's saved shape, before this existed).
+    """
+    if not rows:
+        return None
+    existing = rows[0].get("model")
+    if existing is None or existing == model_spec:
+        return None
+    return existing
+
+
+def _check_rows_collision(rows_file: Path, model_spec: str) -> str | None:
+    """None if it is safe to (over)write `rows_file` for `model_spec` — a
+    message naming the model actually saved there otherwise.
+
+    Two different specs can slugify to the same file name: `rows_path` maps
+    every character outside [A-Za-z0-9._-] to '-', so a spec built from one
+    kind of separator can collide with one built from another. Silently
+    overwriting a previous run's saved answers under those circumstances
+    would corrupt a different run's history.
+    """
+    if not rows_file.exists():
+        return None
+    try:
+        existing = json.loads(rows_file.read_text(encoding="utf-8"))
+    except ValueError:
+        return None
+    mismatch = _rows_model_mismatch(existing, model_spec)
+    if mismatch is None:
+        return None
+    return (
+        f"{rows_file} already holds answers for {mismatch!r}, not "
+        f"{model_spec!r}. Refusing to overwrite — two different --model "
+        f"specs must not share a rows file."
+    )
+
+
+def _reaudit(rows: list[dict], docs: list[dict]) -> list[dict]:
+    """Recompute every row's citation verdict from its saved text against
+    the current corpus, in place — not a replay of the stored verdicts.
+
+    The audit itself has been wrong twice already: once on B1's wording,
+    once on citations lifted out of copied statute text — and each time the
+    saved answers were still good, only the check was not. Recomputing from
+    the text means a fixed checker costs a second; the generation that
+    produced the text can cost up to 45 minutes of CPU.
+    """
+    by_number = {
+        n: d["text"]
+        for d in docs
+        if (n := article_number(d["id"])) is not None
+    }
+    corpus_numbers = set(by_number)
+    for r in rows:
+        retrieved = set(r["retrieved"])
+        r.update(audit(
+            r["text"], corpus_numbers, retrieved,
+            context=[by_number[n] for n in retrieved if n in by_number],
+        ))
+        r["cited_expected"] = bool(set(r["expected"]) & set(r["cited"]))
+    return rows
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = argv or []
 
-    model_spec = "hf:" + DEFAULT_MODEL
+    model_spec = DEFAULT_SPEC
     if "--model" in argv:
         i = argv.index("--model")
         if i + 1 >= len(argv):
             print("--model requires a value, e.g. --model ollama:qwen3:4b")
             return 2
         model_spec = argv[i + 1]
+
+    try:
+        parse_model_spec(model_spec)
+    except ValueError as e:
+        # Validated here, before anything else loads: a typo in --model
+        # should not cost a corpus load, a question load, or a wasted run.
+        # `resolve_model` (below) re-parses the same spec to dispatch, but
+        # by then it is known good, so it cannot raise ValueError again.
+        print(str(e))
+        return 2
+
     rows_file = rows_path(model_spec)
 
     if "--report-only" in argv:
@@ -341,28 +428,23 @@ def main(argv: list[str] | None = None) -> int:
                   f"Run `python tasks.py answer-eval --model {model_spec}` first.")
             return 2
         rows = json.loads(rows_file.read_text(encoding="utf-8"))
-        # Re-audit rather than replay the stored verdicts. The audit has been
-        # wrong twice already — once on B1's wording, once on citations lifted
-        # out of copied statute text — and each time the answers themselves
-        # were still good. Recomputing from the text means a fixed checker
-        # costs a second instead of another 45 minutes of CPU.
-        docs = load_docs(CORPUS_PATH)
-        by_number = {
-            n: d["text"]
-            for d in docs
-            if (n := article_number(d["id"])) is not None
-        }
-        corpus_numbers = set(by_number)
-        for r in rows:
-            retrieved = set(r["retrieved"])
-            r.update(audit(
-                r["text"], corpus_numbers, retrieved,
-                context=[by_number[n] for n in retrieved if n in by_number],
-            ))
-            r["cited_expected"] = bool(set(r["expected"]) & set(r["cited"]))
+        mismatch = _rows_model_mismatch(rows, model_spec)
+        if mismatch is not None:
+            # A warning, not a refusal: --report-only changes nothing on
+            # disk, so there is nothing to protect by blocking it — but
+            # silently reporting another model's answers as this one's
+            # would be misleading.
+            print(f"WARNING: {rows_file} holds answers for {mismatch!r}, not "
+                  f"{model_spec!r} — reporting on what is actually saved there.")
+        rows = _reaudit(rows, load_docs(CORPUS_PATH))
         print(f"re-audited {len(rows)} saved answers from {rows_file} "
               "(no model loaded)\n")
         return report(rows)
+
+    collision = _check_rows_collision(rows_file, model_spec)
+    if collision is not None:
+        print(collision)
+        return 2
 
     questions, errors = load_questions()
     if errors:
@@ -406,21 +488,13 @@ def main(argv: list[str] | None = None) -> int:
     t = time.perf_counter()
     try:
         model = resolve_model(model_spec)
-    except ValueError as e:
-        # A bad --model spec, caught here specifically rather than with the
-        # broader try below: a ValueError from deep inside `run()` would be a
-        # real bug, and reporting it as "bad model spec" would hide that.
-        print(str(e))
-        return 2
-
-    try:
         generator = Generator(model=model)
         print(f"  ready ({time.perf_counter() - t:.1f}s)\n", flush=True)
         rows = run(questions, docs, generator, model_spec)
     except GeneratorUnavailable as e:
-        # No traceback: this is an environment problem (server not running,
-        # model not pulled), not a bug, and the message already says what to
-        # do about it.
+        # No traceback: this is an environment problem (missing dependency,
+        # bad checkpoint, unreachable Ollama server, model not pulled), not
+        # a bug, and the message already says what to do about it.
         print(str(e))
         return 5
 

@@ -143,7 +143,12 @@ def test_invalid_json_is_retried_once_with_the_error_then_gives_up_as_a_schema_f
     # The retry turn must carry the model's own bad reply and the error.
     retry_messages = model.seen_messages[1]
     assert retry_messages[-2] == {"role": "assistant", "content": "not json at all"}
-    assert "JSON" in retry_messages[-1]["content"]
+    # "JSON" alone is too weak: RETRY_MESSAGE's fixed Arabic template always
+    # contains the word "JSON" on its own, so this would still pass even if
+    # `{error}` were dropped from the `.format(...)` call entirely. "invalid
+    # JSON" is the actual `ClaimsInvalid` reason `parse_claims` raised for
+    # this input — it can only appear here if the real error was interpolated.
+    assert "invalid JSON" in retry_messages[-1]["content"]
 
 
 def test_a_valid_retry_is_used_and_both_raw_attempts_are_kept():
@@ -196,3 +201,22 @@ def test_the_claims_contract_refuses_an_hf_model():
     hf: model would have no way to find out short of parsing failures."""
     with pytest.raises(ValueError):
         resolve_model("hf:some/repo", fmt=CLAIMS_SCHEMA)
+
+
+# --- Commit 2 (m2): a model exception must never be scored as a result -----
+
+
+def test_a_model_exception_during_the_claims_call_propagates_not_a_schema_failure():
+    """An Ollama outage (GeneratorUnavailable) or any other model exception
+    must propagate out of `answer` — never be swallowed into a schema
+    failure or an abstention. A silently-eaten outage scored as a correct
+    abstention would inflate B2, the one number Run 6 is meant to move, and
+    nothing here already catches a bare exception from `self.model(...)` —
+    this pins that so a later refactor (Run 6's shared `ask_json` helper)
+    cannot introduce one by accident."""
+    class _BoomModel:
+        def __call__(self, messages):
+            raise RuntimeError("the model process died")
+
+    with pytest.raises(RuntimeError):
+        ClaimsGenerator(model=_BoomModel()).answer("سؤال", ["نص"])

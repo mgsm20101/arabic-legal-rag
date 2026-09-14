@@ -846,3 +846,47 @@ def test_run_claims_rows_record_the_corpus_fingerprint_and_the_source_ids():
 
     assert rows[0]["corpus_fingerprint"] == corpus_fingerprint(docs)
     assert rows[0]["source_ids"] == ["law-7"]
+
+
+# --- Commit 2 (m2): the CLI path must actually reach _regate ----------------
+
+
+def test_report_only_json_through_main_prints_the_exact_regated_coverage_line_not_the_saved_one(
+    tmp_path, monkeypatch, capsys
+):
+    """A weak "1/1 appears somewhere in the output" check could pass by
+    accident if some OTHER unrelated line happened to contain that same
+    substring. This pins the EXACT labelled coverage line `_regate` must
+    produce, confirms the WRONG saved verdict's line is gone, and checks
+    the exit code — a mutant that skips `_regate` (using the saved, wrong
+    `gate` as-is: `status: abstained, kept: []`) would keep printing the
+    saved 0/1 line and fail every assertion here."""
+    import legalrag.answer_eval as ae
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "runs").mkdir()
+    monkeypatch.setattr(ae, "load_docs", lambda path: [{"id": "law-7", "text": "نص المادة السابعة"}])
+
+    rows_file = tmp_path / "runs" / "answer_eval-ollama-stub-json.json"
+    rows_file.write_text(json.dumps([{
+        "id": "Q1", "answerable": True, "category": "direct",
+        "model": "ollama:stub", "contract": "json",
+        "source_numbers": [7], "expected": [7],
+        "parsed": {"abstain": False, "claims": [
+            {"text": "الرد سبعة أيام.", "sources": [1]},
+        ]},
+        "raw": ['{"abstain": false, "claims": [{"text": "الرد سبعة أيام.", "sources": [1]}]}'],
+        "attempts": 1, "schema_failure": False, "seconds": 1.0,
+        # Deliberately wrong stored verdict — the CLI path must overwrite
+        # it via _regate, not replay it.
+        "gate": {"status": "abstained", "kept": [], "dropped": [],
+                 "uncited": 0, "fabricated": 0, "ungrounded": 0,
+                 "ignored_on_abstain": 0},
+    }]), encoding="utf-8")
+
+    code = main(["--model", "ollama:stub", "--contract", "json", "--report-only"])
+    out = capsys.readouterr().out
+
+    assert "  coverage (>=1 kept claim)          : 1/1 = 100.0%" in out
+    assert "  coverage (>=1 kept claim)          : 0/1 = 0.0%" not in out
+    assert code == 1  # no out_of_corpus rows here -> B2 = 0% < 80%, not adopted

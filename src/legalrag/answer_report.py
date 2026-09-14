@@ -25,6 +25,7 @@ they say different things about where the system broke. See ``cite``.
 
 from __future__ import annotations
 
+from .cite import MIN_CLAIM_CHARS
 from .generate import DEFAULT_MODEL
 
 # Mirrors `answer_eval.DEFAULT_SPEC` exactly (both derive from the same
@@ -206,6 +207,15 @@ B2_MIN = 0.80
 # a tradeoff worth taking for a stricter answer shape.
 CITED_EXPECTED_MIN = 10
 
+# The dev split's exact shape when these thresholds were pinned (EVAL.md).
+# B2 as a fraction and "10 of 15" as a count are both meaningless against a
+# differently-sized split — a future dev set with, say, 8 out_of_corpus
+# questions would silently compare its B2 against a floor that was never
+# set for it. `report_claims` refuses the verdict, not the rest of the
+# report, when a saved run's rows do not match this shape exactly.
+ANSWERABLE_SPLIT = 15
+OUT_OF_CORPUS_SPLIT = 5
+
 
 def _cites_expected(row: dict) -> bool:
     """Does any claim `row` *kept* cite a source whose article number is
@@ -223,12 +233,23 @@ def _cites_expected(row: dict) -> bool:
     return False
 
 
-def report_claims(rows: list[dict], meta: dict | None = None) -> int:
-    """Run 5's report (EVAL.md, commit ecd37f8): the claims-JSON contract
-    and its model-free gate, scored against the same three fixed
-    quantities `report` uses — 15 answerable questions, 5 out_of_corpus —
-    but read through `row["gate"]`, not the free-text contract's
-    `row["cited"]`/`"fabricated"`/... (a claims row carries no such fields).
+def report_claims(
+    rows: list[dict],
+    meta: dict | None = None,
+    *,
+    contract_name: str = "Run 5",
+    pre_registration_commit: str = "ecd37f8",
+) -> int:
+    """The claims-JSON contract and its model-free gate, scored against the
+    same three fixed quantities `report` uses — 15 answerable questions, 5
+    out_of_corpus — but read through `row["gate"]`, not the free-text
+    contract's `row["cited"]`/`"fabricated"`/... (a claims row carries no
+    such fields).
+
+    Introduced for Run 5 (EVAL.md, commit ecd37f8, the defaults below) and
+    reused as-is for Run 6: `contract_name`/`pre_registration_commit` only
+    change the printed header, never the scoring — Run 6 pre-registers
+    this exact gate and these exact numbers as unchanged from Run 5.
 
     **The gate trap, printed unconditionally (EVAL.md's own name for it):**
     a gate that drops every claim would score zero fabricated and zero
@@ -241,7 +262,8 @@ def report_claims(rows: list[dict], meta: dict | None = None) -> int:
     out_of_corpus = [r for r in rows if not r["answerable"]]
 
     print("\n" + "=" * 68)
-    print("  Run 5 contract - claims JSON + gate (EVAL.md, ecd37f8)")
+    print(f"  {contract_name} contract - claims JSON + gate "
+          f"(EVAL.md, {pre_registration_commit})")
     print("=" * 68)
 
     covered = [r for r in answerable if r["gate"]["kept"]]
@@ -275,6 +297,14 @@ def report_claims(rows: list[dict], meta: dict | None = None) -> int:
     kept_total = [c for r in rows for c in r["gate"]["kept"]]
     copied = [c for c in kept_total if c.get("copied")]
     print(f"  kept claims that copy their source : {_pct(len(copied), len(kept_total))}")
+    # The gate keeps a claim as soon as it is sourced and grounded — it says
+    # nothing about whether the text itself is long enough to be a claim at
+    # all. An empty `{"text": "", "sources": [1]}` passes the gate today
+    # (Run 6 pre-registers the gate as unchanged) and silently counts toward
+    # both coverage and cited-expected; this line is the only place it is
+    # visible, without changing what the gate keeps.
+    short = [c for c in kept_total if len(c["text"]) < MIN_CLAIM_CHARS]
+    print(f"  kept claims shorter than a real claim : {_pct(len(short), len(kept_total))}")
 
     n_answered = sum(1 for r in rows if r["gate"]["status"] == "answered")
     n_partial = sum(1 for r in rows if r["gate"]["status"] == "partial")
@@ -283,6 +313,18 @@ def report_claims(rows: list[dict], meta: dict | None = None) -> int:
           f"{n_abstained}  (of {len(rows)})")
 
     _print_runtime_and_meta(rows, meta)
+
+    # The three thresholds below were set FOR this exact split (EVAL.md) —
+    # B2 as a fraction of 5 and "10 of 15" both stop meaning what the
+    # pre-registration says the moment the split is a different size, so the
+    # verdict itself (not the diagnostics above it) is refused rather than
+    # silently compared against thresholds nobody set for this data.
+    if len(answerable) != ANSWERABLE_SPLIT or len(out_of_corpus) != OUT_OF_CORPUS_SPLIT:
+        print(f"\n  ADOPT for the app: n/a — the thresholds were set for "
+              f"{ANSWERABLE_SPLIT} answerable / {OUT_OF_CORPUS_SPLIT} "
+              "out_of_corpus questions")
+        print("\nSmall sample. Read the caveats in EVAL.md before quoting any of this.")
+        return 1
 
     # Same three conditions as the pre-registration, applied exactly: no
     # partial credit, no rounding a near-miss up.

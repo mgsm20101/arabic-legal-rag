@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from legalrag.answer_report import report, report_claims  # noqa: E402
+from legalrag.answer_report import _cites_expected, report, report_claims  # noqa: E402
 
 
 def _row(qid, *, answerable=True, abstained=False, cited=(), strict=(),
@@ -191,10 +191,10 @@ def _claims_row(qid, *, answerable=True, expected=(), source_numbers=(),
     }
 
 
-def _claims_run(rows, meta=None):
+def _claims_run(rows, meta=None, **kwargs):
     buf = io.StringIO()
     with redirect_stdout(buf):
-        code = report_claims(rows, meta=meta)
+        code = report_claims(rows, meta=meta, **kwargs)
     return code, buf.getvalue()
 
 
@@ -237,19 +237,23 @@ def test_the_claims_report_prints_coverage_beside_every_grounding_number():
 
 
 def test_adoption_requires_zero_fabricated_sources():
-    rows = _answerable_claims_rows(9) + [
-        _claims_row(
-            "Q10", expected=[7], source_numbers=[7, 12],
-            kept=[{"text": "الرد سبعة أيام.", "sources": [1], "copied": False}],
-            dropped=[{"text": "بلا سند", "sources": [9], "reason": "fabricated"}],
-            fabricated=1,
-        ),
-    ] + _abstained_ooc_rows()
+    rows = _answerable_claims_rows(9) + _abstained_ooc_rows()
+    # `_answerable_claims_rows(9)` already returns 15 rows (Q1..Q15): 9 hits
+    # and 6 misses. Promote the first miss (Q10) into a hit that ALSO
+    # carries one fabricated claim, instead of appending a 16th row under a
+    # colliding id — that used to work only because nothing checked the
+    # split size; now that the verdict is pinned to exactly 15/5 (Commit 2),
+    # a 16th answerable row would make the verdict "n/a" instead of "NO".
+    rows[9]["gate"]["kept"] = [{"text": "الرد سبعة أيام.", "sources": [1], "copied": False}]
+    rows[9]["gate"]["dropped"] = [{"text": "بلا سند", "sources": [9], "reason": "fabricated"}]
+    rows[9]["gate"]["fabricated"] = 1
+    rows[9]["gate"]["status"] = "partial"
 
     code, out = _claims_run(rows)
 
     assert "ADOPT for the app: NO" in out
     assert "fabricated" in out.split("ADOPT for the app:")[1]
+    assert code == 1
     assert code == 1
 
 
@@ -392,3 +396,148 @@ def test_the_claims_report_prints_claims_ignored_alongside_an_explicit_abstentio
     _, out = _claims_run(rows)
 
     assert "ignored on an abstain=true   : 2" in out
+
+
+# --- Commit 2 (m2): mutation gaps in the claims report ----------------------
+
+
+def test_cites_expected_ignores_a_dropped_claim_that_would_otherwise_match():
+    """A DROPPED claim was never shown to a reader — it must not make a
+    question look like it cited the expected article. Mutant: iterating
+    `gate["dropped"]` (or every claim regardless of kept/dropped) instead of
+    only `gate["kept"]` would count this row as citing article 7, since the
+    dropped claim's source 1 IS article 7."""
+    row = _claims_row(
+        "Q1", expected=[7], source_numbers=[7],
+        kept=[],
+        dropped=[{"text": "نص", "sources": [1], "reason": "ungrounded"}],
+    )
+
+    assert _cites_expected(row) is False
+
+
+def test_report_claims_prints_exact_labelled_lines_not_placeholder_constants():
+    """A handful of mutants each hard-code one of these numbers to a
+    constant (`covered = []`, `false_abstain = []`, `schema_failures = 0`,
+    ...) and still pass a report whose test only checks that a bare number
+    like "10/15" appears SOMEWHERE in the output — because a different,
+    unaffected line (here, "cited the expected article") often prints that
+    exact same number too. This fixture is built so every value below
+    differs from every other and from both 0 and the full count, and every
+    assertion pins the WHOLE labelled line, not a bare number."""
+    q1 = _claims_row(
+        "Q1", expected=[7], source_numbers=[7, 12],
+        kept=[{"text": "الرد سبعة أيام.", "sources": [1], "copied": False}],
+    )
+    q1["stats"] = [
+        {"output_tokens": 5, "output_s": 1.0},
+        {"output_tokens": 10, "output_s": 1.0},
+    ]  # two calls for ONE question -> exactly one retry
+    q2 = _claims_row(
+        "Q2", expected=[7], source_numbers=[7, 12], kept=[],
+        dropped=[{"text": "بلا سند", "sources": [], "reason": "uncited"}],
+        uncited=1,
+    )
+    q3 = _claims_row(
+        "Q3", expected=[7], source_numbers=[7, 12],
+        kept=[{"text": "نص آخر [مادة 12].", "sources": [2], "copied": False}],
+        dropped=[
+            {"text": "ادعاء غير مسند", "sources": [9], "reason": "fabricated"},
+            {"text": "ادعاء آخر", "sources": [1], "reason": "ungrounded"},
+        ],
+        fabricated=1, ungrounded=1,
+    )
+    q4 = _claims_row(
+        "Q4", expected=[7], source_numbers=[7, 12],
+        kept=[], dropped=[], schema_failure=True,
+    )
+    q5 = _claims_row("Q5", answerable=False, source_numbers=[3, 4], kept=[])
+    q6 = _claims_row(
+        "Q6", answerable=False, source_numbers=[3, 4],
+        kept=[{"text": "نص غير متعلق بالسؤال.", "sources": [1], "copied": False}],
+    )
+
+    _, out = _claims_run([q1, q2, q3, q4, q5, q6])
+
+    assert "  coverage (>=1 kept claim)          : 2/4 = 50.0%" in out
+    assert "  false abstention on answerable     : 2/4 = 50.0%" in out
+    assert "  B2 - abstained on out_of_corpus     : 1/2 = 50.0%    (criterion: >= 80%)" in out
+    assert "  cited the expected article         : 1/4 = 25.0%    (criterion: >= 10 of 4)" in out
+    assert "  fabricated claims                  : 1    (criterion: 0)" in out
+    assert "  dropped - uncited / ungrounded      : 1 / 1" in out
+    assert "  schema failures                     : 1" in out
+    assert "  retries (more than 1 call)         : 1" in out
+
+
+def test_the_report_counts_kept_claims_shorter_than_a_real_claim():
+    """An empty `{"text": "", "sources": [1]}` is KEPT by today's gate (Run
+    6 pre-registers the gate itself as unchanged — this is a report-only
+    addition) and silently counts toward both coverage and cited-expected.
+    This line is the only place that surfaces it. (`_answerable_claims_rows`'s
+    own default claim text is itself only 15 characters — shorter than
+    `MIN_CLAIM_CHARS` — so this test builds its own claim text long enough
+    to isolate the ONE genuinely short claim from the other nine.)"""
+    long_claim_text = "الرد يكون خلال مهلة قدرها ستة أيام عمل من تاريخ العلم بالخرق."  # 61 chars
+    rows = [
+        _claims_row(f"Q{i}", expected=[7], source_numbers=[7, 12],
+                    kept=[{"text": long_claim_text, "sources": [1], "copied": False}])
+        for i in range(1, 10)
+    ] + [
+        _claims_row("Q10", expected=[7], source_numbers=[7, 12],
+                    kept=[{"text": "", "sources": [1], "copied": False}]),
+    ] + _abstained_ooc_rows()
+
+    _, out = _claims_run(rows)
+
+    assert "1/10" in out.split("kept claims shorter than a real claim")[1][:20]
+
+
+def test_the_report_header_defaults_to_run_5_and_its_pre_registration_commit():
+    """Existing callers (every current test, and both call sites in
+    `answer_eval.py`) pass no contract name at all — the header they have
+    always seen must not change."""
+    rows = _answerable_claims_rows(10) + _abstained_ooc_rows()
+
+    _, out = _claims_run(rows)
+
+    assert "Run 5 contract - claims JSON + gate (EVAL.md, ecd37f8)" in out
+
+
+def test_the_report_header_names_the_given_contract_and_pre_registration_commit():
+    """Run 6 reuses this same report with its own contract name and its own
+    pre-registration commit — the header must not stay hard-coded to
+    Run 5's."""
+    rows = _answerable_claims_rows(10) + _abstained_ooc_rows()
+
+    _, out = _claims_run(rows, contract_name="Run 6", pre_registration_commit="d3f39c3")
+
+    assert "Run 6 contract - claims JSON + gate (EVAL.md, d3f39c3)" in out
+    assert "Run 5 contract" not in out
+
+
+def test_the_verdict_is_not_applicable_when_the_split_is_not_exactly_15_and_5():
+    """The three adoption thresholds (B2 >= 80%, >= 10 of 15 cited,
+    fabricated = 0) were pinned for exactly 15 answerable + 5 out_of_corpus
+    questions (EVAL.md) — evaluating them against a differently-sized split
+    would silently compare against thresholds that were never set for it."""
+    rows = _answerable_claims_rows(10, n_total=14) + _abstained_ooc_rows()  # 14, not 15
+
+    code, out = _claims_run(rows)
+
+    assert "ADOPT for the app: n/a" in out
+    reason = out.split("ADOPT for the app:")[1]
+    assert "15" in reason and "5" in reason
+    assert code == 1
+
+
+def test_the_verdict_still_applies_normally_at_exactly_15_and_5():
+    """A guard against the split size must not also break the ordinary
+    15/5 case it is meant to leave alone: 10/15 cited-expected, 0
+    fabricated and 5/5 B2 clear all three pinned thresholds."""
+    rows = _answerable_claims_rows(10) + _abstained_ooc_rows()
+
+    code, out = _claims_run(rows)
+
+    assert "ADOPT for the app: n/a" not in out
+    assert "ADOPT for the app: YES" in out
+    assert code == 0

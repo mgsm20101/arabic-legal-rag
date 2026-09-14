@@ -380,6 +380,79 @@ def test_a_partial_answer_keeps_its_supported_claims():
     assert result["dropped"][0]["reason"] == "uncited"
 
 
+# --- Commit 2 (m2): mutation gaps in the gate's own-source scoping ---------
+
+
+def test_a_claim_naming_its_own_sources_plain_article_number_is_kept_even_when_the_source_text_never_repeats_it():
+    """The ordinary case: a claim cites [مادة 7] and its ONLY source IS
+    article 7 — article 7's own text is plain prose that never repeats its
+    own number, so this claim can only be licensed by the source's article
+    NUMBER itself (`own_numbers`), not by anything `citations()` finds
+    inside the source's text (`numbers_in_own_sources`, empty here). Mutant:
+    `allowed = numbers_in_own_sources` (dropping `own_numbers` from the
+    union) would wrongly drop the single most ordinary grounded claim
+    there is, and no existing test before this one used a claim that cited
+    its own source's bare number without also copying self-citing text."""
+    claim_text = "يجب الرد خلال مهلة ستة أيام [مادة 7]."
+    parsed = {"abstain": False, "claims": [{"text": claim_text, "sources": [1]}]}
+
+    result = gate(parsed, SOURCE_NUMBERS, SOURCE_TEXTS)
+
+    assert result["ungrounded"] == 0
+    assert result["kept"] == [{"text": claim_text, "sources": [1], "copied": False}]
+
+
+def test_a_claim_naming_a_different_retrieved_sources_own_article_number_without_citing_it_is_ungrounded():
+    """`allowed` must be scoped to the claim's OWN cited sources' article
+    numbers, never every article number among ALL retrieved sources. This
+    claim cites only source 1 (article 7) but its text names article 12 —
+    simply another retrieved source's own plain number, not something
+    source 1's text says about itself. Mutant: widening `own_numbers` to
+    every retrieved source's number (not only the claim's own `sources`)
+    would wrongly license this — a case the existing
+    `test_an_article_named_only_by_a_retrieved_source_the_claim_does_not_cite_is_ungrounded`
+    does not cover, because there the extra number comes from INSIDE
+    another source's text, not from that source's own article number."""
+    parsed = {"abstain": False, "claims": [
+        {"text": "يلزم الإبلاغ خلال ستة أيام عمل [مادة 12].", "sources": [1]},
+    ]}
+
+    result = gate(parsed, SOURCE_NUMBERS, SOURCE_TEXTS)
+
+    assert result["ungrounded"] == 1
+    assert result["dropped"][0]["reason"] == "ungrounded"
+    assert result["kept"] == []
+
+
+_PLAIN_ARTICLE_ONE = (
+    "نص المادة الأولى هنا طويل بما يكفي وهو مجرد نص توضيحي عادي "
+    "ولا يذكر داخله أي رقم مادة آخر إطلاقاً في أي موضع من مواضعه."
+)
+_PLAIN_ARTICLE_TWO = (
+    "نص المادة الثانية هنا مختلف تماماً عن نص المادة الأولى ولا "
+    "يشترك معه في أي جزء طويل، وهو أيضاً لا يذكر أي رقم مادة داخله."
+)
+
+
+def test_copied_is_checked_against_the_claims_own_cited_source_not_every_retrieved_one():
+    """A claim that happens to match text from a DIFFERENT retrieved source
+    it never cited is not "copying its source" — `copied` must be computed
+    against the claim's own cited sources only. This claim is a verbatim
+    copy of source 2's text but cites only source 1; neither text names any
+    article number, so grounding is unaffected either way and only `copied`
+    can tell correct code from the mutant apart. Mutant: checking
+    `copied_from_context` against every retrieved source's text (`k` texts)
+    instead of only the claim's own cited ones would call this claim
+    copied because it happens to match SOURCE 2, which it never cited."""
+    parsed = {"abstain": False, "claims": [
+        {"text": _PLAIN_ARTICLE_TWO, "sources": [1]},
+    ]}
+
+    result = gate(parsed, [7, 12], [_PLAIN_ARTICLE_ONE, _PLAIN_ARTICLE_TWO])
+
+    assert result["kept"] == [{"text": _PLAIN_ARTICLE_TWO, "sources": [1], "copied": False}]
+
+
 # --- Commit 1 (m2): gate() rejects a mismatched source description ---------
 
 

@@ -9,8 +9,10 @@ overwriting a different run's saved answers, and `main()`'s exit codes for
 the mistakes that are cheap to catch before any model loads.
 """
 
+import io
 import json
 import sys
+from contextlib import redirect_stdout
 from pathlib import Path
 
 import pytest
@@ -23,6 +25,7 @@ from legalrag.answer_eval import (  # noqa: E402
     _check_rows_collision,
     _reaudit,
     _regate,
+    _report_gated,
     _rows_model_mismatch,
     _stats_for,
     _weights_line,
@@ -1054,16 +1057,16 @@ def test_report_only_reapplies_the_gate_to_gated_rows_through_main(tmp_path, mon
     assert code in (0, 1)
 
 
-# --- Part 2 (m2 review follow-ups): the end-to-end gated test --------------
+# --- The end-to-end gated test ----------------------------------------------
 #
 # No existing test above exercises a FULL run through the "gated" entry of
 # CONTRACT_TABLE end to end: every test that touches _run_gated/run_claims
 # calls run_claims directly with an explicit contract= of its own choosing,
 # and every gated test that goes through main()/CONTRACT_TABLE only ever
 # does so on the --report-only path (_regate), never the full-run path
-# (_run_gated) that actually differs from Run 5. Four mutants survive as a
-# result (see the Part 2 report for the by-hand mutation check against each
-# of these four):
+# (_run_gated) that actually differs from Run 5. Four mutants survive
+# without the test below (confirmed by hand, one at a time, in a throwaway
+# git worktree — apply each, watch this test fail, then revert):
 #   - CONTRACT_TABLE["gated"] building a "json" generator
 #   - _stage_calls (claims.py) slicing `calls` instead of `calls[before:]`
 #   - run_claims dropping relevance-stage calls from a saved row
@@ -1171,8 +1174,47 @@ def test_the_gated_contract_runs_end_to_end_with_stage_tagged_rows_and_a_full_re
     ae.CONTRACT_TABLE["gated"].report(rows, None)
     out = capsys.readouterr().out
 
-    assert "  model calls                        : 5" in out
-    assert "  retries (more than 1 call)         : 1" in out
+    lines = out.splitlines()
+    assert "  model calls                        : 5" in lines
+    assert "  retries (more than 1 call)         : 1" in lines
     # The whole labelled line, not just the value after the colon — that
     # alone would not catch a wrong label (e.g. mismatched stage order).
-    assert "  retries - relevance / claims     : 1 / 0" in out
+    # Matched against `out.splitlines()`, not `in out`, so this can never
+    # match as a prefix of a longer, differently-numbered line.
+    assert "  retries - relevance / claims       : 1 / 0" in lines
+
+
+def _minimal_gated_row(qid: str, answerable: bool = True) -> dict:
+    """The bare fields `report_claims` reads — no relevance data at all,
+    which is the one thing `test_report_gated_itself_refuses_the_verdict_
+    when_rows_carry_no_relevance_data` below needs from every row."""
+    return {
+        "id": qid, "answerable": answerable, "expected": [], "source_numbers": [],
+        "model": "ollama:x", "contract": "gated", "attempts": 1,
+        "schema_failure": False, "seconds": 1.0,
+        "gate": {"status": "abstained", "kept": [], "dropped": [],
+                 "uncited": 0, "fabricated": 0, "ungrounded": 0, "ignored_on_abstain": 0},
+    }
+
+
+def test_report_gated_itself_refuses_the_verdict_when_rows_carry_no_relevance_data():
+    """Calling `report_claims(..., expect_relevance=True)` directly (as
+    `test_answer_report.test_report_claims_refuses_the_verdict_when_
+    expect_relevance_finds_no_relevance_data` does) proves report_claims's
+    OWN logic, but never exercises whether `_report_gated` actually passes
+    that flag — changing `expect_relevance=True` to `False` at its call
+    site in answer_eval.py would keep that other test green. This test
+    goes through `_report_gated` itself, the only path a real gated run's
+    report takes, co-located here (not in test_answer_report.py) because
+    `_report_gated` is defined in — and its own wiring belongs to —
+    answer_eval.py."""
+    rows = [_minimal_gated_row(f"Q{i}") for i in range(1, 3)]  # no relevance data at all
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        code = _report_gated(rows, None)
+    out = buf.getvalue()
+
+    assert "ADOPT for the app: n/a — no relevance data in gated rows" in out
+    assert "ADOPT for the app: YES" not in out
+    assert code == 1

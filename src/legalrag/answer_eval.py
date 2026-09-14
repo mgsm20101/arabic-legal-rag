@@ -484,10 +484,12 @@ def _report_gated(rows: list[dict], meta: dict | None) -> int:
     # Run 6 reuses Run 5's exact gate and report — only the header (and,
     # inside it, the pre-registered relevance lines it now also prints) says
     # which pre-registration these numbers were measured against.
-    # `expect_relevance=True`: rows with no relevance data at all cannot be
-    # a genuine "gated" measurement (Run 5's own rows saved/loaded under the
-    # wrong contract, or a code regression) — the report refuses the
-    # verdict rather than silently print Run 5's numbers under this header.
+    # `expect_relevance=True`: no relevance data anywhere is not
+    # necessarily Run 5's own rows saved/loaded under the wrong contract,
+    # or a code regression — a gated run where every question had no
+    # sources never reaches the relevance step either. Either way, there
+    # is no evidence the step ran, so the report refuses the verdict
+    # rather than print Run 5's numbers under this header.
     return report_claims(
         rows, meta=meta, contract_name="Run 6", pre_registration_commit="d3f39c3",
         expect_relevance=True)

@@ -454,10 +454,10 @@ def test_the_gated_contract_refuses_an_hf_model():
 
 
 def test_build_generators_raises_on_an_unknown_contract():
-    """Today any string other than "gated" silently builds Run 5's shape
-    (no relevance model) — a typo'd contract name should be a loud error,
-    not a silent fallback to a different contract than the one asked for."""
-    with pytest.raises(ValueError):
+    """A typo'd contract name is a loud error, not a silent fallback to
+    Run 5's shape (no relevance model) the way any string other than
+    "gated" used to build before this check existed."""
+    with pytest.raises(ValueError, match="unknown claims contract"):
         build_generators("ollama:x", "yaml")
 
 

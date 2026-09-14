@@ -185,15 +185,19 @@ def _print_runtime_and_meta(rows: list[dict], meta: dict | None) -> None:
 
         # The total above mixes every stage together and is not comparable
         # to Run 5's claims-only retry count (EVAL.md) — printed only when
-        # there IS more than one stage (Run 6 onward); a Run 3/4/5 row has
-        # exactly one implicit stage, and this line would say nothing the
-        # total does not already say for it.
+        # at least one call is stage-TAGGED (Run 6 onward), even if only
+        # one stage ever ran (relevance said "no" or failed on every
+        # question, so claims was never reached — still one real, named
+        # stage, not the "no stages at all" case). A Run 3/4/5 row's calls
+        # carry no "stage" key at all, grouping under `None`
+        # (`_stage_groups`) — that is the one case this line stays hidden
+        # for, since it would say nothing the total above does not.
         stage_names = [s for s, _ in _stage_groups(all_calls)]
-        if len(stage_names) > 1:
+        if any(s is not None for s in stage_names):
             per_stage = _stage_retries(stat_rows)
             label = " / ".join(s or "?" for s in stage_names)
             counts = " / ".join(str(per_stage.get(s, 0)) for s in stage_names)
-            print(f"  retries - {label:23}: {counts}")
+            print(f"  retries - {label:25}: {counts}")
 
     if meta is not None:
         if meta.get("gpu_share") is not None:
@@ -395,10 +399,12 @@ def report_claims(
 
     `expect_relevance=True` (only `_report_gated` passes it) refuses the
     ADOPTION VERDICT — not the diagnostic lines above it — when no row
-    carries relevance data at all: that can only mean these are actually
-    Run 5's rows (or a code regression stopped attaching relevance data),
-    and printing a verdict would silently present Run 5's numbers as if
-    they were a Run 6 measurement.
+    carries relevance data. That covers more than Run 5's own rows or a
+    code regression: a gated run where every question had no sources at
+    all never reaches the relevance step either
+    (`claims.ClaimsGenerator.answer`'s `no_sources` branch) — either way,
+    there is no evidence the relevance step ever ran, so no verdict is
+    printed as if it had.
 
     **The gate trap, printed unconditionally (EVAL.md's own name for it):**
     a gate that drops every claim would score zero fabricated and zero
@@ -479,12 +485,13 @@ def report_claims(
 
     _print_runtime_and_meta(rows, meta)
 
-    # `expect_relevance=True` only for `_report_gated`: rows with no
-    # relevance data at all cannot be a genuine Run 6 measurement (they are
-    # either Run 5's own rows, or a code regression stopped attaching
-    # relevance data) — refuse the verdict rather than silently print Run
-    # 5's numbers under a Run 6 header, same style as the split-size refusal
-    # below (diagnostics above still print; only the verdict is withheld).
+    # `expect_relevance=True` only for `_report_gated`: no relevance data
+    # anywhere is not necessarily Run 5's rows or a code regression — a
+    # gated run where every question had no sources never reaches the
+    # relevance step either — but either way there is no evidence it ran,
+    # so the verdict is refused rather than printed as if it had (same
+    # style as the split-size refusal below: diagnostics above still
+    # print, only the verdict is withheld).
     if expect_relevance and not has_relevance:
         print("\n  ADOPT for the app: n/a — no relevance data in gated rows")
         print("\nSmall sample. Read the caveats in EVAL.md before quoting any of this.")

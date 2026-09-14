@@ -12,7 +12,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from legalrag.answer_eval import _report_gated  # noqa: E402
 from legalrag.answer_report import _cites_expected, report, report_claims  # noqa: E402
 
 
@@ -494,13 +493,17 @@ def test_the_report_counts_kept_claims_shorter_than_a_real_claim():
 
 
 def test_kept_claims_shorter_than_a_real_claim_is_judged_on_stripped_length():
-    """Padding a short claim with leading/trailing whitespace must not let
-    it escape this line: `len(text)` (raw) counts the padding, `len(text.
-    strip())` (the fix) does not. 'نص قصير' is 7 characters — padded to 27
-    raw characters, still short once stripped."""
-    padded_short = "          " + "نص قصير" + "          "
+    """Padding a short claim with whitespace must not let it escape this
+    line: `len(text)` (raw) counts the padding, `len(text.strip())` (the
+    fix) does not. The padding is LEADING-only (20 spaces, none
+    trailing) so this also kills a `.strip()` -> `.rstrip()` mutant:
+    `.rstrip()` would leave the leading padding untouched (27 chars, not
+    short) where `.strip()` correctly removes it too (7 chars, short) —
+    symmetric padding on both sides could not tell the two apart."""
+    padded_short = "                    " + "نص قصير"  # 20 leading spaces only
     assert len(padded_short) >= 25          # looks long enough unstripped
-    assert len(padded_short.strip()) < 25   # is not, once stripped
+    assert len(padded_short.strip()) < 25   # is not, once fully stripped
+    assert len(padded_short.rstrip()) >= 25  # rstrip alone would miss it
     rows = [
         _claims_row("Q1", expected=[7], source_numbers=[7, 12],
                     kept=[{"text": padded_short, "sources": [1], "copied": False}]),
@@ -636,12 +639,37 @@ def test_retries_print_broken_down_by_stage_alongside_the_existing_total():
     rows = [row1, row2] + _abstained_ooc_rows()
 
     _, out = _claims_run(rows)
+    lines = out.splitlines()
 
-    assert "  model calls                        : 6" in out
-    assert "  retries (more than 1 call)         : 2" in out
-    assert "  retries - relevance / claims" in out
-    line = [l for l in out.splitlines() if l.startswith("  retries - relevance")][0]
-    assert line.split(":")[1].strip() == "1 / 1"
+    assert "  model calls                        : 6" in lines
+    assert "  retries (more than 1 call)         : 2" in lines
+    # Whole line, matched against `splitlines()`: `in out` alone would
+    # also match as a substring of a differently-numbered longer line.
+    assert "  retries - relevance / claims       : 1 / 1" in lines
+
+
+def test_retries_print_even_when_only_the_relevance_stage_ever_ran():
+    """A gated run where relevance said "no" (or failed) on every single
+    question never makes one claims call — only ONE stage ever appears
+    ("relevance"), not two. `len(stage_names) > 1` would hide the
+    breakdown for exactly this run; the fix (`any(s is not None ...)`)
+    still shows it, since Run 3/4/5's untagged calls are the only case
+    meant to stay hidden."""
+    row1 = _claims_row("Q1", expected=[7], source_numbers=[7, 12])
+    row1["calls"] = [{"output_tokens": 2, "output_s": 1.0, "stage": "relevance"}]
+    row2 = _claims_row("Q2", expected=[7], source_numbers=[7, 12])
+    row2["calls"] = [
+        {"output_tokens": 2, "output_s": 1.0, "stage": "relevance"},
+        {"output_tokens": 2, "output_s": 1.0, "stage": "relevance"},
+    ]
+    rows = [row1, row2] + _abstained_ooc_rows()
+
+    _, out = _claims_run(rows)
+    lines = out.splitlines()
+
+    assert "  model calls                        : 3" in lines
+    assert "  retries (more than 1 call)         : 1" in lines
+    assert "  retries - relevance                : 1" in lines
 
 
 def test_old_stats_shaped_rows_still_print_the_unlabelled_runtime_lines():
@@ -781,25 +809,3 @@ def test_a_no_sources_row_reaches_abstain_reasons_even_with_no_relevance_data():
     )
 
     assert "no_sources=1" in out.split("abstain reasons")[1][:60]
-
-
-# --- Part 2 review: _report_gated's own wiring (not report_claims's) -------
-
-
-def test_report_gated_itself_refuses_the_verdict_when_rows_carry_no_relevance_data():
-    """Calling `report_claims(..., expect_relevance=True)` directly (as
-    the test above does) proves report_claims's OWN logic, but never
-    exercises whether `_report_gated` actually passes that flag — changing
-    `expect_relevance=True` to `False` at its call site keeps every other
-    test in this file green. This test goes through `_report_gated`
-    itself, the only path a real gated run's report takes."""
-    rows = _answerable_claims_rows(10) + _abstained_ooc_rows()  # no relevance data at all
-
-    buf = io.StringIO()
-    with redirect_stdout(buf):
-        code = _report_gated(rows, None)
-    out = buf.getvalue()
-
-    assert "ADOPT for the app: n/a — no relevance data in gated rows" in out
-    assert "ADOPT for the app: YES" not in out
-    assert code == 1

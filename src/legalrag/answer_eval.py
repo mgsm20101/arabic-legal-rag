@@ -484,8 +484,13 @@ def _report_gated(rows: list[dict], meta: dict | None) -> int:
     # Run 6 reuses Run 5's exact gate and report — only the header (and,
     # inside it, the pre-registered relevance lines it now also prints) says
     # which pre-registration these numbers were measured against.
+    # `expect_relevance=True`: rows with no relevance data at all cannot be
+    # a genuine "gated" measurement (Run 5's own rows saved/loaded under the
+    # wrong contract, or a code regression) — the report refuses the
+    # verdict rather than silently print Run 5's numbers under this header.
     return report_claims(
-        rows, meta=meta, contract_name="Run 6", pre_registration_commit="d3f39c3")
+        rows, meta=meta, contract_name="Run 6", pre_registration_commit="d3f39c3",
+        expect_relevance=True)
 
 
 CONTRACT_TABLE: dict[str, _Contract] = {
@@ -529,6 +534,12 @@ def _build_arg_parser() -> _ArgumentParser:
     parser = _ArgumentParser(
         prog="answer-eval",
         description="End-to-end answer evaluation — PRD M2/B1 + M2/B2.",
+        # "--o" is an unambiguous PREFIX of "--overwrite" (no other flag
+        # starts with "o") — argparse's default abbreviation matching would
+        # silently accept it as "--overwrite". A full run silently gaining
+        # permission to replace a saved rows file from a typo is exactly the
+        # kind of mistake --overwrite's own confirmation exists to prevent.
+        allow_abbrev=False,
     )
     parser.add_argument(
         "--model", default=DEFAULT_SPEC,

@@ -451,3 +451,31 @@ def test_the_gated_contract_refuses_an_hf_model():
     is not available on the transformers path here, for either chat."""
     with pytest.raises(ValueError):
         build_generators("hf:some/repo", "gated")
+
+
+def test_build_generators_raises_on_an_unknown_contract():
+    """Today any string other than "gated" silently builds Run 5's shape
+    (no relevance model) — a typo'd contract name should be a loud error,
+    not a silent fallback to a different contract than the one asked for."""
+    with pytest.raises(ValueError):
+        build_generators("ollama:x", "yaml")
+
+
+def test_system_relevance_matches_the_prompt_pre_registered_in_eval_md():
+    """EVAL.md's 'Run 6' section records, verbatim, the exact wording that
+    was already run in the pre-run smoke test ('نص الـprompt هو اللي اتجرّب
+    قبل التشغيل') — keeping SYSTEM_RELEVANCE identical to that fenced block
+    is what keeps this constant attached to the prompt actually measured.
+    Read from EVAL.md at test time (not copy-pasted here) so a one-word
+    edit to either side fails this test instead of silently drifting."""
+    eval_md = Path(__file__).resolve().parents[1] / "EVAL.md"
+    text = eval_md.read_text(encoding="utf-8")
+    marker = "نص الـprompt هو اللي اتجرّب قبل التشغيل"
+    after = text[text.index(marker) + len(marker):]
+
+    fence = after.index("```")
+    body_start = after.index("\n", fence) + 1
+    body_end = after.index("```", body_start)
+    prompt = after[body_start:body_end].rstrip("\n")
+
+    assert prompt == SYSTEM_RELEVANCE

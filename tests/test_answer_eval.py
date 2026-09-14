@@ -562,6 +562,28 @@ def test_a_model_flag_with_no_value_exits_2_instead_of_crashing(monkeypatch, cap
     assert "usage" in out.lower()  # proves argparse itself produced this, not a hand check
 
 
+def test_an_abbreviated_flag_like_dash_dash_o_is_never_accepted_for_overwrite(
+    monkeypatch, capsys
+):
+    """`--o` is an unambiguous PREFIX of `--overwrite` (no other flag starts
+    with "o") — argparse's default `allow_abbrev=True` would silently treat
+    it as `--overwrite`. `allow_abbrev=False` on the parser is what makes
+    that a loud, unrecognized-argument error instead of a full run quietly
+    gaining permission to replace a saved rows file the user never asked to
+    overwrite."""
+    import legalrag.answer_eval as ae
+
+    def boom():
+        raise AssertionError("an abbreviated flag must not reach load_questions")
+    monkeypatch.setattr(ae, "load_questions", boom)
+
+    code = main(["--o"])
+    out = capsys.readouterr().out
+
+    assert code == 2
+    assert "usage" in out.lower()
+
+
 def test_main_catches_argparses_systemexit_and_returns_an_int(capsys):
     """`main` must stay a plain testable function — argparse raises
     `SystemExit` on any parse error, and that must never escape `main`."""
@@ -685,6 +707,51 @@ def test_report_only_refuses_when_the_corpus_is_empty_or_missing(
 
     assert code == 2
     assert "corpus" in out
+
+
+def test_tasks_py_usage_mentions_the_gated_contract_and_overwrite_flag():
+    """tasks.py's module docstring IS the usage text `python tasks.py` with
+    no args prints — it named only `--contract text|json` and never
+    mentioned `--overwrite`, both stale since Run 6 and the overwrite
+    refusal (Commit 1, m2) were added."""
+    import importlib.util
+
+    tasks_path = Path(__file__).resolve().parents[1] / "tasks.py"
+    spec = importlib.util.spec_from_file_location("tasks_under_test", tasks_path)
+    tasks = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tasks)
+
+    assert "--contract text|json|gated" in tasks.__doc__
+    assert "--overwrite" in tasks.__doc__
+
+
+def test_the_empty_corpus_guard_fires_even_when_no_row_retrieved_anything(
+    tmp_path, monkeypatch, capsys
+):
+    """Isolates the dedicated `if not docs:` refusal in `main()` from
+    `_reaudit`'s own missing-article `ValueError`: with `retrieved: []`,
+    `_reaudit` would raise NOTHING even against an empty corpus
+    (`sorted(set() - set()) == []`), so if the dedicated guard were ever
+    deleted, this row would fall through to a normal (bogus) report instead
+    of being refused. The existing collision/mismatch tests all use a
+    non-empty `retrieved`, so they would keep passing via that unrelated
+    error path even without the guard this test targets."""
+    import legalrag.answer_eval as ae
+
+    fake_rows_file = tmp_path / "fake_rows.json"
+    fake_rows_file.write_text(json.dumps([
+        {"id": "Q1", "category": "direct", "answerable": True, "model": "ollama:mine",
+         "text": "لا أستطيع الإجابة من المواد المتاحة", "seconds": 1.0,
+         "retrieved": [], "expected": []},
+    ]), encoding="utf-8")
+    monkeypatch.setattr(ae, "rows_path", lambda spec, contract="text": fake_rows_file)
+    monkeypatch.setattr(ae, "load_docs", lambda path: [])
+
+    code = main(["--model", "ollama:mine", "--report-only"])
+    out = capsys.readouterr().out
+
+    assert code == 2
+    assert "corpus not ingested" in out
 
 
 def test_reaudit_raises_when_a_retrieved_article_is_missing_from_the_loaded_corpus():
@@ -985,3 +1052,126 @@ def test_report_only_reapplies_the_gate_to_gated_rows_through_main(tmp_path, mon
     assert "Run 6 contract" in out
     assert "d3f39c3" in out
     assert code in (0, 1)
+
+
+# --- Part 2 (m2 review follow-ups): the end-to-end gated test --------------
+#
+# No existing test above exercises a FULL run through the "gated" entry of
+# CONTRACT_TABLE end to end: every test that touches _run_gated/run_claims
+# calls run_claims directly with an explicit contract= of its own choosing,
+# and every gated test that goes through main()/CONTRACT_TABLE only ever
+# does so on the --report-only path (_regate), never the full-run path
+# (_run_gated) that actually differs from Run 5. Four mutants survive as a
+# result (see the Part 2 report for the by-hand mutation check against each
+# of these four):
+#   - CONTRACT_TABLE["gated"] building a "json" generator
+#   - _stage_calls (claims.py) slicing `calls` instead of `calls[before:]`
+#   - run_claims dropping relevance-stage calls from a saved row
+#   - _run_gated stamping rows "json" instead of "gated"
+
+
+class _FakeDenseIndex:
+    """Installed in place of `answer_eval.DenseIndex` so a full run through
+    `CONTRACT_TABLE["gated"].run` (== `_run_gated`) never loads
+    sentence-transformers: `_run_gated`'s signature (unlike `run`'s) exposes
+    no `index` parameter to inject a stub through directly — it always
+    builds its own `DenseIndex(docs, cache_path=...)` internally, which
+    this class stands in for at the module-level name."""
+
+    def __init__(self, docs, cache_path=None):
+        pass
+
+    def save(self):
+        pass
+
+    def search(self, query, k):
+        return [_HIT7]
+
+
+_HIT7 = Hit(id="law-7", law_name="", number=7, score=1.0, snippet="")
+
+
+def test_the_gated_contract_runs_end_to_end_with_stage_tagged_rows_and_a_full_report(
+    monkeypatch, capsys,
+):
+    """Three questions exercise all three relevance outcomes with the SAME
+    stub model objects answering all three (so a `calls[before:]` -> `calls`
+    slicing regression would leak an earlier question's calls into a later
+    row): Q1 says yes and falls through to Run 5's claims call, Q2 says no
+    and abstains without ever calling the claims model, Q3 is invalid JSON
+    twice and abstains as a relevance_failure."""
+    import legalrag.answer_eval as ae
+
+    monkeypatch.setattr(ae, "DenseIndex", _FakeDenseIndex)
+    docs = [{"id": "law-7", "text": "نص المادة السابعة"}]
+
+    relevance_model = _StubCallModel([
+        ('{"answers": true}', {"output_tokens": 5, "output_s": 1.0}),
+        ('{"answers": false}', {"output_tokens": 5, "output_s": 1.0}),
+        ("not json", {"output_tokens": 5, "output_s": 1.0}),
+        ("still not json", {"output_tokens": 5, "output_s": 1.0}),
+    ])
+    good = '{"abstain": false, "claims": [{"text": "الرد سبعة أيام.", "sources": [1]}]}'
+    claims_model = _StubCallModel([(good, {"output_tokens": 20, "output_s": 1.0})])
+
+    generator = ae.CONTRACT_TABLE["gated"].build("ollama:stub-test")
+    # Mutant 1: CONTRACT_TABLE["gated"] building a "json" generator — that
+    # shape (`build_generators(spec, "json")`) has no relevance_model at all.
+    assert generator.relevance_model is not None
+    generator.model = claims_model
+    generator.relevance_model = relevance_model
+
+    questions = [
+        _question("Q1", "yes-question"),
+        _question("Q2", "no-question"),
+        _question("Q3", "invalid-question"),
+    ]
+
+    rows = ae.CONTRACT_TABLE["gated"].run(questions, docs, generator, "ollama:stub-test")
+
+    # Mutant 2: _run_gated stamping rows "json" instead of "gated".
+    assert [r["contract"] for r in rows] == ["gated", "gated", "gated"]
+
+    assert rows[0]["relevance"] == {
+        "answers": True, "attempts": 1, "failure": False, "raw": ['{"answers": true}'],
+    }
+    assert rows[0]["abstain_reason"] is None
+    # Mutant 3: run_claims dropping relevance-stage calls — this row must
+    # carry BOTH stages, not just the claims one.
+    assert rows[0]["calls"] == [
+        {"output_tokens": 5, "output_s": 1.0, "stage": "relevance"},
+        {"output_tokens": 20, "output_s": 1.0, "stage": "claims"},
+    ]
+
+    assert rows[1]["relevance"] == {
+        "answers": False, "attempts": 1, "failure": False, "raw": ['{"answers": false}'],
+    }
+    assert rows[1]["abstain_reason"] == "relevance_no"
+    # Mutant 4: _stage_calls (claims.py) slicing `calls` instead of
+    # `calls[before:]` — without the slice this would ALSO carry Q1's
+    # relevance call, since relevance_model.calls accumulates across all
+    # three questions sharing the same stub object.
+    assert rows[1]["calls"] == [
+        {"output_tokens": 5, "output_s": 1.0, "stage": "relevance"},
+    ]
+
+    assert rows[2]["relevance"] == {
+        "answers": None, "attempts": 2, "failure": True,
+        "raw": ["not json", "still not json"],
+    }
+    assert rows[2]["abstain_reason"] == "relevance_failure"
+    assert rows[2]["calls"] == [
+        {"output_tokens": 5, "output_s": 1.0, "stage": "relevance"},
+        {"output_tokens": 5, "output_s": 1.0, "stage": "relevance"},
+    ]
+
+    # The claims model must never have been reached for Q2/Q3.
+    assert claims_model.calls == [{"output_tokens": 20, "output_s": 1.0}]
+
+    ae.CONTRACT_TABLE["gated"].report(rows, None)
+    out = capsys.readouterr().out
+
+    assert "  model calls                        : 5" in out
+    assert "  retries (more than 1 call)         : 1" in out
+    line = [l for l in out.splitlines() if l.startswith("  retries - relevance")][0]
+    assert line.split(":")[1].strip() == "1 / 0"

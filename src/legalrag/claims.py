@@ -437,7 +437,15 @@ def build_generators(spec: str, contract: str) -> ClaimsGenerator:
     `generate.resolve_model`, which is what refuses an `hf:` spec (schema-
     constrained decoding needs the ollama: runtime) without this function
     needing its own copy of that check.
+
+    Raises `ValueError` for any `contract` other than these two: before this
+    check, any typo'd or unknown contract name silently built Run 5's shape
+    (no relevance model) instead of failing loudly about the mismatch.
     """
+    if contract not in ("json", "gated"):
+        raise ValueError(
+            f"unknown claims contract {contract!r} — expected 'json' or 'gated'"
+        )
     claims_model = resolve_model(spec, max_new_tokens=CLAIMS_MAX_TOKENS, fmt=CLAIMS_SCHEMA)
     if contract == "gated":
         relevance_model = resolve_model(

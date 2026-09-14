@@ -99,6 +99,25 @@ def _row_retries(row: dict) -> int:
     return sum(max(0, n - 1) for n in counts.values())
 
 
+def _stage_retries(stat_rows: list[dict]) -> dict[str | None, int]:
+    """`_row_retries`'s total, broken out per stage instead of summed —
+    retries (calls beyond the first, WITHIN one stage) for each stage,
+    added up across `stat_rows`. The overall total mixes every stage
+    together and is not comparable to Run 5's claims-only retry count
+    (EVAL.md); this is what lets the report show relevance's own retries
+    apart from claims' own, alongside that existing total.
+    """
+    totals: dict[str | None, int] = {}
+    for r in stat_rows:
+        counts: dict[str | None, int] = {}
+        for c in _calls_of(r):
+            stage = c.get("stage")
+            counts[stage] = counts.get(stage, 0) + 1
+        for stage, n in counts.items():
+            totals[stage] = totals.get(stage, 0) + max(0, n - 1)
+    return totals
+
+
 def _print_stage_calls(stage: str | None, calls: list[dict]) -> None:
     """One stage's slice of the throughput/truncation/cut lines.
 
@@ -163,6 +182,18 @@ def _print_runtime_and_meta(rows: list[dict], meta: dict | None) -> None:
         retries = sum(_row_retries(r) for r in stat_rows)
         print(f"  model calls                        : {len(all_calls)}")
         print(f"  retries (more than 1 call)         : {retries}")
+
+        # The total above mixes every stage together and is not comparable
+        # to Run 5's claims-only retry count (EVAL.md) — printed only when
+        # there IS more than one stage (Run 6 onward); a Run 3/4/5 row has
+        # exactly one implicit stage, and this line would say nothing the
+        # total does not already say for it.
+        stage_names = [s for s, _ in _stage_groups(all_calls)]
+        if len(stage_names) > 1:
+            per_stage = _stage_retries(stat_rows)
+            label = " / ".join(s or "?" for s in stage_names)
+            counts = " / ".join(str(per_stage.get(s, 0)) for s in stage_names)
+            print(f"  retries - {label:23}: {counts}")
 
     if meta is not None:
         if meta.get("gpu_share") is not None:
@@ -313,10 +344,14 @@ def _print_relevance_lines(
       abstention never reached the claims call at all.
     - every `abstain_reason` this run actually produced, by count.
 
-    A row with `relevance is None` (Run 5's own contract, or a `gated` row
-    where the relevance step itself failed before ever answering true/false)
-    contributes to none of the first two counts — only to `abstain reasons`
-    and (if it failed) `relevance_failures`.
+    A row with `relevance is None` is Run 5's own contract (no relevance
+    step ran at all) — it contributes to none of the four. A `gated` row
+    where the relevance step itself failed (two invalid-JSON attempts)
+    still carries a `relevance` DICT, never None — `{"answers": None,
+    "attempts": 2, "failure": True, "raw": [...]}` — so it contributes to
+    `relevance_failures` and to `abstain reasons` (`relevance_failure`), but
+    to neither of the first two counts, since its `answers` is neither
+    `True` nor `False`.
     """
     said_no = [r for r in answerable
                if r.get("relevance") and r["relevance"]["answers"] is False]
@@ -338,6 +373,7 @@ def report_claims(
     *,
     contract_name: str = "Run 5",
     pre_registration_commit: str = "ecd37f8",
+    expect_relevance: bool = False,
 ) -> int:
     """The claims-JSON contract and its model-free gate, scored against the
     same three fixed quantities `report` uses — 15 answerable questions, 5
@@ -349,6 +385,13 @@ def report_claims(
     reused as-is for Run 6: `contract_name`/`pre_registration_commit` only
     change the printed header, never the scoring — Run 6 pre-registers
     this exact gate and these exact numbers as unchanged from Run 5.
+
+    `expect_relevance=True` (only `_report_gated` passes it) refuses the
+    ADOPTION VERDICT — not the diagnostic lines above it — when no row
+    carries relevance data at all: that can only mean these are actually
+    Run 5's rows (or a code regression stopped attaching relevance data),
+    and printing a verdict would silently present Run 5's numbers as if
+    they were a Run 6 measurement.
 
     **The gate trap, printed unconditionally (EVAL.md's own name for it):**
     a gate that drops every claim would score zero fabricated and zero
@@ -366,12 +409,15 @@ def report_claims(
     print("=" * 68)
 
     # Detected from the data, not a separate flag: a "gated" row (Run 6)
-    # carries `relevance` on every row (or `None` when that step itself
-    # failed before ever answering); a "json" row (Run 5) never does. This
-    # is what lets a saved run answer its own question about which contract
+    # carries `relevance` on every row (a dict with `failure: True` on the
+    # rows where the relevance step itself failed before ever answering
+    # true/false — never None there); a "json" row (Run 5) never carries it
+    # at all, so `relevance` is None on every one of ITS rows. This is what
+    # lets a saved run answer its own question about which contract
     # produced it, the same way `contract_name`/`pre_registration_commit`
     # only change the header rather than needing a `is_gated` parameter.
-    if any(r.get("relevance") is not None for r in rows):
+    has_relevance = any(r.get("relevance") is not None for r in rows)
+    if has_relevance:
         _print_relevance_lines(rows, answerable, out_of_corpus)
 
     covered = [r for r in answerable if r["gate"]["kept"]]
@@ -411,7 +457,7 @@ def report_claims(
     # (Run 6 pre-registers the gate as unchanged) and silently counts toward
     # both coverage and cited-expected; this line is the only place it is
     # visible, without changing what the gate keeps.
-    short = [c for c in kept_total if len(c["text"]) < MIN_CLAIM_CHARS]
+    short = [c for c in kept_total if len(c["text"].strip()) < MIN_CLAIM_CHARS]
     print(f"  kept claims shorter than a real claim : {_pct(len(short), len(kept_total))}")
 
     n_answered = sum(1 for r in rows if r["gate"]["status"] == "answered")
@@ -421,6 +467,17 @@ def report_claims(
           f"{n_abstained}  (of {len(rows)})")
 
     _print_runtime_and_meta(rows, meta)
+
+    # `expect_relevance=True` only for `_report_gated`: rows with no
+    # relevance data at all cannot be a genuine Run 6 measurement (they are
+    # either Run 5's own rows, or a code regression stopped attaching
+    # relevance data) — refuse the verdict rather than silently print Run
+    # 5's numbers under a Run 6 header, same style as the split-size refusal
+    # below (diagnostics above still print; only the verdict is withheld).
+    if expect_relevance and not has_relevance:
+        print("\n  ADOPT for the app: n/a — no relevance data in gated rows")
+        print("\nSmall sample. Read the caveats in EVAL.md before quoting any of this.")
+        return 1
 
     # The three thresholds below were set FOR this exact split (EVAL.md) —
     # B2 as a fraction of 5 and "10 of 15" both stop meaning what the

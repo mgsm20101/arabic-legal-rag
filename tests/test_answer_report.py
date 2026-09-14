@@ -492,6 +492,24 @@ def test_the_report_counts_kept_claims_shorter_than_a_real_claim():
     assert "1/10" in out.split("kept claims shorter than a real claim")[1][:20]
 
 
+def test_kept_claims_shorter_than_a_real_claim_is_judged_on_stripped_length():
+    """Padding a short claim with leading/trailing whitespace must not let
+    it escape this line: `len(text)` (raw) counts the padding, `len(text.
+    strip())` (the fix) does not. 'نص قصير' is 7 characters — padded to 27
+    raw characters, still short once stripped."""
+    padded_short = "          " + "نص قصير" + "          "
+    assert len(padded_short) >= 25          # looks long enough unstripped
+    assert len(padded_short.strip()) < 25   # is not, once stripped
+    rows = [
+        _claims_row("Q1", expected=[7], source_numbers=[7, 12],
+                    kept=[{"text": padded_short, "sources": [1], "copied": False}]),
+    ] + _abstained_ooc_rows()
+
+    _, out = _claims_run(rows)
+
+    assert "1/1" in out.split("kept claims shorter than a real claim")[1][:20]
+
+
 def test_the_report_header_defaults_to_run_5_and_its_pre_registration_commit():
     """Existing callers (every current test, and both call sites in
     `answer_eval.py`) pass no contract name at all — the header they have
@@ -587,6 +605,42 @@ def test_a_real_retry_within_one_stage_still_counts_as_a_retry():
     assert "  retries (more than 1 call)         : 1" in out
 
 
+def test_retries_print_broken_down_by_stage_alongside_the_existing_total():
+    """The existing total mixes stages together and is not comparable to
+    Run 5's claims-only retry count — EVAL.md asks for the breakdown beside
+    it, not instead of it. Row 1 retries only on relevance (2 calls), row 2
+    retries only on claims (2 calls): total retries = 2, but relevance's own
+    retries = 1 and claims' own = 1 — a total-only line could not show
+    that split."""
+    row1 = _claims_row(
+        "Q1", expected=[7], source_numbers=[7, 12],
+        kept=[{"text": "الرد سبعة أيام.", "sources": [1], "copied": False}],
+    )
+    row1["calls"] = [
+        {"output_tokens": 2, "output_s": 1.0, "stage": "relevance"},
+        {"output_tokens": 2, "output_s": 1.0, "stage": "relevance"},
+        {"output_tokens": 9, "output_s": 1.0, "stage": "claims"},
+    ]
+    row2 = _claims_row(
+        "Q2", expected=[7], source_numbers=[7, 12],
+        kept=[{"text": "الرد سبعة أيام.", "sources": [1], "copied": False}],
+    )
+    row2["calls"] = [
+        {"output_tokens": 2, "output_s": 1.0, "stage": "relevance"},
+        {"output_tokens": 4, "output_s": 1.0, "stage": "claims"},
+        {"output_tokens": 9, "output_s": 1.0, "stage": "claims"},
+    ]
+    rows = [row1, row2] + _abstained_ooc_rows()
+
+    _, out = _claims_run(rows)
+
+    assert "  model calls                        : 6" in out
+    assert "  retries (more than 1 call)         : 2" in out
+    assert "  retries - relevance / claims" in out
+    line = [l for l in out.splitlines() if l.startswith("  retries - relevance")][0]
+    assert line.split(":")[1].strip() == "1 / 1"
+
+
 def test_old_stats_shaped_rows_still_print_the_unlabelled_runtime_lines():
     """Run 3/4/5's saved rows carry `stats`, never `calls` — the per-stage
     grouping must degenerate back to exactly the old, unlabelled lines for
@@ -603,6 +657,7 @@ def test_old_stats_shaped_rows_still_print_the_unlabelled_runtime_lines():
     assert "  mean output tokens/s               : 5.0" in out
     assert "relevance mean output tokens/s" not in out
     assert "claims mean output tokens/s" not in out
+    assert "retries -" not in out  # only ever printed when >1 stage exists
 
 
 def test_the_gated_report_prints_the_relevance_lines_beside_the_verdict():
@@ -652,6 +707,42 @@ def test_the_relevance_lines_do_not_print_for_the_plain_json_contract():
 
     assert "relevance said no on answerable" not in out
     assert "relevance_failures" not in out
+
+
+def test_report_claims_refuses_the_verdict_when_expect_relevance_finds_no_relevance_data():
+    """`_report_gated` passes `expect_relevance=True`. If every row's
+    `relevance` is None — Run 5's own rows, or a code regression that
+    stopped attaching relevance data — the verdict must be refused instead
+    of silently printing Run 5's numbers under a Run 6 header. This split
+    (10/15, 5/5, 0 fabricated) would otherwise print "ADOPT for the app:
+    YES" (see test_the_verdict_still_applies_normally_at_exactly_15_and_5)."""
+    rows = _answerable_claims_rows(10) + _abstained_ooc_rows()
+
+    code, out = _claims_run(
+        rows, contract_name="Run 6", pre_registration_commit="d3f39c3",
+        expect_relevance=True,
+    )
+
+    assert "ADOPT for the app: n/a — no relevance data in gated rows" in out
+    assert "ADOPT for the app: YES" not in out
+    assert code == 1
+
+
+def test_expect_relevance_does_not_refuse_when_rows_do_carry_relevance_data():
+    """The new refusal must not also block the ordinary case it is not
+    about: gated rows that DO carry relevance data verdict normally."""
+    rows = _answerable_claims_rows(10) + _abstained_ooc_rows()
+    for r in rows:
+        r["relevance"] = {"answers": True, "attempts": 1, "failure": False, "raw": ["r"]}
+
+    code, out = _claims_run(
+        rows, contract_name="Run 6", pre_registration_commit="d3f39c3",
+        expect_relevance=True,
+    )
+
+    assert "no relevance data in gated rows" not in out
+    assert "ADOPT for the app: YES" in out
+    assert code == 0
 
 
 def test_relevance_failures_are_counted_separately_from_a_claims_schema_failure():

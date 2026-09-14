@@ -8,7 +8,7 @@
     python tasks.py broken-words          find words split by a stray space (ADR-018)
     python tasks.py ocr-gate <json>       score an OCR engine on digit accuracy (ADR-019)
     python tasks.py ocr-to-raw <in> <out> OCR pages -> raw text for ingest (ADR-020)
-    python tasks.py answer-eval [--model SPEC] [--contract text|json] [--report-only]
+    python tasks.py answer-eval [--model SPEC] [--contract text|json|gated] [--report-only] [--overwrite]
                                           end-to-end answers: citations + abstention (M2)
     python tasks.py serve [--port 8000]   local test page (retrieval + eval run)
     python tasks.py test                  run the test suite

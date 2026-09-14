@@ -15,3 +15,5 @@ runs/
 !data/raw/SOURCE.txt
 # P1 demo layer (ADR-023): uploaded documents, their chunks and embeddings
 data/app/
+# local model weights live in the project but are never committed
+models/

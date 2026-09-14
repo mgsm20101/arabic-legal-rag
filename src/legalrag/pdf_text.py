@@ -34,7 +34,7 @@ further assumptions the scanned/printed statute PDFs never exercised:
    sometimes skips NFKC's path entirely.** Farsi-yeh and medial/final heh
    presentation forms NFKC-decompose to Persian code points; ArialMT's
    INITIAL-position heh instead arrives as raw base-block U+06BE, with no
-   presentation form at all. See ``_fold_presentation_form``.
+   presentation form at all. See ``_ALWAYS_FOLD_RAW``.
 6. **NFKC injects a stray leading space for some presentation forms.** 6
    shadda ligatures and 8 isolated-haraka forms decompose with a leading
    U+0020 ahead of the mark, splitting a mid-word glyph in two. See
@@ -65,8 +65,9 @@ MIRRORED = {ord(a): b for a, b in
             [("(", ")"), (")", "("), ("[", "]"), ("]", "["),
              ("{", "}"), ("}", "{"), ("<", ">"), (">", "<")]}
 
-# Arabic base blocks + presentation forms A/B (module docstring, point 4).
-# \u escapes, not literal characters: several render as invisible glyphs.
+# Arabic base blocks + presentation forms A/B — Edge encodes 572 of page
+# 1's 965 glyphs on evals/app/policy_ar.pdf this way. \u escapes, not
+# literal characters: several render as invisible glyphs in an editor.
 ARABIC_LETTER = re.compile(
     "[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFC]"
 )
@@ -79,8 +80,8 @@ _PRESENTATION_FORM = re.compile("[\uFB50-\uFDFF\uFE70-\uFEFC]")
 
 # NFKC decomposes these 14 presentation forms — 6 shadda ligatures and 8
 # isolated-haraka forms — with a LEADING U+0020 SPACE ahead of the actual
-# mark(s), splitting a mid-word glyph in two (module docstring, point 6).
-# Confirmed directly with `unicodedata`, not guessed.
+# mark(s), splitting a mid-word glyph in two. Confirmed directly with
+# `unicodedata`, not guessed.
 _NFKC_LEADING_SPACE = frozenset(
     chr(cp) for cp in (
         0xFC5E, 0xFC5F, 0xFC60, 0xFC61, 0xFC62, 0xFC63,
@@ -150,24 +151,16 @@ def _centre(c: dict) -> float:
     return (c["x0"] + c["x1"]) / 2
 
 
-# A single foreign word inside Arabic prose is not a second column: Latin
-# content below this fraction of the page's Arabic glyph count is a term
-# like "VPN" or "Wi-Fi", not a translation running the length of the page.
-# evals/app/policy_ar.pdf page 2 has 21 Latin letters ("VPN", "Wi-Fi",
-# "Microsoft Teams") against several hundred Arabic ones — nowhere near this
-# ratio — while the 151/2020 dual-language pages, a real second column, are
-# comparable in length to the Arabic column itself.
+# 20%: evals/app/policy_ar.pdf page 2 has 21 Latin letters against several
+# hundred Arabic ones (nowhere near this ratio); a real second column
+# (151/2020) is comparable in length to the Arabic column itself. Full rule
+# in `arabic_column`.
 COLUMN_LATIN_RATIO = 0.20
 
-# Even past that ratio, a genuine two-column layout separates almost
-# perfectly on x: on the 151/2020 PDFs, splitting at the latin/arabic median
-# midpoint puts every glyph on its own side. Text where the two scripts are
-# genuinely interleaved (not columned) would instead spread glyphs of EITHER
-# script across both sides of that boundary; this caps how much of that
-# "bleed" is still consistent with two real columns rather than one column
-# with foreign words scattered through it. 5% survives the 151/2020 fixture
-# (0% bleed there) with room to spare for a boundary that is only ever an
-# approximation (the median midpoint, not a fitted separator).
+# 5%: splitting at the latin/arabic median midpoint puts every glyph on its
+# own side for a genuine two-column page (0% bleed, 151/2020) — this caps
+# how much bleed still counts as two real columns. Full rule in
+# `arabic_column`.
 COLUMN_BLEED_RATIO = 0.05
 
 

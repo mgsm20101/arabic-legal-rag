@@ -20,7 +20,6 @@ from legalrag.pdf_text import (  # noqa: E402
     arabic_column,
     drop_marks,
     extract_pages,
-    extract_text,
     group_lines,
     logical_line,
 )
@@ -228,14 +227,9 @@ def test_drop_marks_leaves_short_lines_alone():
 
 # --------------------------------- presentation forms (evals/app/policy_ar.pdf)
 #
-# Edge (the browser that rendered policy_ar.pdf) encodes 572 of page 1's 965
-# Arabic glyphs as contextual presentation forms (U+FB50-FDFF, U+FE70-FEFF).
-# The old ARABIC_LETTER range (U+0600-06FF only) treated every one of them as
-# non-Arabic: never reversed, never folded, and the extractor matched zero
-# headings and zero keywords on the fixture (evals/app/README.md). Code
-# points below are confirmed against `unicodedata` directly, not guessed:
-# isolated presentation forms of م ا د ة (U+FEE1, U+FE8D, U+FEA9, U+FE93)
-# each NFKC-decompose to exactly their base letter.
+# See the module docstring (point 4) and `ARABIC_LETTER` for what these are
+# and why they matter. Code points below are confirmed against `unicodedata`
+# directly, not guessed.
 
 def test_presentation_form_glyphs_are_read_as_arabic_and_reversed():
     """A page built entirely from presentation-form glyphs must still be
@@ -273,21 +267,14 @@ def test_persian_yeh_and_heh_from_presentation_forms_fold_to_arabic():
 
 def test_a_base_letter_farsi_yeh_is_never_folded():
     """Folding is conditioned on the glyph being a presentation form — a
-    real BASE-form Farsi yeh (U+06CC), however it got into the text, must
-    survive unchanged, not be silently rewritten to U+064A. This fixture
-    has no raw occurrence of U+06CC at all, in any position, so there is
-    no evidence either way about whether ArialMT does to yeh what it does
-    to heh (below) — folding it unconditionally would defeat the point of
-    this very test."""
+    real BASE-form Farsi yeh (U+06CC), however it got into the text, is
+    legitimate Persian text and must survive unchanged, not be silently
+    rewritten to U+064A."""
     assert logical_line([g("ی", 0)]) == "ی"
 
 
 def test_a_raw_heh_doachashmee_substitute_folds_even_without_a_presentation_form():
-    """ArialMT (the font behind evals/app/policy_ar.pdf) emits U+06BE (heh
-    doachashmee) directly for every INITIAL-position heh — confirmed with
-    a direct pdfplumber scan: 11 occurrences, all initial, on pages 1, 2,
-    5 and 6. Every MEDIAL/FINAL heh in the same document instead arrives
-    as a presentation form (U+FBAD / U+FBAB respectively)."""
+    """See `_ALWAYS_FOLD_RAW` for what ArialMT actually emits raw and why."""
     assert logical_line([g("ھ", 0)]) == "ه"  # heh doachashmee (U+06BE)
 
 
@@ -453,10 +440,8 @@ def test_extract_pages_keeps_a_blank_page_at_its_own_index(monkeypatch):
 
 class _ClosablePage:
     """A page that records its own name when closed, and can raise on
-    `.chars` access instead of returning real glyphs — pdfplumber keeps a
-    page's parsed content in memory until `.close()` is called (measured:
-    293 MB at 150 pages, 1.03 GB at 600, on an app machine with ~3 GB
-    free), so every page must be closed, including one that raises."""
+    `.chars` access instead of returning real glyphs — see `extract_pages`
+    for why every page must be closed, including one that raises."""
 
     def __init__(self, chars, name, closed, raises=False):
         self._chars = chars
@@ -491,17 +476,28 @@ def test_extract_pages_closes_every_page_even_when_a_later_page_raises(monkeypat
     assert closed == ["p1", "p2"]  # p3 never reached; both p1 and p2 closed
 
 
-def test_the_browser_rendered_fixture_keeps_every_heading_and_keyword_on_its_page():
+@pytest.fixture(scope="module")
+def policy_ar_pages():
+    """`evals/app/policy_ar.pdf`, extracted once and shared by every test
+    that reads it below — three separate full extractions of the same
+    6-page PDF added up for no reason."""
+    pytest.importorskip("pdfplumber")
+    root = Path(__file__).resolve().parents[1]
+    return extract_pages(root / "evals" / "app" / "policy_ar.pdf")
+
+
+def test_the_browser_rendered_fixture_keeps_every_heading_and_keyword_on_its_page(
+    policy_ar_pages,
+):
     """evals/app/policy_ar.pdf (README.md) is the failing test the upload
     pipeline had to pass: the first extraction matched zero headings and
     zero keywords, though the page count was already right. Presentation
     forms, Persian code points and the column cut (all fixed above) are
     exactly what this fixture exercises."""
-    pytest.importorskip("pdfplumber")
     from legalrag.normalize import evaluation_normalize  # noqa: E402
 
     root = Path(__file__).resolve().parents[1]
-    pages = extract_pages(root / "evals" / "app" / "policy_ar.pdf")
+    pages = policy_ar_pages
     assert len(pages) == 6
 
     normalized = [evaluation_normalize(p) for p in pages]
@@ -538,14 +534,12 @@ def test_the_browser_rendered_fixture_keeps_every_heading_and_keyword_on_its_pag
             )
 
 
-def test_the_fixture_has_no_shadda_ligature_word_split_left():
+def test_the_fixture_has_no_shadda_ligature_word_split_left(policy_ar_pages):
     """6 raw U+FC60 glyphs sit mid-word across 4 pages (1, 3 x2, 4 x2, 6);
     none of the 4 distinct words checked here (one per page) may come out
     split by an injected space — no expected keyword carries a shadda,
     which is why the keyword-matching check above missed this."""
-    pytest.importorskip("pdfplumber")
-    root = Path(__file__).resolve().parents[1]
-    pages = extract_pages(root / "evals" / "app" / "policy_ar.pdf")
+    pages = policy_ar_pages
 
     broken = {
         1: "ويُقد َّم",
@@ -588,17 +582,18 @@ def _arabic_words(text: str) -> list[str]:
     return words
 
 
-def test_the_fixtures_extracted_words_match_its_plain_text_source_in_order():
+def test_the_fixtures_extracted_words_match_its_plain_text_source_in_order(policy_ar_pages):
     """The SEQUENCE of Arabic words extracted from the PDF must equal the
     plain-text source's — a stronger guard than the keyword-substring
     checks above, and the one that catches a mutant removing the
     NFKC-leading-space fix (no expected keyword happens to carry a
     shadda, so that check alone misses it: 774 words instead of 768)."""
-    pytest.importorskip("pdfplumber")
     from legalrag.normalize import evaluation_normalize  # noqa: E402
 
     root = Path(__file__).resolve().parents[1]
-    pdf_text = extract_text(root / "evals" / "app" / "policy_ar.pdf")
+    # Exactly what `extract_text` itself does with `extract_pages`' output —
+    # reusing the shared fixture instead of a second full extraction.
+    pdf_text = "\n".join(p for p in policy_ar_pages if p)
     txt_source = (root / "evals" / "app" / "policy_ar.txt").read_text(encoding="utf-8")
 
     pdf_words = _arabic_words(evaluation_normalize(pdf_text))
@@ -629,12 +624,12 @@ def test_the_statute_corpus_hash_is_unchanged(tmp_path):
     text = ingest._read_raw(raw_pdf)
     articles = ingest.parse(text, raw_pdf.name, law_name="قانون حماية البيانات الشخصية")
 
-    # Written exactly like `ingest.main` writes OUT_PATH (plain "w" text
-    # mode, no `newline=""`): on Windows this is what actually produced
-    # the real, committed corpus's CRLF line endings, so reproducing that
-    # same write is what keeps this hash comparable to it.
+    # newline="\r\n" explicitly: the real, committed corpus has CRLF on
+    # all 56 lines (Windows text-mode default when `ingest.main` produced
+    # it there) — pinned here rather than left to the current platform's
+    # own default, so this hash is comparable on Linux/Docker too.
     scratch_output = tmp_path / "articles.jsonl"
-    with scratch_output.open("w", encoding="utf-8") as fh:
+    with scratch_output.open("w", encoding="utf-8", newline="\r\n") as fh:
         for a in articles:
             fh.write(json.dumps(asdict(a), ensure_ascii=False) + "\n")
 

@@ -415,6 +415,18 @@ output tokens/s                0.85 (speed probe)  10.9              3.5
 prompts قطعها num_ctx           —                   0                 0
 ```
 
+**الأوزان متثبّتة** (اتضاف بعد مراجعة الكود: «Q4_K_M» ما كانش راجع لأي artifact، وأي tag في Ollama ممكن يتعمله push تاني):
+
+| الموديل | الأوزان | التكميم | آخر تعديل |
+|---|---|---|---|
+| `gemma3:4b` | digest `a2af6cc3eb7fa8be8504abaf9b04e88f17a119ec3f04a3addf55f92841195f5a` | Q4_K_M · 4.3B | 2026-04-08 |
+| `qwen2.5:7b-instruct` | digest `845dbda0ea48ed749caafd9e6037047aa19acfcfd82e704d7ca97d631a0b697e` | Q4_K_M | 2026-05-15 |
+| `Qwen/Qwen2.5-1.5B-Instruct` | revision `989aa7980e4cf806f80c7fef2b1adb7bc71aa306` | BF16 على القرص، بيتحمّل float32 | — |
+
+- الـdigest هو sha256 لملف الـmanifest. **الطريقة متأكدة على `gemma3:4b`:** الناتج هو نفس الـdigest اللي بيرجّعه `/api/tags`.
+- الـmanifests الاتنين اتعدّلوا آخر مرة قبل Run 4، يعني الأوزان دي هي نفسها اللي اتقاست.
+- تكميم `qwen2.5:7b-instruct` جاي من `/api/tags` وقت تسجيل Run 4. عدد المعاملات بتاعه ما اتسجّلش.
+
 ### تطبيق القاعدة المسجّلة
 1. **الاستبعاد:**
    - ‏`qwen2.5:7b-instruct`: امتناعه الغلط 26.7%، أكبر من 20%.

@@ -379,10 +379,14 @@ def test_run_claims_keeps_sources_in_rank_order_and_every_attempts_raw_text():
     assert rows[0]["schema_failure"] is False
     assert rows[0]["model"] == "ollama:stub"
     assert rows[0]["contract"] == "json"
-    assert rows[0]["stats"] == [
-        {"output_tokens": 4, "output_s": 0.5},
-        {"output_tokens": 9, "output_s": 1.0},
+    # Per-call stats now come from the answer object (`ans.calls`), stage-
+    # tagged by `ClaimsGenerator.answer` — not a "stats" field any more.
+    assert rows[0]["calls"] == [
+        {"output_tokens": 4, "output_s": 0.5, "stage": "claims"},
+        {"output_tokens": 9, "output_s": 1.0, "stage": "claims"},
     ]
+    assert rows[0]["relevance"] is None
+    assert rows[0]["abstain_reason"] is None
     assert rows[0]["gate"]["kept"] == [
         {"text": "الرد سبعة أيام.", "sources": [2], "copied": False},
     ]
@@ -890,3 +894,94 @@ def test_report_only_json_through_main_prints_the_exact_regated_coverage_line_no
     assert "  coverage (>=1 kept claim)          : 1/1 = 100.0%" in out
     assert "  coverage (>=1 kept claim)          : 0/1 = 0.0%" not in out
     assert code == 1  # no out_of_corpus rows here -> B2 = 0% < 80%, not adopted
+
+
+# --- Commit 3 (m2): Run 6's "gated" contract wiring in answer_eval.py ------
+
+
+def test_the_gated_rows_file_is_separate_from_run_5s_and_from_text():
+    """Three contracts, three files for the same model spec — a `gated`
+    run must never collide with `json`'s or `text`'s saved answers."""
+    text_path = rows_path("ollama:gemma3:4b", "text")
+    json_path = rows_path("ollama:gemma3:4b", "json")
+    gated_path = rows_path("ollama:gemma3:4b", "gated")
+
+    assert gated_path == Path("runs/answer_eval-ollama-gemma3-4b-gated.json")
+    assert len({text_path, json_path, gated_path}) == 3
+
+
+def test_run_claims_stamps_the_given_contract_onto_every_row():
+    """`run_claims` serves both `json` and `gated` — the row must carry
+    whichever contract it was actually called for, not a hard-coded
+    `"json"` regardless of the caller."""
+    docs = [{"id": "law-7", "text": "نص المادة السابعة"}]
+    hit7 = Hit(id="law-7", law_name="", number=7, score=1.0, snippet="")
+    index = _StubIndex({"س1": [hit7]})
+    good = '{"abstain": false, "claims": [{"text": "الرد سبعة أيام.", "sources": [1]}]}'
+    model = _StubCallModel([(good, {"output_tokens": 9, "output_s": 1.0})])
+    generator = ClaimsGenerator(model=model)
+
+    rows = run_claims(
+        [_question("Q1", "س1")], docs, generator, "ollama:stub",
+        index=index, contract="gated",
+    )
+
+    assert rows[0]["contract"] == "gated"
+
+
+def test_the_gated_contract_with_an_hf_model_exits_2_before_loading_anything(monkeypatch, capsys):
+    """Same refusal as `--contract json` with an `hf:` model — schema-
+    constrained decoding needs the ollama: runtime for either chat."""
+    import legalrag.answer_eval as ae
+
+    def boom():
+        raise AssertionError("load_questions must not run for an incompatible contract")
+    monkeypatch.setattr(ae, "load_questions", boom)
+
+    code = main(["--model", "hf:" + DEFAULT_MODEL, "--contract", "gated"])
+    out = capsys.readouterr().out
+
+    assert code == 2
+    assert "gated" in out
+    assert "hf:" + DEFAULT_MODEL in out
+
+
+def test_report_only_reapplies_the_gate_to_gated_rows_through_main(tmp_path, monkeypatch, capsys):
+    """The gated contract's `--report-only` path must reach `_regate`
+    exactly like `json`'s does — the relevance decision on each row
+    (`relevance`, `abstain_reason`) is saved data, never re-run here."""
+    import legalrag.answer_eval as ae
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "runs").mkdir()
+    monkeypatch.setattr(ae, "load_docs", lambda path: [{"id": "law-7", "text": "نص المادة السابعة"}])
+
+    rows_file = tmp_path / "runs" / "answer_eval-ollama-stub-gated.json"
+    rows_file.write_text(json.dumps([{
+        "id": "Q1", "answerable": True, "category": "direct",
+        "model": "ollama:stub", "contract": "gated",
+        "source_numbers": [7], "expected": [7],
+        "parsed": {"abstain": False, "claims": [
+            {"text": "الرد سبعة أيام.", "sources": [1]},
+        ]},
+        "raw": ['{"abstain": false, "claims": [{"text": "الرد سبعة أيام.", "sources": [1]}]}'],
+        "attempts": 1, "schema_failure": False, "seconds": 1.0,
+        "relevance": {"answers": True, "attempts": 1, "failure": False, "raw": ['{"answers": true}']},
+        "abstain_reason": None,
+        "calls": [{"output_tokens": 1, "output_s": 1.0, "stage": "relevance"},
+                  {"output_tokens": 1, "output_s": 1.0, "stage": "claims"}],
+        # Deliberately wrong stored verdict — the CLI path must overwrite
+        # it via _regate, not replay it.
+        "gate": {"status": "abstained", "kept": [], "dropped": [],
+                 "uncited": 0, "fabricated": 0, "ungrounded": 0,
+                 "ignored_on_abstain": 0},
+    }]), encoding="utf-8")
+
+    code = main(["--model", "ollama:stub", "--contract", "gated", "--report-only"])
+    out = capsys.readouterr().out
+
+    assert "re-gated" in out
+    assert "  coverage (>=1 kept claim)          : 1/1 = 100.0%" in out
+    assert "Run 6 contract" in out
+    assert "d3f39c3" in out
+    assert code in (0, 1)

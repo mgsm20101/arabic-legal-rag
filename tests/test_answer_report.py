@@ -541,3 +541,126 @@ def test_the_verdict_still_applies_normally_at_exactly_15_and_5():
     assert "ADOPT for the app: n/a" not in out
     assert "ADOPT for the app: YES" in out
     assert code == 0
+
+
+# --- Commit 3 (m2): Run 6 — stage-tagged calls and the relevance lines -----
+
+
+def test_retries_come_from_attempts_per_stage_not_the_total_number_of_calls():
+    """A row that reaches two DIFFERENT stages once each (Run 6: a
+    relevance call that says "yes", then a claims call) makes two calls
+    but retried neither — `len(calls) - 1` would wrongly count every
+    question that simply passed the relevance step as a retry."""
+    row = _claims_row(
+        "Q1", expected=[7], source_numbers=[7, 12],
+        kept=[{"text": "الرد سبعة أيام.", "sources": [1], "copied": False}],
+    )
+    row["relevance"] = {"answers": True, "attempts": 1, "failure": False, "raw": ["r"]}
+    row["calls"] = [
+        {"output_tokens": 2, "output_s": 1.0, "stage": "relevance"},
+        {"output_tokens": 9, "output_s": 1.0, "stage": "claims"},
+    ]
+    rows = [row] + _abstained_ooc_rows()
+
+    _, out = _claims_run(rows)
+
+    assert "  model calls                        : 2" in out
+    assert "  retries (more than 1 call)         : 0" in out
+
+
+def test_a_real_retry_within_one_stage_still_counts_as_a_retry():
+    """The fix above must not also hide a GENUINE retry — two calls tagged
+    with the SAME stage is still exactly one retry."""
+    row = _claims_row(
+        "Q1", expected=[7], source_numbers=[7, 12],
+        kept=[{"text": "الرد سبعة أيام.", "sources": [1], "copied": False}],
+    )
+    row["calls"] = [
+        {"output_tokens": 2, "output_s": 1.0, "stage": "claims"},
+        {"output_tokens": 9, "output_s": 1.0, "stage": "claims"},
+    ]
+    rows = [row] + _abstained_ooc_rows()
+
+    _, out = _claims_run(rows)
+
+    assert "  model calls                        : 2" in out
+    assert "  retries (more than 1 call)         : 1" in out
+
+
+def test_old_stats_shaped_rows_still_print_the_unlabelled_runtime_lines():
+    """Run 3/4/5's saved rows carry `stats`, never `calls` — the per-stage
+    grouping must degenerate back to exactly the old, unlabelled lines for
+    them (a single implicit stage), or their saved numbers would no
+    longer print the way this project already measured and quoted them."""
+    rows = [
+        _claims_row("Q1", expected=[7], source_numbers=[7, 12],
+                    kept=[{"text": "الرد سبعة أيام.", "sources": [1], "copied": False}]),
+    ] + _abstained_ooc_rows()
+    rows[0]["stats"] = [{"output_tokens": 10, "output_s": 2.0}]
+
+    _, out = _claims_run(rows)
+
+    assert "  mean output tokens/s               : 5.0" in out
+    assert "relevance mean output tokens/s" not in out
+    assert "claims mean output tokens/s" not in out
+
+
+def test_the_gated_report_prints_the_relevance_lines_beside_the_verdict():
+    """EVAL.md's Run 6 section names these four numbers as what to print
+    beside coverage/B2: how often the step said no on an answerable
+    question, how often it said yes on an out_of_corpus one, relevance
+    failures, and abstain reasons by count."""
+    answerable = []
+    for i in range(1, 16):
+        said_yes = i > 3  # 3 of 15 wrongly say "no" (a known pre-registered risk)
+        kept = ([{"text": "الرد سبعة أيام.", "sources": [1], "copied": False}]
+                if said_yes else [])
+        row = _claims_row(f"Q{i}", expected=[7], source_numbers=[7, 12], kept=kept)
+        row["relevance"] = {"answers": said_yes, "attempts": 1, "failure": False, "raw": ["r"]}
+        row["abstain_reason"] = None if said_yes else "relevance_no"
+        answerable.append(row)
+
+    out_of_corpus = []
+    for j, i in enumerate(range(16, 21)):
+        said_yes = j == 0  # 1 of 5 wrongly says "yes"
+        kept = ([{"text": "نص غير ذي صلة بالسؤال.", "sources": [1], "copied": False}]
+                if said_yes else [])
+        row = _claims_row(f"Q{i}", answerable=False, source_numbers=[3, 4], kept=kept)
+        row["relevance"] = {"answers": said_yes, "attempts": 1, "failure": False, "raw": ["r"]}
+        row["abstain_reason"] = None if said_yes else "relevance_no"
+        out_of_corpus.append(row)
+
+    _, out = _claims_run(answerable + out_of_corpus)
+
+    assert "  relevance said no on answerable    : 3/15 = 20.0%" in out
+    assert "  relevance said yes on out_of_corpus : 1/5 = 20.0%" in out
+    assert "  relevance_failures                  : 0" in out
+    # "abstain reasons" counts every row abstained by the relevance step,
+    # correct or not: 3 wrong "no"s on answerable questions PLUS the 4
+    # out_of_corpus questions that correctly got a "no" too (only 1 of the
+    # 5 out_of_corpus rows said "yes") = 7, not just the 3 false ones.
+    assert "relevance_no=7" in out.split("abstain reasons")[1][:60]
+
+
+def test_the_relevance_lines_do_not_print_for_the_plain_json_contract():
+    """A Run 5 ("json") row never carries `relevance` at all — nothing
+    about Run 6's own diagnostics belongs in a report that never ran its
+    relevance step."""
+    rows = _answerable_claims_rows(10) + _abstained_ooc_rows()
+
+    _, out = _claims_run(rows)
+
+    assert "relevance said no on answerable" not in out
+    assert "relevance_failures" not in out
+
+
+def test_relevance_failures_are_counted_separately_from_a_claims_schema_failure():
+    row = _claims_row("Q1", expected=[7], source_numbers=[7, 12], kept=[])
+    row["relevance"] = {"answers": None, "attempts": 2, "failure": True, "raw": ["x", "y"]}
+    row["abstain_reason"] = "relevance_failure"
+    rows = [row] + _abstained_ooc_rows()
+
+    _, out = _claims_run(rows)
+
+    assert "  relevance_failures                  : 1" in out
+    assert "relevance_failure=1" in out.split("abstain reasons")[1][:60]

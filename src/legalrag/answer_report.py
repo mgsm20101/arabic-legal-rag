@@ -25,6 +25,8 @@ they say different things about where the system broke. See ``cite``.
 
 from __future__ import annotations
 
+from collections import Counter
+
 from .cite import MIN_CLAIM_CHARS
 from .generate import DEFAULT_MODEL
 
@@ -42,34 +44,106 @@ def _pct(n: int, d: int) -> str:
 
 
 def _calls_of(row: dict) -> list[dict]:
-    """A row's `stats`, normalized to a list of per-call dicts regardless of
-    whether it was saved as Run 4's single dict or the list `answer_eval`
-    now writes — every report here must keep reading Run 4's saved files
-    unchanged."""
+    """A row's per-call stats, normalized to a flat list of dicts.
+
+    `"calls"` (Run 6 onward: every call, stage-tagged "relevance"/"claims")
+    is read first when present; otherwise `"stats"` (Run 4's single dict, or
+    the untagged list Run 5 wrote) — every report here must keep reading
+    those saved files exactly as before this field existed. A question
+    answered without calling the model (no articles retrieved) normalizes
+    to `[]` either way, which is falsy; the rest have at least one call.
+    """
+    calls = row.get("calls")
+    if calls is not None:
+        return calls
     s = row.get("stats")
     if s is None:
         return []
     return [s] if isinstance(s, dict) else s
 
 
+def _stage_groups(calls: list[dict]) -> list[tuple[str | None, list[dict]]]:
+    """Group `calls` by their `"stage"` tag, preserving first-seen order.
+
+    A call with no `"stage"` key at all — every Run 3/4/5 call, since the
+    field did not exist yet — groups under `None`: a single implicit stage.
+    That is what keeps those runs' numbers identical to before stages
+    existed, since grouping by "the one stage present" computes the exact
+    same aggregate as not grouping at all.
+    """
+    order: list[str | None] = []
+    groups: dict[str | None, list[dict]] = {}
+    for c in calls:
+        stage = c.get("stage")
+        if stage not in groups:
+            groups[stage] = []
+            order.append(stage)
+        groups[stage].append(c)
+    return [(stage, groups[stage]) for stage in order]
+
+
+def _row_retries(row: dict) -> int:
+    """Calls beyond the first, counted PER STAGE within this row and
+    summed — not `len(calls) - 1` over the whole row regardless of stage.
+
+    A question that reaches two DIFFERENT stages once each (Run 6: one
+    relevance call that says "yes", then one claims call) makes two calls
+    but retried neither; only more than one call within the SAME stage is
+    a retry. Scoring `len(calls) - 1` here would count every question that
+    simply passed the relevance step as a retry, which it is not.
+    """
+    counts: dict[str | None, int] = {}
+    for c in _calls_of(row):
+        stage = c.get("stage")
+        counts[stage] = counts.get(stage, 0) + 1
+    return sum(max(0, n - 1) for n in counts.values())
+
+
+def _print_stage_calls(stage: str | None, calls: list[dict]) -> None:
+    """One stage's slice of the throughput/truncation/cut lines.
+
+    Unlabelled when `stage` is `None` (the single-implicit-stage case, see
+    `_stage_groups`) — printed character for character as Run 3/4/5 always
+    have been. Labelled per stage otherwise (Run 6's relevance/claims
+    split), so a reader can tell a slow relevance step from a slow claims
+    one instead of only ever seeing their sum.
+    """
+    label = "" if stage is None else f"{stage} "
+    with_rate = [c for c in calls if c.get("output_tokens") is not None and c.get("output_s")]
+    if with_rate:
+        tokens = sum(c["output_tokens"] for c in with_rate)
+        secs = sum(c["output_s"] for c in with_rate)
+        print(f"  {label}mean output tokens/s               : {tokens / secs:.1f}")
+    n_truncated = sum(1 for c in calls if c.get("truncated"))
+    n_cut = sum(1 for c in calls if c.get("cut"))
+    # Named for what they count: calls, not prompts or answers — a question
+    # that retries (Run 5 retries once on invalid JSON) makes more than one
+    # call, and the old names ("prompts truncated", "answers cut") would
+    # silently under-describe that.
+    print(f"  {label}calls truncated by num_ctx         : {n_truncated}")
+    print(f"  {label}calls cut by the token cap         : {n_cut}")
+
+
 def _print_runtime_and_meta(rows: list[dict], meta: dict | None) -> None:
     """The per-call timing/throughput lines and the `.meta.json` lines,
     shared verbatim between `report` and `report_claims` — Run 5 changes the
     answer shape, not how a call's wall-clock cost or the server's own
-    provenance are measured.
+    provenance are measured; Run 6 adds a second model/stage, not a second
+    way of measuring one.
 
-    Only an `ollama:` run ever carries `stats` at all (the hf: runtime
-    exposes no such attribute — see `answer_eval._stats_for`). Within one
-    such run, a question answered without calling the model (no articles
-    retrieved) has `stats == []`, which is falsy; the rest have at least one
-    call. `_calls_of` normalizes Run 4's single dict and the list this
-    project now writes into the same shape, so aggregation below does not
-    need to know which format a given row was saved in.
+    Only an `ollama:` run ever carries per-call stats at all (the hf:
+    runtime exposes no such attribute — see `answer_eval._stats_for`).
+    Within one such run, a question answered without calling the model (no
+    articles retrieved) has no calls, which is falsy; the rest have at
+    least one. `_calls_of` normalizes every saved shape (Run 4's single
+    dict, Run 5's untagged list, Run 6's stage-tagged list) into the same
+    flat shape, so aggregation below does not need to know which one a
+    given row was saved in.
     """
     mean_s = sum(r["seconds"] for r in rows) / max(len(rows), 1)
     print(f"  mean seconds per answer            : {mean_s:.1f}")
 
-    stat_rows = [r for r in rows if r.get("stats")]
+    stat_rows = [r for r in rows if r.get("stats") or r.get("calls")]
     all_calls = [c for r in stat_rows for c in _calls_of(r)]
     if all_calls:
         if any(c.get("load_s") is not None for c in all_calls):
@@ -80,25 +154,13 @@ def _print_runtime_and_meta(rows: list[dict], meta: dict | None) -> None:
             mean_adj = sum(adjusted) / max(len(adjusted), 1)
             print(f"  mean seconds excl. load            : {mean_adj:.1f}")
 
-        with_rate = [c for c in all_calls
-                     if c.get("output_tokens") is not None and c.get("output_s")]
-        if with_rate:
-            tokens = sum(c["output_tokens"] for c in with_rate)
-            secs = sum(c["output_s"] for c in with_rate)
-            print(f"  mean output tokens/s               : {tokens / secs:.1f}")
-        n_truncated = sum(1 for c in all_calls if c.get("truncated"))
-        n_cut = sum(1 for c in all_calls if c.get("cut"))
-        # Named for what they count: calls, not prompts or answers — a
-        # question that retries (Run 5 retries once on invalid JSON) makes
-        # more than one call, and the old names ("prompts truncated",
-        # "answers cut") would silently under-describe that.
-        print(f"  calls truncated by num_ctx         : {n_truncated}")
-        print(f"  calls cut by the token cap         : {n_cut}")
+        for stage, stage_calls in _stage_groups(all_calls):
+            _print_stage_calls(stage, stage_calls)
 
         # More than one call for a question is a retry — worth surfacing on
         # its own, since a model that retries often is slower than its mean
         # seconds alone would suggest.
-        retries = sum(max(0, len(_calls_of(r)) - 1) for r in stat_rows)
+        retries = sum(_row_retries(r) for r in stat_rows)
         print(f"  model calls                        : {len(all_calls)}")
         print(f"  retries (more than 1 call)         : {retries}")
 
@@ -233,6 +295,43 @@ def _cites_expected(row: dict) -> bool:
     return False
 
 
+def _print_relevance_lines(
+    rows: list[dict], answerable: list[dict], out_of_corpus: list[dict],
+) -> None:
+    """Run 6's own pre-registered lines (EVAL.md, "Run 6"), printed before
+    everything Run 5 already prints: coverage and B2 alone cannot tell a
+    relevance-driven abstention apart from a claims-gate one, and these are
+    the four numbers EVAL.md names for reading that risk —
+
+    - how often the step said "no" on an ANSWERABLE question (of 15): the
+      known risk pre-registered before this ever ran (colloquial and
+      multi-article questions, EVAL.md).
+    - how often it said "yes" on an out_of_corpus question (of 5): the
+      relevance step's own false-negative-on-abstention rate.
+    - `relevance_failures`: two invalid-JSON attempts on the relevance step
+      itself, counted apart from a claims `schema_failure` because this
+      abstention never reached the claims call at all.
+    - every `abstain_reason` this run actually produced, by count.
+
+    A row with `relevance is None` (Run 5's own contract, or a `gated` row
+    where the relevance step itself failed before ever answering true/false)
+    contributes to none of the first two counts — only to `abstain reasons`
+    and (if it failed) `relevance_failures`.
+    """
+    said_no = [r for r in answerable
+               if r.get("relevance") and r["relevance"]["answers"] is False]
+    said_yes = [r for r in out_of_corpus
+                if r.get("relevance") and r["relevance"]["answers"] is True]
+    failures = sum(1 for r in rows if r.get("relevance") and r["relevance"]["failure"])
+    reasons = Counter(r["abstain_reason"] for r in rows if r.get("abstain_reason"))
+    reasons_text = ", ".join(f"{k}={v}" for k, v in sorted(reasons.items())) or "none"
+
+    print(f"  relevance said no on answerable    : {_pct(len(said_no), len(answerable))}")
+    print(f"  relevance said yes on out_of_corpus : {_pct(len(said_yes), len(out_of_corpus))}")
+    print(f"  relevance_failures                  : {failures}")
+    print(f"  abstain reasons                     : {reasons_text}")
+
+
 def report_claims(
     rows: list[dict],
     meta: dict | None = None,
@@ -265,6 +364,15 @@ def report_claims(
     print(f"  {contract_name} contract - claims JSON + gate "
           f"(EVAL.md, {pre_registration_commit})")
     print("=" * 68)
+
+    # Detected from the data, not a separate flag: a "gated" row (Run 6)
+    # carries `relevance` on every row (or `None` when that step itself
+    # failed before ever answering); a "json" row (Run 5) never does. This
+    # is what lets a saved run answer its own question about which contract
+    # produced it, the same way `contract_name`/`pre_registration_commit`
+    # only change the header rather than needing a `is_gated` parameter.
+    if any(r.get("relevance") is not None for r in rows):
+        _print_relevance_lines(rows, answerable, out_of_corpus)
 
     covered = [r for r in answerable if r["gate"]["kept"]]
     false_abstain = [r for r in answerable if r["gate"]["status"] == "abstained"]

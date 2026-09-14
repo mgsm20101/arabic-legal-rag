@@ -28,12 +28,14 @@ import json
 import re
 import sys
 import time
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from typing import Callable
 
 from .answer_report import report, report_claims
 from .cite import audit, gate
-from .claims import CLAIMS_MAX_TOKENS, CLAIMS_SCHEMA, ClaimsGenerator
+from .claims import ClaimsGenerator, build_generators
 from .dense import CACHE_PATH, CORPUS_PATH, DenseIndex, corpus_fingerprint, load_docs
 from .evaluate import binding_problem, corpus_laws, load_meta, load_questions
 from .generate import DEFAULT_MODEL, Generator, model_source, parse_model_spec, resolve_model
@@ -45,7 +47,10 @@ RUNS = Path("runs")
 ROWS_PATH = RUNS / "answer_eval.json"
 DEFAULT_SPEC = "hf:" + DEFAULT_MODEL  # Run 3's model, as a --model spec
 
-CONTRACTS = ("text", "json")  # "text": Run 3/4's free text; "json": Run 5's claims
+# "text": Run 3/4's free text. "json": Run 5's claims + gate. "gated": Run 6
+# — the same claims contract behind a yes/no relevance step (EVAL.md,
+# "Run 6"). Order matters only for --help/argparse's choices listing.
+CONTRACTS = ("text", "json", "gated")
 
 
 def rows_path(spec: str, contract: str = "text") -> Path:
@@ -56,13 +61,14 @@ def rows_path(spec: str, contract: str = "text") -> Path:
     `--report-only` with no `--model`/`--contract` keeps reproducing that
     saved run. Any other (spec, contract) pair gets its own file, named
     from the spec itself — otherwise a second run would silently overwrite
-    a previous one's saved answers. `contract="json"` (Run 5) always gets a
-    `-json` suffix, so it never collides with that same model's Run 3/4
-    free-text file.
+    a previous one's saved answers. Any non-"text" contract gets a
+    `-{contract}` suffix, so `contract="json"` (Run 5) keeps its established
+    `-json` suffix exactly, and `contract="gated"` (Run 6) gets its own
+    `-gated` suffix that cannot collide with either.
     """
-    if contract == "json":
+    if contract != "text":
         slug = re.sub(r"[^A-Za-z0-9._-]", "-", spec)
-        return RUNS / f"answer_eval-{slug}-json.json"
+        return RUNS / f"answer_eval-{slug}-{contract}.json"
     if spec == DEFAULT_SPEC:
         return ROWS_PATH
     slug = re.sub(r"[^A-Za-z0-9._-]", "-", spec)
@@ -158,14 +164,29 @@ def run(questions, docs, generator: Generator, model_spec: str, k: int = TOP_K,
 
 
 def run_claims(questions, docs, generator: ClaimsGenerator, model_spec: str,
-               k: int = TOP_K, index: DenseIndex | None = None) -> list[dict]:
+               k: int = TOP_K, index: DenseIndex | None = None,
+               contract: str = "json") -> list[dict]:
     """The claims-JSON sibling of `run()` — Run 5's contract (EVAL.md,
-    commit ecd37f8). Same retrieval as `run()` (dense top-k, law articles
-    only, kept in rank order) and the same per-call stats bookkeeping; the
-    answer shape and the model-free check applied to it are what differ —
-    `cite.gate` runs immediately, so a saved row already carries its own
-    verdict the way a text-contract row's `cited`/`fabricated`/... do
-    (`audit`, called inside `run()`).
+    commit ecd37f8) and, when `generator` carries a `relevance_model`, Run
+    6's gated version of it (EVAL.md, "Run 6") — the same retrieval as
+    `run()` (dense top-k, law articles only, kept in rank order); the answer
+    shape and the model-free check applied to it are what differ — `cite.gate`
+    runs immediately, so a saved row already carries its own verdict the way
+    a text-contract row's `cited`/`fabricated`/... do (`audit`, called
+    inside `run()`).
+
+    Per-call stats come from the answer object (`ans.calls`), already
+    stage-tagged ("relevance" / "claims") by `ClaimsGenerator.answer` —
+    not from `generator.model.calls`, which would only ever see the claims
+    model's own calls and silently miss every relevance call Run 6 makes
+    through a SEPARATE model object.
+
+    `contract` is stamped onto every row as-is ("json" or "gated") — this
+    function's own logic never branches on it; only which fields a saved
+    row carries downstream (`relevance`, `abstain_reason`) actually differs,
+    and those come from `ans` regardless of which contract produced them
+    (`None` under Run 5's contract, since `ClaimsGenerator.answer` returns
+    exactly that when it was built with no `relevance_model`).
     """
     if index is None:
         index = DenseIndex(docs, cache_path=CACHE_PATH)
@@ -185,12 +206,9 @@ def run_claims(questions, docs, generator: ClaimsGenerator, model_spec: str,
         source_texts = [a["text"] for a in articles]
         source_ids = [a["id"] for a in articles]
 
-        model = generator.model
-        before = len(getattr(model, "calls", []))
         t = time.perf_counter()
         ans = generator.answer(q.question, source_texts)
         elapsed = time.perf_counter() - t
-        stats = _stats_for(model, before)
 
         expected = {n for n in (article_number(a) for a in q.expected_articles) if n}
         gate_result = gate(ans.parsed, source_numbers, source_texts)
@@ -200,7 +218,7 @@ def run_claims(questions, docs, generator: ClaimsGenerator, model_spec: str,
             "category": q.category,
             "answerable": q.answerable,
             "model": model_spec,
-            "contract": "json",
+            "contract": contract,
             "question": q.question,
             "source_numbers": source_numbers,
             "source_ids": source_ids,
@@ -212,9 +230,10 @@ def run_claims(questions, docs, generator: ClaimsGenerator, model_spec: str,
             "seconds": elapsed,
             "gate": gate_result,
             "corpus_fingerprint": fingerprint,
+            "relevance": ans.relevance,
+            "abstain_reason": ans.abstain_reason,
+            "calls": ans.calls,
         }
-        if stats is not None:
-            row["stats"] = stats
         rows.append(row)
 
         n_claims = len(gate_result["kept"]) + len(gate_result["dropped"])
@@ -434,6 +453,57 @@ def _regate(rows: list[dict], docs: list[dict]) -> list[dict]:
     return new_rows
 
 
+@dataclass(frozen=True)
+class _Contract:
+    """Everything that varies by `--contract`, keyed by name — how to build
+    a generator from a model spec, how to run it over the question set, how
+    to re-score saved rows against a freshly-loaded corpus, and how to
+    report the result. Replaces the `contract == "json"` branches that used
+    to be scattered through `main` one at a time — Run 6 ("gated") only
+    needed a third branch of each, not a rewrite of the branching itself.
+    """
+    build: Callable[[str], object]
+    run: Callable[[list, list[dict], object, str], list[dict]]
+    rescore: Callable[[list[dict], list[dict]], list[dict]]
+    report: Callable[[list[dict], dict | None], int]
+
+
+def _run_text(questions, docs, generator: Generator, model_spec: str) -> list[dict]:
+    return run(questions, docs, generator, model_spec)
+
+
+def _run_json(questions, docs, generator: ClaimsGenerator, model_spec: str) -> list[dict]:
+    return run_claims(questions, docs, generator, model_spec, contract="json")
+
+
+def _run_gated(questions, docs, generator: ClaimsGenerator, model_spec: str) -> list[dict]:
+    return run_claims(questions, docs, generator, model_spec, contract="gated")
+
+
+def _report_gated(rows: list[dict], meta: dict | None) -> int:
+    # Run 6 reuses Run 5's exact gate and report — only the header (and,
+    # inside it, the pre-registered relevance lines it now also prints) says
+    # which pre-registration these numbers were measured against.
+    return report_claims(
+        rows, meta=meta, contract_name="Run 6", pre_registration_commit="d3f39c3")
+
+
+CONTRACT_TABLE: dict[str, _Contract] = {
+    "text": _Contract(
+        build=lambda spec: Generator(model=resolve_model(spec)),
+        run=_run_text, rescore=_reaudit, report=report,
+    ),
+    "json": _Contract(
+        build=lambda spec: build_generators(spec, "json"),
+        run=_run_json, rescore=_regate, report=report_claims,
+    ),
+    "gated": _Contract(
+        build=lambda spec: build_generators(spec, "gated"),
+        run=_run_gated, rescore=_regate, report=_report_gated,
+    ),
+}
+
+
 class _ArgumentParser(argparse.ArgumentParser):
     """`argparse.ArgumentParser`, except a parse error prints to stdout and
     raises `SystemExit(2)` instead of argparse's default of stderr plus a
@@ -575,18 +645,17 @@ def main(argv: list[str] | None = None) -> int:
                       "re-run the full evaluation instead.")
                 return 2
 
+        handlers = CONTRACT_TABLE[contract]
         try:
-            if contract == "json":
-                # The gate is model-free by design so a fixed gate never
-                # needs Ollama again — see `_regate`.
-                rows = _regate(rows, docs)
-                print(f"re-gated {len(rows)} saved answers from {rows_file} "
-                      "(no model loaded)\n")
-                return report_claims(rows, meta=_meta_for_rows(rows, contract))
-            rows = _reaudit(rows, docs)
-            print(f"re-audited {len(rows)} saved answers from {rows_file} "
+            # The gate is model-free by design so a fixed gate never needs
+            # Ollama again (`_regate`) — "gated" re-applies it exactly like
+            # "json": the relevance decision is saved data on each row
+            # (`relevance`, `abstain_reason`), never re-run here.
+            rows = handlers.rescore(rows, docs)
+            verb = "re-audited" if contract == "text" else "re-gated"
+            print(f"{verb} {len(rows)} saved answers from {rows_file} "
                   "(no model loaded)\n")
-            return report(rows, meta=_meta_for_rows(rows, contract))
+            return handlers.report(rows, _meta_for_rows(rows, contract))
         except ValueError as e:
             # A missing article number from `_regate`/`_reaudit` — a corpus
             # that does not match the one this run saw, slipping past the
@@ -650,20 +719,14 @@ def main(argv: list[str] | None = None) -> int:
         print(weights_line)
     print()
 
+    handlers = CONTRACT_TABLE[contract]
+
     print(f"loading {model_spec} ...", flush=True)
     t = time.perf_counter()
     try:
-        if contract == "json":
-            model = resolve_model(model_spec, max_new_tokens=CLAIMS_MAX_TOKENS,
-                                   fmt=CLAIMS_SCHEMA)
-            generator = ClaimsGenerator(model=model)
-            print(f"  ready ({time.perf_counter() - t:.1f}s)\n", flush=True)
-            rows = run_claims(questions, docs, generator, model_spec)
-        else:
-            model = resolve_model(model_spec)
-            generator = Generator(model=model)
-            print(f"  ready ({time.perf_counter() - t:.1f}s)\n", flush=True)
-            rows = run(questions, docs, generator, model_spec)
+        generator = handlers.build(model_spec)
+        print(f"  ready ({time.perf_counter() - t:.1f}s)\n", flush=True)
+        rows = handlers.run(questions, docs, generator, model_spec)
     except GeneratorUnavailable as e:
         # No traceback: this is an environment problem (missing dependency,
         # bad checkpoint, unreachable Ollama server, model not pulled), not
@@ -682,11 +745,14 @@ def main(argv: list[str] | None = None) -> int:
     print(f"\nanswers saved to {rows_file} ({len(rows)} rows)")
 
     if model_spec.startswith("ollama:"):
-        _write_ollama_meta(model_spec, model, rows_file)
+        # `generator.model` is the claims chat for every contract — "gated"'s
+        # relevance chat talks to the same Ollama server and the same model
+        # name (EVAL.md, "Run 6": relevance and claims are the same model,
+        # different token caps only), so its GPU share/digest/quantization
+        # are identical and do not need their own separate metadata file.
+        _write_ollama_meta(model_spec, generator.model, rows_file)
 
-    if contract == "json":
-        return report_claims(rows, meta=_meta_for_rows(rows, contract))
-    return report(rows, meta=_meta_for_rows(rows, contract))
+    return handlers.report(rows, _meta_for_rows(rows, contract))
 
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@ from legalrag.answer_eval import (  # noqa: E402
     DEFAULT_MODEL,
     ROWS_PATH,
     _stats_for,
+    _weights_line,
     report,
     rows_path,
 )
@@ -124,3 +125,23 @@ def test_a_question_answered_without_calling_the_model_carries_no_stats():
     assert _stats_for(g, [{"number": 7, "text": "نص المادة"}]) == {
         "output_tokens": 99, "output_s": 1.0, "cut": True,
     }
+
+
+def test_an_hf_spec_with_no_repo_name_prints_no_weights_line():
+    """`--model hf:` names no repo — `resolve_model` rejects it, but only
+    later, inside the timed "loading ..." block in main(). Printing a
+    weights line for it first (from calling `model_source` on an empty or
+    whitespace-only name) would show a blank `weights    :` line — or worse,
+    since `Path("").is_dir()` can be True — before that real error ever
+    appears."""
+    assert _weights_line("hf:") is None
+    assert _weights_line("hf:   ") is None
+    assert _weights_line("ollama:qwen3:4b") is None  # not an hf: spec at all
+
+
+def test_an_hf_spec_with_a_repo_name_prints_a_weights_line():
+    """The ordinary case still gets its provenance line, whichever branch of
+    `model_source` ends up resolving it on this machine."""
+    line = _weights_line("hf:Qwen/Qwen2.5-1.5B-Instruct")
+    assert line is not None
+    assert line.startswith("weights    : ")

@@ -180,9 +180,32 @@ def test_a_model_absent_locally_falls_back_to_its_hub_id(tmp_path):
 def test_an_explicit_directory_is_used_as_given(tmp_path):
     """A caller that already names a directory (not a hub id) is trusted
     outright — no models_dir guessing games layered on top of an explicit
-    path, and no config.json required at that path either."""
-    explicit_dir = tmp_path / "somewhere-else"
-    explicit_dir.mkdir()
+    path, and no config.json required at that path either.
 
-    source = model_source(str(explicit_dir), models_dir=tmp_path / "models")
-    assert source == str(explicit_dir)
+    A same-named directory that *does* have config.json is planted under
+    models_dir on purpose: without the `Path(name).is_dir()` branch, the
+    fallback would find that shadow and return it instead, and the two
+    results would still look the same unless something can tell them apart.
+    `.as_posix()` matters here — `name.split("/")` does not split backslashes,
+    so a bare Windows path would silently skip the fallback branch too and
+    let the test pass for the wrong reason.
+    """
+    explicit = tmp_path / "elsewhere" / "Qwen2.5-1.5B-Instruct"
+    explicit.mkdir(parents=True)
+    shadow = tmp_path / "models" / "Qwen2.5-1.5B-Instruct"
+    shadow.mkdir(parents=True)
+    (shadow / "config.json").write_text("{}")
+
+    source = model_source(explicit.as_posix(), models_dir=tmp_path / "models")
+    assert source == explicit.as_posix()
+
+
+def test_a_models_folder_without_config_json_falls_back_to_the_hub_id(tmp_path):
+    """`models/<name>` existing is not enough on its own — an empty or
+    half-populated directory is not a usable checkpoint, so the result must
+    still be the hub id, not that directory."""
+    empty = tmp_path / "models" / "Qwen2.5-1.5B-Instruct"
+    empty.mkdir(parents=True)
+
+    source = model_source("Qwen/Qwen2.5-1.5B-Instruct", models_dir=tmp_path / "models")
+    assert source == "Qwen/Qwen2.5-1.5B-Instruct"

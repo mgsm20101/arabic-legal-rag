@@ -68,16 +68,16 @@ def article_number(doc_id: str) -> int | None:
 
 
 def _stats_for(generator: Generator, articles: list[dict]) -> dict | None:
-    """The runtime's stats for the call `generator.answer(question, articles)`
-    is about to make, or None if it will not call the model at all.
+    """The runtime's stats for the `generator.answer(question, articles)`
+    call that was just made, or None if it did not call the model at all.
 
-    `Generator.answer` returns early on empty `articles` — the abstention
-    rule — without touching the model, so `last_stats` on the model object
-    would still hold whatever question was last actually answered. Reading
-    it unconditionally would silently mislabel this row with someone else's
-    tokens/s, truncation and cut flags. Must be called *after*
-    `generator.answer` returns, so a non-empty `articles` call reads that
-    call's own fresh stats and not the previous one's.
+    Must be called *after* `generator.answer` returns, so a non-empty
+    `articles` call reads that call's own fresh stats, not the previous
+    one's. `Generator.answer` returns early on empty `articles` — the
+    abstention rule — without touching the model, so `last_stats` on the
+    model object would still hold whatever question was last actually
+    answered; reading it unconditionally would silently mislabel this row
+    with someone else's tokens/s, truncation and cut flags.
     """
     if not articles:
         return None
@@ -209,9 +209,9 @@ def report(rows: list[dict]) -> int:
     print(f"  mean seconds per answer            : {mean_s:.1f}")
 
     # Only an `ollama:` run ever carries `stats` at all (the hf: runtime
-    # exposes no such attribute — see `run`, above). Within one such run, a
-    # question answered without calling the model (no articles retrieved,
-    # see `_stats_for`) has no `stats` of its own; the rest do.
+    # exposes no such attribute — see `_stats_for`, above). Within one such
+    # run, a question answered without calling the model (no articles
+    # retrieved) has no `stats` of its own; the rest do.
     stat_rows = [r["stats"] for r in rows if r.get("stats")]
     if stat_rows:
         with_rate = [s for s in stat_rows
@@ -228,6 +228,25 @@ def report(rows: list[dict]) -> int:
     print("\nSmall sample. Read the caveats in EVAL.md before quoting any of this,")
     print("starting with the one that matters most: the corpus is not the gazette text.")
     return 0 if (b1 and b2) else 1
+
+
+def _weights_line(model_spec: str) -> str | None:
+    """The `weights` header line for an `hf:` spec, or None when there is
+    nothing sensible to show.
+
+    A spec with no repo name after `hf:` (`"hf:"`, or all whitespace) is
+    invalid — `resolve_model` rejects it — but that happens later, in the
+    timed "loading ..." block below. Calling `model_source` on it here first
+    would print a blank `weights    :` line before the real error, and
+    `Path("").is_dir()` resolving to the current directory makes that not
+    even reliably blank. Validate before resolving, not after.
+    """
+    if not model_spec.startswith("hf:"):
+        return None
+    repo = model_spec.partition(":")[2]
+    if not repo.strip():
+        return None
+    return f"weights    : {model_source(repo)}"
 
 
 def _write_ollama_meta(model_spec: str, rows_file: Path) -> Path:
@@ -331,10 +350,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"questions  : {len(questions)} ({n_ooc} out_of_corpus)")
     print(f"retrieval  : dense, top-{TOP_K} (Run 2 winner)")
     print(f"generator  : {model_spec}")
-    if model_spec.startswith("hf:"):
-        # Provenance: a local copy under models/ (task 1.2) or the hub id
-        # transformers will resolve from the HF cache instead.
-        print(f"weights    : {model_source(model_spec.partition(':')[2])}")
+    weights_line = _weights_line(model_spec)
+    if weights_line is not None:
+        print(weights_line)
     print()
 
     print(f"loading {model_spec} ...", flush=True)

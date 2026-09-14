@@ -67,6 +67,24 @@ def article_number(doc_id: str) -> int | None:
     return int(num) if book == "law" and num.isdigit() else None
 
 
+def _stats_for(generator: Generator, articles: list[dict]) -> dict | None:
+    """The runtime's stats for the call `generator.answer(question, articles)`
+    is about to make, or None if it will not call the model at all.
+
+    `Generator.answer` returns early on empty `articles` — the abstention
+    rule — without touching the model, so `last_stats` on the model object
+    would still hold whatever question was last actually answered. Reading
+    it unconditionally would silently mislabel this row with someone else's
+    tokens/s, truncation and cut flags. Must be called *after*
+    `generator.answer` returns, so a non-empty `articles` call reads that
+    call's own fresh stats and not the previous one's.
+    """
+    if not articles:
+        return None
+    stats = getattr(generator.model, "last_stats", None)
+    return dict(stats) if stats is not None else None
+
+
 def run(questions, docs, generator: Generator, model_spec: str, k: int = TOP_K) -> list[dict]:
     index = DenseIndex(docs, cache_path=CACHE_PATH)
     index.save()
@@ -84,10 +102,7 @@ def run(questions, docs, generator: Generator, model_spec: str, k: int = TOP_K) 
         t = time.perf_counter()
         ans = generator.answer(q.question, articles)
         elapsed = time.perf_counter() - t
-        # `generator.model` is already resolved (never None here), so this
-        # reads the runtime's own last-call timings without loading anything.
-        # A plain function (the `hf:` runtime) simply has no such attribute.
-        stats = getattr(generator.model, "last_stats", None)
+        stats = _stats_for(generator, articles)
 
         retrieved = {a["number"] for a in articles}
         result = audit(ans.text, corpus_numbers, retrieved,
@@ -107,7 +122,7 @@ def run(questions, docs, generator: Generator, model_spec: str, k: int = TOP_K) 
             **result,
         }
         if stats is not None:
-            row["stats"] = dict(stats)
+            row["stats"] = stats
         rows.append(row)
         state = "ABSTAIN" if result["abstained"] else "answer "
         cited = result["cited"] or "-"
@@ -184,7 +199,7 @@ def report(rows: list[dict]) -> int:
     print("  beyond the criteria")
     print("=" * 68)
     model_spec = rows[0]["model"] if rows and "model" in rows[0] else "hf:" + DEFAULT_MODEL
-    print(f"  model                               : {model_spec}")
+    print(f"  model                              : {model_spec}")
     hit = [r for r in scored if r["cited_expected"]]
     strict = [r for r in scored if r["strict"]]
     print(f"  cited the expected article         : {_pct(len(hit), len(scored))}"
@@ -193,8 +208,10 @@ def report(rows: list[dict]) -> int:
     mean_s = sum(r["seconds"] for r in rows) / max(len(rows), 1)
     print(f"  mean seconds per answer            : {mean_s:.1f}")
 
-    # Only an `ollama:` run carries `stats` (see `run`, above) — a run's rows
-    # either all have it or none do, so any row with it stands for the batch.
+    # Only an `ollama:` run ever carries `stats` at all (the hf: runtime
+    # exposes no such attribute — see `run`, above). Within one such run, a
+    # question answered without calling the model (no articles retrieved,
+    # see `_stats_for`) has no `stats` of its own; the rest do.
     stat_rows = [r["stats"] for r in rows if r.get("stats")]
     if stat_rows:
         with_rate = [s for s in stat_rows
@@ -202,11 +219,11 @@ def report(rows: list[dict]) -> int:
         if with_rate:
             tokens = sum(s["output_tokens"] for s in with_rate)
             secs = sum(s["output_s"] for s in with_rate)
-            print(f"  mean output tokens/s                : {tokens / secs:.1f}")
+            print(f"  mean output tokens/s               : {tokens / secs:.1f}")
         n_truncated = sum(1 for s in stat_rows if s.get("truncated"))
         n_cut = sum(1 for s in stat_rows if s.get("cut"))
-        print(f"  prompts truncated by num_ctx        : {n_truncated}")
-        print(f"  answers cut by the token cap        : {n_cut}")
+        print(f"  prompts truncated by num_ctx       : {n_truncated}")
+        print(f"  answers cut by the token cap       : {n_cut}")
 
     print("\nSmall sample. Read the caveats in EVAL.md before quoting any of this,")
     print("starting with the one that matters most: the corpus is not the gazette text.")
@@ -318,7 +335,16 @@ def main(argv: list[str] | None = None) -> int:
     print(f"loading {model_spec} ...", flush=True)
     t = time.perf_counter()
     try:
-        generator = Generator(model=resolve_model(model_spec))
+        model = resolve_model(model_spec)
+    except ValueError as e:
+        # A bad --model spec, caught here specifically rather than with the
+        # broader try below: a ValueError from deep inside `run()` would be a
+        # real bug, and reporting it as "bad model spec" would hide that.
+        print(str(e))
+        return 2
+
+    try:
+        generator = Generator(model=model)
         print(f"  ready ({time.perf_counter() - t:.1f}s)\n", flush=True)
         rows = run(questions, docs, generator, model_spec)
     except GeneratorUnavailable as e:

@@ -120,9 +120,14 @@ class OllamaChat:
 
 def _error_message(resp: httpx.Response, model: str, host: str) -> str:
     try:
-        detail = resp.json().get("error", resp.text)
+        payload = resp.json()
     except ValueError:
-        detail = resp.text
+        payload = None
+    # The server's error body is not guaranteed to be a `{"error": ...}`
+    # object — Ollama itself always sends that shape, but a proxy or a
+    # different failure in front of it (a JSON list, plain text) would not.
+    # Building the error message must not itself raise.
+    detail = payload.get("error", resp.text) if isinstance(payload, dict) else resp.text
     return f"Ollama at {host} rejected model '{model}' (HTTP {resp.status_code}): {detail}"
 
 

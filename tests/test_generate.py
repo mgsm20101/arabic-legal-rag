@@ -136,3 +136,21 @@ def test_a_model_spec_picks_the_runtime_without_loading_anything(monkeypatch):
 
     with pytest.raises(ValueError):
         resolve_model("bogus:x")
+
+
+def test_an_empty_model_name_is_rejected_not_silently_loaded(monkeypatch):
+    """`hf`, `hf:`, `ollama`, `ollama:` and a whitespace-only name after the
+    colon all name no model at all. Before this check, `hf:` fell through to
+    `load_model("", ...)` and `ollama:` to an Ollama request for a model
+    literally named the empty string — both nonsensical, neither an error.
+
+    `load_model` is stubbed so a spec that (wrongly) passes validation cannot
+    fall through to a real transformers/network call from a test.
+    """
+    import legalrag.generate as generate_mod
+
+    monkeypatch.setattr(generate_mod, "load_model", lambda name, n: "STUB-HF-MODEL")
+
+    for spec in ("hf", "hf:", "hf:   ", "ollama", "ollama:", "ollama:   "):
+        with pytest.raises(ValueError):
+            resolve_model(spec)

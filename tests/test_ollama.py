@@ -59,7 +59,12 @@ def test_the_request_is_deterministic_and_not_streamed():
         return httpx.Response(200, json=_chat_body())
 
     messages = [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
-    chat = ollama_chat("qwen3:4b", client=_client(handler), num_predict=64, num_ctx=2048)
+    # `host` is explicit, not the module default: an OLLAMA_HOST already set
+    # in this shell must not change what this test asserts about the URL.
+    chat = ollama_chat(
+        "qwen3:4b", host="http://127.0.0.1:11434",
+        client=_client(handler), num_predict=64, num_ctx=2048,
+    )
     chat(messages)
 
     assert captured["url"] == "http://127.0.0.1:11434/api/chat"
@@ -67,6 +72,7 @@ def test_the_request_is_deterministic_and_not_streamed():
     assert body["model"] == "qwen3:4b"
     assert body["messages"] == messages
     assert body["stream"] is False
+    assert body["keep_alive"] == "30m"
     assert body["options"]["temperature"] == 0
     assert body["options"]["seed"] == 0
     assert body["options"]["num_predict"] == 64
@@ -205,6 +211,25 @@ def test_a_missing_model_is_reported_with_the_servers_own_error():
     msg = str(exc_info.value)
     assert "not found" in msg
     assert "ghost:1b" in msg
+
+
+def test_a_non_dict_error_body_still_raises_generator_unavailable():
+    """The server's error body is not guaranteed to be a `{"error": ...}`
+    object — a JSON list has no `.get`, and plain text has no `.json()` at
+    all. Neither should crash the error path itself with an AttributeError
+    or ValueError; both must still surface as GeneratorUnavailable."""
+    def as_list(request):
+        return httpx.Response(500, json=["boom", "internal error"])
+
+    with pytest.raises(GeneratorUnavailable):
+        ollama_chat("m", client=_client(as_list))([{"role": "user", "content": "x"}])
+
+    def as_text(request):
+        return httpx.Response(500, content=b"internal server error")
+
+    with pytest.raises(GeneratorUnavailable) as exc_info:
+        ollama_chat("m", client=_client(as_text))([{"role": "user", "content": "x"}])
+    assert "internal server error" in str(exc_info.value)
 
 
 def test_health_reports_how_much_of_a_loaded_model_sits_on_the_gpu():

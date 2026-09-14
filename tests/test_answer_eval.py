@@ -12,7 +12,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from legalrag.answer_eval import DEFAULT_MODEL, ROWS_PATH, report, rows_path  # noqa: E402
+from legalrag.answer_eval import (  # noqa: E402
+    DEFAULT_MODEL,
+    ROWS_PATH,
+    _stats_for,
+    report,
+    rows_path,
+)
+from legalrag.generate import Generator  # noqa: E402
 
 
 def _row(qid, *, answerable=True, abstained=False, cited=(), strict=(),
@@ -97,3 +104,23 @@ def test_each_model_writes_its_own_rows_file_and_the_default_keeps_run_3s():
     assert rows_path("hf:Qwen/Qwen2.5-3B-Instruct") == Path(
         "runs/answer_eval-hf-Qwen-Qwen2.5-3B-Instruct.json"
     )
+
+
+def test_a_question_answered_without_calling_the_model_carries_no_stats():
+    """`Generator.answer` returns early on empty `articles` (the abstention
+    rule) without ever touching the model, so `last_stats` on the model
+    object is stale — left over from whatever question was last actually
+    answered. Reading it unconditionally would silently mislabel this row
+    with someone else's tokens/s, truncation and cut flags."""
+    class StaleStatsModel:
+        """A model whose `last_stats` predates this call — it is never
+        invoked here, exactly like the real runtime on an empty-articles
+        question."""
+        last_stats = {"output_tokens": 99, "output_s": 1.0, "cut": True}
+
+    g = Generator(model=StaleStatsModel())
+
+    assert _stats_for(g, []) is None
+    assert _stats_for(g, [{"number": 7, "text": "نص المادة"}]) == {
+        "output_tokens": 99, "output_s": 1.0, "cut": True,
+    }

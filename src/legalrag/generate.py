@@ -140,10 +140,14 @@ def resolve_model(spec: str, max_new_tokens: int = MAX_NEW_TOKENS):
     prefix, _, rest = spec.partition(":")
 
     if prefix == "hf":
+        if not rest.strip():
+            raise ValueError(f"model spec {spec!r} names no repo after 'hf:'")
         return load_model(rest, max_new_tokens)
 
     if prefix == "ollama":
         name = rest
+        if not name.strip():
+            raise ValueError(f"model spec {spec!r} names no model after 'ollama:'")
         family = name.partition(":")[0]
         # qwen3 thinks by default, and unlike an ordinary reply, thinking
         # tokens would silently consume the 128-token cap and the time

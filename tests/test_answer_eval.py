@@ -13,6 +13,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from legalrag.answer_eval import (  # noqa: E402
@@ -30,6 +32,7 @@ from legalrag.answer_eval import (  # noqa: E402
     run_claims,
 )
 from legalrag.claims import ClaimsGenerator  # noqa: E402
+from legalrag.dense import corpus_fingerprint  # noqa: E402
 from legalrag.evaluate import Question  # noqa: E402
 from legalrag.generate import Generator  # noqa: E402
 from legalrag.retrieve import Hit  # noqa: E402
@@ -282,7 +285,10 @@ def test_report_only_warns_on_a_rows_model_mismatch_but_still_reports(tmp_path, 
     ]), encoding="utf-8")
 
     monkeypatch.setattr(ae, "rows_path", lambda spec, contract="text": fake_rows_file)
-    monkeypatch.setattr(ae, "load_docs", lambda path: [])
+    # A non-empty stub corpus: this test is about the model-mismatch warning,
+    # not about the (separately tested) empty-corpus refusal, and the row's
+    # own `retrieved` is `[]` so nothing here needs to resolve to real text.
+    monkeypatch.setattr(ae, "load_docs", lambda path: [{"id": "law-1", "text": "نص"}])
 
     code = main(["--model", "ollama:mine", "--report-only"])
     out = capsys.readouterr().out
@@ -511,3 +517,332 @@ def test_report_only_json_through_main_re_applies_the_gate(tmp_path, monkeypatch
     assert "coverage" in out
     assert "1/1" in out  # the one answerable question now has a kept claim
     assert code in (0, 1)
+
+
+# --- Commit 1 (m2): argparse-based CLI parsing ------------------------------
+
+
+def test_an_unrecognized_flag_like_a_report_only_typo_exits_2_without_a_full_run(
+    monkeypatch, capsys
+):
+    """`--report_only` (underscore) is a plausible typo for `--report-only`
+    but not a flag this CLI defines. The hand-rolled parser it replaces
+    matched flags with `in argv`, so an unrecognized argument was simply
+    never seen — the typo silently fell through to a full run instead of
+    only reporting."""
+    import legalrag.answer_eval as ae
+
+    def boom():
+        raise AssertionError("an unrecognized flag must not reach load_questions")
+    monkeypatch.setattr(ae, "load_questions", boom)
+
+    code = main(["--report_only"])
+    out = capsys.readouterr().out
+
+    assert code == 2
+    assert "report_only" in out
+
+
+def test_a_model_flag_with_no_value_exits_2_instead_of_crashing(monkeypatch, capsys):
+    import legalrag.answer_eval as ae
+
+    def boom():
+        raise AssertionError("a malformed --model must not reach load_questions")
+    monkeypatch.setattr(ae, "load_questions", boom)
+
+    code = main(["--model"])
+    out = capsys.readouterr().out
+
+    assert code == 2
+    assert "--model" in out
+    assert "usage" in out.lower()  # proves argparse itself produced this, not a hand check
+
+
+def test_main_catches_argparses_systemexit_and_returns_an_int(capsys):
+    """`main` must stay a plain testable function — argparse raises
+    `SystemExit` on any parse error, and that must never escape `main`."""
+    try:
+        code = main(["--contract", "not-a-real-contract"])
+    except SystemExit:
+        pytest.fail("main() must catch argparse's SystemExit and return its code")
+
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "usage" in out.lower()  # proves argparse itself produced this, not a hand check
+
+
+# --- Commit 1 (m2): refusing to overwrite a saved run -----------------------
+
+
+def test_a_full_run_without_overwrite_refuses_an_existing_rows_file_even_for_the_same_model(
+    tmp_path, monkeypatch, capsys
+):
+    """Before this fix, a full run of the SAME model/contract silently
+    overwrote its own previously saved rows — `_check_rows_collision` only
+    ever refused a MISMATCHED model or contract. The rows in `runs/` are the
+    only record of a measurement, so any existing file now blocks a full run
+    unless `--overwrite` says the replacement is intentional."""
+    import legalrag.answer_eval as ae
+
+    fake_rows_file = tmp_path / "fake_rows.json"
+    fake_rows_file.write_text(
+        json.dumps([{"id": "Q1", "model": "ollama:mine"}]), encoding="utf-8"
+    )
+    monkeypatch.setattr(ae, "rows_path", lambda spec, contract="text": fake_rows_file)
+
+    def boom():
+        raise AssertionError("load_questions must not run before the overwrite refusal")
+    monkeypatch.setattr(ae, "load_questions", boom)
+
+    code = main(["--model", "ollama:mine"])
+    out = capsys.readouterr().out
+
+    assert code == 2
+    assert str(fake_rows_file) in out
+    assert "runs" in out
+    assert "overwrite" in out
+
+
+def test_overwrite_lets_a_full_run_proceed_past_its_own_existing_rows_file(
+    tmp_path, monkeypatch
+):
+    """`--overwrite` on the SAME model/contract that already has saved rows
+    must let the run proceed — Commit 1 only refuses the silent,
+    unconfirmed replacement, not every rerun."""
+    import legalrag.answer_eval as ae
+
+    fake_rows_file = tmp_path / "fake_rows.json"
+    fake_rows_file.write_text(
+        json.dumps([{"id": "Q1", "model": "ollama:mine"}]), encoding="utf-8"
+    )
+    monkeypatch.setattr(ae, "rows_path", lambda spec, contract="text": fake_rows_file)
+
+    reached = {"called": False}
+
+    def stop_here():
+        reached["called"] = True
+        return [], ["stop the test here on purpose"]
+    monkeypatch.setattr(ae, "load_questions", stop_here)
+
+    code = main(["--model", "ollama:mine", "--overwrite"])
+
+    assert reached["called"] is True
+    assert code == 1  # main's own "errors from load_questions" path
+
+
+def test_overwrite_does_not_bypass_a_genuine_collision_with_a_different_models_rows(
+    tmp_path, monkeypatch, capsys
+):
+    """`--overwrite` means "replace MY OWN previous measurement" — it must
+    not also license silently clobbering a DIFFERENT model's saved answers
+    that happen to slugify to the same file name."""
+    import legalrag.answer_eval as ae
+
+    fake_rows_file = tmp_path / "fake_rows.json"
+    fake_rows_file.write_text(
+        json.dumps([{"id": "Q1", "model": "ollama:other"}]), encoding="utf-8"
+    )
+    monkeypatch.setattr(ae, "rows_path", lambda spec, contract="text": fake_rows_file)
+
+    def boom():
+        raise AssertionError("load_questions must not run on a genuine collision")
+    monkeypatch.setattr(ae, "load_questions", boom)
+
+    code = main(["--model", "ollama:mine", "--overwrite"])
+    out = capsys.readouterr().out
+
+    assert code == 2
+    assert "ollama:other" in out
+    assert "ollama:mine" in out
+
+
+# --- Commit 1 (m2): report-only re-scores only against the corpus it saw ---
+
+
+def test_report_only_refuses_when_the_corpus_is_empty_or_missing(
+    tmp_path, monkeypatch, capsys
+):
+    """Today `by_number.get(n, "")` silently substitutes empty text for a
+    missing corpus, which is how re-gating Run 5 with no corpus changed
+    coverage 15 -> 14 with no error at all. An empty/missing corpus must be
+    refused outright, before any re-scoring runs."""
+    import legalrag.answer_eval as ae
+
+    fake_rows_file = tmp_path / "fake_rows.json"
+    fake_rows_file.write_text(json.dumps([
+        {"id": "Q1", "category": "direct", "answerable": True, "model": "ollama:mine",
+         "text": "جواب [مادة 7].", "seconds": 1.0, "retrieved": [7], "expected": [7]},
+    ]), encoding="utf-8")
+    monkeypatch.setattr(ae, "rows_path", lambda spec, contract="text": fake_rows_file)
+    monkeypatch.setattr(ae, "load_docs", lambda path: [])
+
+    code = main(["--model", "ollama:mine", "--report-only"])
+    out = capsys.readouterr().out
+
+    assert code == 2
+    assert "corpus" in out
+
+
+def test_reaudit_raises_when_a_retrieved_article_is_missing_from_the_loaded_corpus():
+    """A retrieved article number the current corpus does not contain means
+    this corpus does not match the one the run saw — that must be a clear
+    error, not silently-empty context that could misclassify a real
+    citation as fabricated."""
+    docs = [{"id": "law-7", "text": "نص المادة السابعة"}]  # article 12 is missing
+    rows = [{
+        "id": "Q1", "text": "جواب [مادة 12].", "retrieved": [12], "expected": [12],
+        "grounded": False, "cited": [], "fabricated": [], "ungrounded": [],
+        "uncited": [], "abstained": False, "strict": [], "cited_expected": False,
+    }]
+
+    with pytest.raises(ValueError):
+        _reaudit(rows, docs)
+
+
+def test_regate_raises_when_a_sources_article_number_is_missing_from_the_loaded_corpus():
+    docs = [{"id": "law-7", "text": "نص المادة السابعة"}]  # article 12 is missing
+    rows = [{
+        "id": "Q1", "answerable": True, "source_numbers": [12], "expected": [12],
+        "parsed": {"abstain": False, "claims": [{"text": "نص", "sources": [1]}]},
+        "gate": {"status": "abstained", "kept": [], "dropped": [],
+                 "uncited": 0, "fabricated": 0, "ungrounded": 0, "ignored_on_abstain": 0},
+    }]
+
+    with pytest.raises(ValueError):
+        _regate(rows, docs)
+
+
+def test_reaudit_returns_new_row_dicts_without_mutating_the_ones_passed_in():
+    docs = [{"id": "law-7", "text": "نص المادة السابعة"}]
+    original = {
+        "id": "Q1", "text": "جواب [مادة 7].", "retrieved": [7], "expected": [7],
+        "grounded": False, "cited": [], "fabricated": [], "ungrounded": [],
+        "uncited": [], "abstained": False, "strict": [], "cited_expected": False,
+    }
+    rows = [original]
+
+    reaudited = _reaudit(rows, docs)
+
+    assert reaudited[0]["grounded"] is True
+    assert original["grounded"] is False  # the input dict must be untouched
+    assert reaudited[0] is not original
+
+
+def test_regate_returns_new_row_dicts_without_mutating_the_ones_passed_in():
+    docs = [{"id": "law-7", "text": "نص المادة السابعة"}]
+    original = {
+        "id": "Q1", "answerable": True, "source_numbers": [7], "expected": [7],
+        "parsed": {"abstain": False, "claims": [
+            {"text": "الرد سبعة أيام.", "sources": [1]},
+        ]},
+        "gate": {"status": "abstained", "kept": [], "dropped": [],
+                 "uncited": 0, "fabricated": 0, "ungrounded": 0, "ignored_on_abstain": 0},
+    }
+    rows = [original]
+
+    regated = _regate(rows, docs)
+
+    assert regated[0]["gate"]["status"] == "answered"
+    assert original["gate"]["status"] == "abstained"  # the input dict must be untouched
+    assert regated[0] is not original
+
+
+def test_report_only_refuses_when_the_saved_corpus_fingerprint_does_not_match(
+    tmp_path, monkeypatch, capsys
+):
+    import legalrag.answer_eval as ae
+
+    docs = [{"id": "law-7", "text": "نص المادة السابعة"}]
+    monkeypatch.setattr(ae, "load_docs", lambda path: docs)
+
+    fake_rows_file = tmp_path / "fake_rows.json"
+    fake_rows_file.write_text(json.dumps([
+        {"id": "Q1", "category": "direct", "answerable": True, "model": "ollama:mine",
+         "text": "جواب [مادة 7].", "seconds": 1.0, "retrieved": [7], "expected": [7],
+         "corpus_fingerprint": "not-" + corpus_fingerprint(docs)},
+    ]), encoding="utf-8")
+    monkeypatch.setattr(ae, "rows_path", lambda spec, contract="text": fake_rows_file)
+
+    code = main(["--model", "ollama:mine", "--report-only"])
+    out = capsys.readouterr().out
+
+    assert code == 2
+    assert "corpus" in out.lower() or "fingerprint" in out.lower()
+
+
+def test_report_only_warns_but_proceeds_when_saved_rows_predate_corpus_fingerprints(
+    tmp_path, monkeypatch, capsys
+):
+    """Run 3/4/5's saved rows were written before `corpus_fingerprint`
+    existed — they must still be reportable, with a warning that the corpus
+    could not be verified, not refused outright, or none of the saved
+    invariant runs this project pins numbers to could be reported any more."""
+    import legalrag.answer_eval as ae
+
+    docs = [{"id": "law-7", "text": "نص المادة السابعة"}]
+    monkeypatch.setattr(ae, "load_docs", lambda path: docs)
+
+    fake_rows_file = tmp_path / "fake_rows.json"
+    fake_rows_file.write_text(json.dumps([
+        {"id": "Q1", "category": "direct", "answerable": True, "model": "ollama:mine",
+         "text": "جواب [مادة 7].", "seconds": 1.0, "retrieved": [7], "expected": [7]},
+    ]), encoding="utf-8")
+    monkeypatch.setattr(ae, "rows_path", lambda spec, contract="text": fake_rows_file)
+
+    code = main(["--model", "ollama:mine", "--report-only"])
+    out = capsys.readouterr().out
+
+    assert code in (0, 1)
+    assert "fingerprint" in out.lower()  # the specific warning, not just boilerplate
+
+
+def test_report_only_refuses_clearly_when_a_json_rows_file_actually_holds_text_rows(
+    tmp_path, monkeypatch, capsys
+):
+    """A `-json` rows file that actually holds text-contract rows (no
+    `parsed`/`source_numbers` fields) must be reported as a clear mismatch,
+    not crash `_regate` with a `KeyError` on a field text rows never had."""
+    import legalrag.answer_eval as ae
+
+    fake_rows_file = tmp_path / "fake_rows.json"
+    fake_rows_file.write_text(json.dumps([
+        {"id": "Q1", "category": "direct", "answerable": True, "model": "ollama:mine",
+         "contract": "text", "text": "جواب [مادة 7].", "seconds": 1.0,
+         "retrieved": [7], "expected": [7]},
+    ]), encoding="utf-8")
+    monkeypatch.setattr(ae, "rows_path", lambda spec, contract="json": fake_rows_file)
+
+    code = main(["--model", "ollama:mine", "--contract", "json", "--report-only"])
+    out = capsys.readouterr().out
+
+    assert code == 2
+    assert "text" in out
+
+
+# --- Commit 1 (m2): saved rows carry their own corpus provenance ------------
+
+
+def test_run_rows_record_the_corpus_fingerprint_and_the_retrieved_source_ids():
+    docs = [{"id": "law-7", "text": "نص المادة السابعة"}]
+    hit7 = Hit(id="law-7", law_name="", number=7, score=1.0, snippet="")
+    index = _StubIndex({"س1": [hit7]})
+    generator = Generator(model=lambda messages: "جواب [مادة 7].")
+
+    rows = run([_question("Q1", "س1")], docs, generator, "ollama:some-model", index=index)
+
+    assert rows[0]["corpus_fingerprint"] == corpus_fingerprint(docs)
+    assert rows[0]["retrieved_ids"] == ["law-7"]
+
+
+def test_run_claims_rows_record_the_corpus_fingerprint_and_the_source_ids():
+    docs = [{"id": "law-7", "text": "نص المادة السابعة"}]
+    hit7 = Hit(id="law-7", law_name="", number=7, score=1.0, snippet="")
+    index = _StubIndex({"س1": [hit7]})
+    good = '{"abstain": false, "claims": [{"text": "الرد سبعة أيام.", "sources": [1]}]}'
+    model = _StubCallModel([(good, {"output_tokens": 9, "output_s": 1.0})])
+    generator = ClaimsGenerator(model=model)
+
+    rows = run_claims([_question("Q1", "س1")], docs, generator, "ollama:stub", index=index)
+
+    assert rows[0]["corpus_fingerprint"] == corpus_fingerprint(docs)
+    assert rows[0]["source_ids"] == ["law-7"]

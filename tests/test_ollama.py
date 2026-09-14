@@ -260,6 +260,49 @@ def test_a_non_dict_error_body_still_raises_generator_unavailable():
     assert "internal server error" in str(exc_info.value)
 
 
+def test_a_200_response_with_a_non_json_body_raises_generator_unavailable():
+    """A 200 status is not proof of a usable body — a truncated stream or a
+    proxy error page returned with status 200 must still surface as
+    `GeneratorUnavailable`, the same as every other failure mode this client
+    already converts, not a raw `json.JSONDecodeError`."""
+    def handler(request):
+        return httpx.Response(200, content=b"not json at all")
+
+    chat = ollama_chat("m", client=_client(handler), num_predict=NUM_PREDICT)
+
+    with pytest.raises(GeneratorUnavailable):
+        chat([{"role": "user", "content": "x"}])
+
+
+def test_a_200_response_missing_the_message_field_raises_generator_unavailable():
+    def handler(request):
+        return httpx.Response(200, json={"done_reason": "stop"})
+
+    chat = ollama_chat("m", client=_client(handler), num_predict=NUM_PREDICT)
+
+    with pytest.raises(GeneratorUnavailable):
+        chat([{"role": "user", "content": "x"}])
+
+
+def test_a_200_response_with_no_content_string_raises_generator_unavailable_not_a_keyerror():
+    """`message` present but with no usable `content` string — the key is
+    missing, or the server sent something that is not text — must raise
+    `GeneratorUnavailable`, not `KeyError`/`AttributeError` out of `.strip()`."""
+    def handler_no_content(request):
+        return httpx.Response(200, json={"message": {}})
+
+    chat = ollama_chat("m", client=_client(handler_no_content), num_predict=NUM_PREDICT)
+    with pytest.raises(GeneratorUnavailable):
+        chat([{"role": "user", "content": "x"}])
+
+    def handler_null_content(request):
+        return httpx.Response(200, json={"message": {"content": None}})
+
+    chat2 = ollama_chat("m", client=_client(handler_null_content), num_predict=NUM_PREDICT)
+    with pytest.raises(GeneratorUnavailable):
+        chat2([{"role": "user", "content": "x"}])
+
+
 def _ps_handler(models):
     def handler(request):
         if request.url.path == "/api/version":
@@ -309,6 +352,38 @@ def test_health_reports_no_gpu_share_when_size_is_missing_or_zero():
     handler = _ps_handler([{"name": "m", "size_vram": 0}])
     info = health(client=_client(handler))
     assert info["loaded"][0]["gpu_share"] is None
+
+
+def test_health_reports_no_gpu_share_when_size_vram_is_absent_though_size_is_known():
+    """A missing `size_vram` key means the server told us nothing about GPU
+    placement — `gpu_share` must read `None` ("unknown"), not `0.0`
+    ("measured zero, i.e. this ran on CPU"). The old `m.get('size_vram') or
+    0` coerced the missing key into a false-but-plausible zero."""
+    handler = _ps_handler([{"name": "m", "size": 4_000_000_000}])
+
+    info = health(client=_client(handler))
+
+    assert info["loaded"][0]["size_vram"] is None
+    assert info["loaded"][0]["gpu_share"] is None
+
+
+def test_health_reports_no_gpu_share_when_size_vram_is_explicitly_null():
+    handler = _ps_handler([{"name": "m", "size": 4_000_000_000, "size_vram": None}])
+
+    info = health(client=_client(handler))
+
+    assert info["loaded"][0]["gpu_share"] is None
+
+
+def test_health_reports_a_real_zero_gpu_share_when_size_vram_is_actually_zero():
+    """Unlike a missing key, an explicit `size_vram: 0` alongside a real
+    `size` IS a measurement — the model sat entirely on CPU — and must stay
+    `0.0`, not be conflated with the missing/unknown case above."""
+    handler = _ps_handler([{"name": "m", "size": 4_000_000_000, "size_vram": 0}])
+
+    info = health(client=_client(handler))
+
+    assert info["loaded"][0]["gpu_share"] == 0.0
 
 
 def test_health_does_not_raise_on_a_malformed_json_response():

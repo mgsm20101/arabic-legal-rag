@@ -284,7 +284,21 @@ def gate(
     scores "0 fabricated, 0 ungrounded" the same way a model that never
     says anything would. Coverage and dropped-by-reason counts are what
     tell the difference from a genuinely clean run.
+
+    Raises `ValueError` immediately when `source_numbers` and `source_texts`
+    disagree in length — they must describe the same sources, position for
+    position (`source_numbers[i]` is article number of `source_texts[i]`),
+    and a caller that passed mismatched lists would otherwise have every
+    source past the shorter list's length silently misaligned instead of
+    failing loudly.
     """
+    if len(source_numbers) != len(source_texts):
+        raise ValueError(
+            f"source_numbers has {len(source_numbers)} entries but "
+            f"source_texts has {len(source_texts)} — they must describe the "
+            "same sources, one-to-one."
+        )
+
     if parsed is None:
         return {
             "status": "abstained", "kept": [], "dropped": [],

@@ -118,11 +118,37 @@ class OllamaChat:
         if not (200 <= resp.status_code < 300):
             raise GeneratorUnavailable(_error_message(resp, self.model, self.host))
 
-        data = resp.json()
+        try:
+            data = resp.json()
+        except ValueError as e:
+            # A 200 status is not proof of a usable body — a truncated
+            # stream or a proxy error page can still arrive with status 200.
+            # Every other failure mode this client sees already becomes
+            # `GeneratorUnavailable`; a non-JSON 200 body must not be the
+            # one gap that instead raises a raw `json.JSONDecodeError`.
+            raise GeneratorUnavailable(
+                f"Ollama at {self.host} sent a 200 response that is not "
+                f"JSON: {e}"
+            ) from e
+
+        # `.get`/`isinstance`, not `data["message"]["content"]` directly:
+        # a well-formed-but-wrong-shaped body (no "message" key, "message"
+        # not an object, "content" missing or not a string) must raise
+        # `GeneratorUnavailable` the same way a malformed body does, not
+        # `KeyError`/`AttributeError` out of a caller that expects only
+        # `GeneratorUnavailable` from this method.
+        message = data.get("message") if isinstance(data, dict) else None
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, str):
+            raise GeneratorUnavailable(
+                f"Ollama at {self.host} sent a 200 response with no usable "
+                "'message.content' string"
+            )
+
         stats = _stats(data, self.num_ctx)
         self.last_stats = stats
         self.calls.append(stats)
-        return data["message"]["content"].strip()
+        return content.strip()
 
 
 def _error_message(resp: httpx.Response, model: str, host: str) -> str:
@@ -244,8 +270,16 @@ def health(host: str | None = None, client: httpx.Client | None = None) -> dict:
                 for m in models:
                     if not isinstance(m, dict):
                         raise ValueError("a 'models' entry is not a JSON object")
-                    size = m.get("size") or 0
-                    size_vram = m.get("size_vram") or 0
+                    # Not `or 0`: that would turn a MISSING or explicitly
+                    # null `size`/`size_vram` into the integer 0, and a
+                    # missing value dividing cleanly to `gpu_share: 0.0`
+                    # reads as "measured zero, ran on CPU" — a real
+                    # (if misleading) claim — rather than "unknown", which is
+                    # what a missing field actually means. An explicit 0 (a
+                    # model that really did report no VRAM use) is left
+                    # alone: it is still a number, so it still divides.
+                    size = m.get("size")
+                    size_vram = m.get("size_vram")
                     details = m.get("details") or {}
                     if not isinstance(details, dict):
                         details = {}

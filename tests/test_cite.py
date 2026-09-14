@@ -8,6 +8,8 @@ correct one. These tests pin the distinctions that make it visible.
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from legalrag.cite import (  # noqa: E402
@@ -376,3 +378,18 @@ def test_a_partial_answer_keeps_its_supported_claims():
     ]
     assert len(result["dropped"]) == 1
     assert result["dropped"][0]["reason"] == "uncited"
+
+
+# --- Commit 1 (m2): gate() rejects a mismatched source description ---------
+
+
+def test_gate_raises_when_source_numbers_and_source_texts_disagree_in_length():
+    """`source_numbers[i]` / `source_texts[i]` must describe the same source
+    at the same position — a caller that passes mismatched lists would have
+    every source after the shorter list's length silently misaligned
+    (a number checked against the wrong text, or an index error), corrupting
+    the self-citation check with no warning at all."""
+    parsed = {"abstain": False, "claims": [{"text": "نص", "sources": [1]}]}
+
+    with pytest.raises(ValueError):
+        gate(parsed, [7, 12], ["نص واحد فقط"])

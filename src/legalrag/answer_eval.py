@@ -23,6 +23,7 @@ Run: ``python tasks.py answer-eval``
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import sys
@@ -33,7 +34,7 @@ from pathlib import Path
 from .answer_report import report, report_claims
 from .cite import audit, gate
 from .claims import CLAIMS_MAX_TOKENS, CLAIMS_SCHEMA, ClaimsGenerator
-from .dense import CACHE_PATH, CORPUS_PATH, DenseIndex, load_docs
+from .dense import CACHE_PATH, CORPUS_PATH, DenseIndex, corpus_fingerprint, load_docs
 from .evaluate import binding_problem, corpus_laws, load_meta, load_questions
 from .generate import DEFAULT_MODEL, Generator, model_source, parse_model_spec, resolve_model
 from .ollama import GeneratorUnavailable, run_metadata
@@ -101,6 +102,7 @@ def run(questions, docs, generator: Generator, model_spec: str, k: int = TOP_K,
         index.save()
     texts = {d["id"]: d["text"] for d in docs}
     corpus_numbers = {n for n in (article_number(d["id"]) for d in docs) if n}
+    fingerprint = corpus_fingerprint(docs)
 
     # Provenance belongs on the row, not only in the console header
     # (`_weights_line`): a saved run should be able to answer "what did
@@ -113,7 +115,7 @@ def run(questions, docs, generator: Generator, model_spec: str, k: int = TOP_K,
     for q in questions:
         hits = index.search(q.question, k)
         articles = [
-            {"number": article_number(h.id), "text": texts[h.id]}
+            {"id": h.id, "number": article_number(h.id), "text": texts[h.id]}
             for h in hits
             if article_number(h.id) is not None
         ]
@@ -137,8 +139,10 @@ def run(questions, docs, generator: Generator, model_spec: str, k: int = TOP_K,
             "text": ans.text,
             "seconds": elapsed,
             "retrieved": sorted(retrieved),
+            "retrieved_ids": [a["id"] for a in articles],
             "expected": sorted(expected),
             "cited_expected": bool(expected & set(result["cited"])),
+            "corpus_fingerprint": fingerprint,
             **result,
         }
         if weights is not None:
@@ -167,17 +171,19 @@ def run_claims(questions, docs, generator: ClaimsGenerator, model_spec: str,
         index = DenseIndex(docs, cache_path=CACHE_PATH)
         index.save()
     texts = {d["id"]: d["text"] for d in docs}
+    fingerprint = corpus_fingerprint(docs)
 
     rows: list[dict] = []
     for q in questions:
         hits = index.search(q.question, k)
         articles = [
-            {"number": article_number(h.id), "text": texts[h.id]}
+            {"id": h.id, "number": article_number(h.id), "text": texts[h.id]}
             for h in hits
             if article_number(h.id) is not None
         ]
         source_numbers = [a["number"] for a in articles]
         source_texts = [a["text"] for a in articles]
+        source_ids = [a["id"] for a in articles]
 
         model = generator.model
         before = len(getattr(model, "calls", []))
@@ -197,6 +203,7 @@ def run_claims(questions, docs, generator: ClaimsGenerator, model_spec: str,
             "contract": "json",
             "question": q.question,
             "source_numbers": source_numbers,
+            "source_ids": source_ids,
             "expected": sorted(expected),
             "raw": ans.raw,
             "parsed": ans.parsed,
@@ -204,6 +211,7 @@ def run_claims(questions, docs, generator: ClaimsGenerator, model_spec: str,
             "schema_failure": ans.schema_failure,
             "seconds": elapsed,
             "gate": gate_result,
+            "corpus_fingerprint": fingerprint,
         }
         if stats is not None:
             row["stats"] = stats
@@ -345,13 +353,21 @@ def _check_rows_collision(rows_file: Path, model_spec: str, contract: str = "tex
 
 def _reaudit(rows: list[dict], docs: list[dict]) -> list[dict]:
     """Recompute every row's citation verdict from its saved text against
-    the current corpus, in place — not a replay of the stored verdicts.
+    the current corpus — a new list of new row dicts, never a mutation of
+    `rows` or the dicts in it, so a caller keeps its own copy of whatever it
+    passed in.
 
     The audit itself has been wrong twice already: once on B1's wording,
     once on citations lifted out of copied statute text — and each time the
     saved answers were still good, only the check was not. Recomputing from
     the text means a fixed checker costs a second; the generation that
     produced the text can cost up to 45 minutes of CPU.
+
+    Raises `ValueError` if a row's `retrieved` names an article number this
+    `docs` does not contain — the corpus does not match the one the run saw,
+    and silently dropping that article from `context` (or, worse, treating
+    it as `""`) would misclassify a real citation as fabricated instead of
+    surfacing the mismatch.
     """
     by_number = {
         n: d["text"]
@@ -359,59 +375,127 @@ def _reaudit(rows: list[dict], docs: list[dict]) -> list[dict]:
         if (n := article_number(d["id"])) is not None
     }
     corpus_numbers = set(by_number)
+    new_rows = []
     for r in rows:
         retrieved = set(r["retrieved"])
-        r.update(audit(
+        missing = sorted(retrieved - corpus_numbers)
+        if missing:
+            raise ValueError(
+                f"row {r.get('id')!r} retrieved article(s) {missing} that "
+                "the loaded corpus does not contain — this corpus does not "
+                "match the one this run saw."
+            )
+        result = audit(
             r["text"], corpus_numbers, retrieved,
-            context=[by_number[n] for n in retrieved if n in by_number],
-        ))
-        r["cited_expected"] = bool(set(r["expected"]) & set(r["cited"]))
-    return rows
+            context=[by_number[n] for n in retrieved],
+        )
+        new_row = {**r, **result}
+        new_row["cited_expected"] = bool(set(r["expected"]) & set(result["cited"]))
+        new_rows.append(new_row)
+    return new_rows
 
 
 def _regate(rows: list[dict], docs: list[dict]) -> list[dict]:
     """Recompute every claims row's gate verdict from its saved `parsed`
-    answer and `source_numbers`, in place — the claims-JSON sibling of
-    `_reaudit`, for the same reason: the gate is model-free specifically so
-    a fixed gate never needs Ollama again, and it has already changed shape
-    once before any real Run 5 number existed.
+    answer and `source_numbers` — the claims-JSON sibling of `_reaudit`, for
+    the same reason (the gate is model-free specifically so a fixed gate
+    never needs Ollama again) and in the same style: a new list of new row
+    dicts, never a mutation of `rows` or the dicts in it.
 
     Source *text* is looked up fresh from the current corpus by article
     number, exactly as `_reaudit` does — a saved row keeps `source_numbers`,
     not the article text itself, so the gate's copied-source check
     (`cite.copied_from_context`) always runs against the corpus as it is
-    now, not a second copy frozen at generation time.
+    now, not a second copy frozen at generation time. `None` (a source with
+    no article number of its own — an issuance article) has no number to
+    look up and stays `""`, same as before; a real number this corpus does
+    not contain is a different situation entirely — a corpus mismatch — and
+    raises `ValueError` rather than silently gating against empty text (this
+    is the exact bug that changed Run 5's re-gated coverage 15 -> 14 with no
+    error at all).
     """
     by_number = {
         n: d["text"]
         for d in docs
         if (n := article_number(d["id"])) is not None
     }
+    new_rows = []
     for r in rows:
         source_numbers = r["source_numbers"]
-        source_texts = [by_number.get(n, "") for n in source_numbers]
-        r["gate"] = gate(r["parsed"], source_numbers, source_texts)
-    return rows
+        missing = sorted({n for n in source_numbers if n is not None and n not in by_number})
+        if missing:
+            raise ValueError(
+                f"row {r.get('id')!r} names article(s) {missing} that the "
+                "loaded corpus does not contain — this corpus does not "
+                "match the one this run saw."
+            )
+        source_texts = [("" if n is None else by_number[n]) for n in source_numbers]
+        new_rows.append({**r, "gate": gate(r["parsed"], source_numbers, source_texts)})
+    return new_rows
+
+
+class _ArgumentParser(argparse.ArgumentParser):
+    """`argparse.ArgumentParser`, except a parse error prints to stdout and
+    raises `SystemExit(2)` instead of argparse's default of stderr plus a
+    direct `sys.exit`.
+
+    stdout because every other diagnostic this module prints — a bad
+    `--model` spec, a rows collision, an incompatible contract — already
+    goes to stdout via a plain `print`, and the tests that pin those
+    messages read `capsys.readouterr().out`; splitting CLI errors across two
+    streams for no reason would just make them harder to find. `SystemExit`
+    is still raised, not swallowed here, because `main` below is the one
+    place that catches it and turns it into a return code — this class
+    exists to be *what* argparse raises, not to hide the raise.
+    """
+
+    def error(self, message: str) -> None:
+        self.print_usage(sys.stdout)
+        print(f"{self.prog}: error: {message}")
+        raise SystemExit(2)
+
+
+def _build_arg_parser() -> _ArgumentParser:
+    parser = _ArgumentParser(
+        prog="answer-eval",
+        description="End-to-end answer evaluation — PRD M2/B1 + M2/B2.",
+    )
+    parser.add_argument(
+        "--model", default=DEFAULT_SPEC,
+        help=f"a model spec, e.g. ollama:gemma3:4b (default: {DEFAULT_SPEC})",
+    )
+    parser.add_argument(
+        "--contract", choices=list(CONTRACTS), default="text",
+        help="the answer contract to use",
+    )
+    parser.add_argument(
+        "--report-only", action="store_true",
+        help="re-score a previously saved run; no model is loaded",
+    )
+    parser.add_argument(
+        "--overwrite", action="store_true",
+        help="let a full run replace an existing rows file",
+    )
+    return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    argv = argv or []
+    argv = list(argv) if argv is not None else []
 
-    model_spec = DEFAULT_SPEC
-    if "--model" in argv:
-        i = argv.index("--model")
-        if i + 1 >= len(argv):
-            print("--model requires a value, e.g. --model ollama:qwen3:4b")
-            return 2
-        model_spec = argv[i + 1]
+    parser = _build_arg_parser()
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as e:
+        # argparse itself already printed usage + the error (via
+        # `_ArgumentParser.error` above) before raising this — an unknown
+        # flag (a `--report-only` typo, say) must exit 2 here rather than
+        # silently being ignored the way the hand-rolled `"--x" in argv`
+        # parsing this replaces would have, which is exactly how a
+        # `--report_only` typo used to start a full run by accident.
+        return e.code if isinstance(e.code, int) else 2
 
-    contract = "text"
-    if "--contract" in argv:
-        i = argv.index("--contract")
-        if i + 1 >= len(argv):
-            print("--contract requires a value, e.g. --contract json")
-            return 2
-        contract = argv[i + 1]
+    model_spec = args.model
+    contract = args.contract  # already restricted to CONTRACTS by `choices=`
 
     try:
         parse_model_spec(model_spec)
@@ -423,28 +507,37 @@ def main(argv: list[str] | None = None) -> int:
         print(str(e))
         return 2
 
-    if contract not in CONTRACTS:
-        print(f"unknown --contract {contract!r} — expected one of {CONTRACTS}")
-        return 2
-
-    if contract == "json" and not model_spec.startswith("ollama:"):
+    if contract != "text" and not model_spec.startswith("ollama:"):
         # Same reasoning as `generate.resolve_model`'s own refusal — checked
         # again here, before anything loads, so a mismatched pair costs
         # nothing rather than failing deep inside the "loading ..." block.
-        print(f"--contract json needs an ollama: model (got {model_spec!r}) — "
+        print(f"--contract {contract} needs an ollama: model (got {model_spec!r}) — "
               "schema-constrained decoding is not available on the "
               "transformers path here")
         return 2
 
     rows_file = rows_path(model_spec, contract)
 
-    if "--report-only" in argv:
+    if args.report_only:
         if not rows_file.exists():
             print(f"no saved run at {rows_file}. "
                   f"Run `python tasks.py answer-eval --model {model_spec} "
                   f"--contract {contract}` first.")
             return 2
         rows = json.loads(rows_file.read_text(encoding="utf-8"))
+
+        contract_mismatch = _rows_contract_mismatch(rows, contract)
+        if contract_mismatch is not None:
+            # Unlike a model mismatch (below), this is a refusal, not a
+            # warning: a text-contract row has no `parsed`/`source_numbers`
+            # at all, so proceeding into `_regate` would not produce a
+            # merely-misleading report, it would raise `KeyError` deep
+            # inside it.
+            print(f"{rows_file} holds {contract_mismatch!r}-contract rows, "
+                  f"not {contract!r} — re-run with "
+                  f"--contract {contract_mismatch} instead.")
+            return 2
+
         mismatch = _rows_model_mismatch(rows, model_spec)
         if mismatch is not None:
             # A warning, not a refusal: --report-only changes nothing on
@@ -453,21 +546,69 @@ def main(argv: list[str] | None = None) -> int:
             # would be misleading.
             print(f"WARNING: {rows_file} holds answers for {mismatch!r}, not "
                   f"{model_spec!r} — reporting on what is actually saved there.")
-        if contract == "json":
-            # The gate is model-free by design so a fixed gate never needs
-            # Ollama again — see `_regate`.
-            rows = _regate(rows, load_docs(CORPUS_PATH))
-            print(f"re-gated {len(rows)} saved answers from {rows_file} "
+
+        docs = load_docs(CORPUS_PATH)
+        if not docs:
+            # Today's bug this guards against: `_regate`'s old
+            # `by_number.get(n, "")` silently treated every source as empty
+            # text against an empty corpus, which is how re-gating Run 5
+            # with no corpus loaded changed its coverage number 15 -> 14
+            # with no error printed at all.
+            print("corpus not ingested — cannot re-score against nothing. "
+                  "Run `python tasks.py ingest --law ...` first.")
+            return 2
+
+        saved_fp = rows[0].get("corpus_fingerprint") if rows else None
+        if saved_fp is None:
+            # True of every row saved before this fingerprint field existed
+            # (Run 3/4/5) — must warn and proceed, not refuse, or none of
+            # those saved runs could ever be reported on again.
+            print(f"WARNING: {rows_file} predates corpus fingerprints — the "
+                  "saved answers cannot be verified against this corpus. "
+                  "Proceeding anyway.")
+        else:
+            current_fp = corpus_fingerprint(docs)
+            if saved_fp != current_fp:
+                print(f"{rows_file} was generated against a different corpus "
+                      f"(fingerprint {saved_fp[:12]} != {current_fp[:12]}). "
+                      "Refusing to re-score against a corpus it never saw — "
+                      "re-run the full evaluation instead.")
+                return 2
+
+        try:
+            if contract == "json":
+                # The gate is model-free by design so a fixed gate never
+                # needs Ollama again — see `_regate`.
+                rows = _regate(rows, docs)
+                print(f"re-gated {len(rows)} saved answers from {rows_file} "
+                      "(no model loaded)\n")
+                return report_claims(rows, meta=_meta_for_rows(rows, contract))
+            rows = _reaudit(rows, docs)
+            print(f"re-audited {len(rows)} saved answers from {rows_file} "
                   "(no model loaded)\n")
-            return report_claims(rows, meta=_meta_for_rows(rows, contract))
-        rows = _reaudit(rows, load_docs(CORPUS_PATH))
-        print(f"re-audited {len(rows)} saved answers from {rows_file} "
-              "(no model loaded)\n")
-        return report(rows, meta=_meta_for_rows(rows, contract))
+            return report(rows, meta=_meta_for_rows(rows, contract))
+        except ValueError as e:
+            # A missing article number from `_regate`/`_reaudit` — a corpus
+            # that does not match the one this run saw, slipping past the
+            # fingerprint check above only because these particular saved
+            # rows predate it.
+            print(f"cannot re-score {rows_file} against the loaded corpus: {e}")
+            return 2
 
     collision = _check_rows_collision(rows_file, model_spec, contract)
     if collision is not None:
         print(collision)
+        return 2
+
+    if rows_file.exists() and not args.overwrite:
+        # Unconditional on top of the mismatch check above: before this fix,
+        # a full run of the SAME model/contract silently overwrote its own
+        # previously saved rows, and the rows in `runs/` are the only record
+        # of a measurement — so any existing file now blocks a full run
+        # unless `--overwrite` says the replacement is intentional.
+        print(f"{rows_file} already holds a saved run. The rows in runs/ "
+              "are the only record of that measurement — pass --overwrite "
+              "to replace it.")
         return 2
 
     questions, errors = load_questions()

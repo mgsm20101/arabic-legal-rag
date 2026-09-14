@@ -1173,5 +1173,6 @@ def test_the_gated_contract_runs_end_to_end_with_stage_tagged_rows_and_a_full_re
 
     assert "  model calls                        : 5" in out
     assert "  retries (more than 1 call)         : 1" in out
-    line = [l for l in out.splitlines() if l.startswith("  retries - relevance")][0]
-    assert line.split(":")[1].strip() == "1 / 0"
+    # The whole labelled line, not just the value after the colon — that
+    # alone would not catch a wrong label (e.g. mismatched stage order).
+    assert "  retries - relevance / claims     : 1 / 0" in out

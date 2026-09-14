@@ -12,6 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from legalrag.answer_eval import _report_gated  # noqa: E402
 from legalrag.answer_report import _cites_expected, report, report_claims  # noqa: E402
 
 
@@ -507,7 +508,9 @@ def test_kept_claims_shorter_than_a_real_claim_is_judged_on_stripped_length():
 
     _, out = _claims_run(rows)
 
-    assert "1/1" in out.split("kept claims shorter than a real claim")[1][:20]
+    # The whole labelled line, not a bare "1/1" that "1/12" or "11/15"
+    # would also satisfy.
+    assert "  kept claims shorter than a real claim : 1/1 = 100.0%" in out
 
 
 def test_the_report_header_defaults_to_run_5_and_its_pre_registration_commit():
@@ -755,3 +758,48 @@ def test_relevance_failures_are_counted_separately_from_a_claims_schema_failure(
 
     assert "  relevance_failures                  : 1" in out
     assert "relevance_failure=1" in out.split("abstain reasons")[1][:60]
+
+
+def test_a_no_sources_row_reaches_abstain_reasons_even_with_no_relevance_data():
+    """A no-sources question (`claims.ClaimsGenerator.answer`'s
+    `no_sources` branch, which takes priority over the relevance step)
+    gets `relevance=None` AND `abstain_reason="no_sources"` under EITHER
+    contract — "no relevance data" is not exclusively Run 5's signature.
+    This row contributes to none of the first three relevance-specific
+    counts, but must still show up in `abstain reasons`."""
+    rows = _answerable_claims_rows(10) + _abstained_ooc_rows()
+    for r in rows:
+        r["relevance"] = {"answers": True, "attempts": 1, "failure": False, "raw": ["r"]}
+    no_sources_row = _claims_row("Q_NS", expected=[7], source_numbers=[])
+    no_sources_row["relevance"] = None
+    no_sources_row["abstain_reason"] = "no_sources"
+    rows.append(no_sources_row)
+
+    _, out = _claims_run(
+        rows, contract_name="Run 6", pre_registration_commit="d3f39c3",
+        expect_relevance=True,
+    )
+
+    assert "no_sources=1" in out.split("abstain reasons")[1][:60]
+
+
+# --- Part 2 review: _report_gated's own wiring (not report_claims's) -------
+
+
+def test_report_gated_itself_refuses_the_verdict_when_rows_carry_no_relevance_data():
+    """Calling `report_claims(..., expect_relevance=True)` directly (as
+    the test above does) proves report_claims's OWN logic, but never
+    exercises whether `_report_gated` actually passes that flag — changing
+    `expect_relevance=True` to `False` at its call site keeps every other
+    test in this file green. This test goes through `_report_gated`
+    itself, the only path a real gated run's report takes."""
+    rows = _answerable_claims_rows(10) + _abstained_ooc_rows()  # no relevance data at all
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        code = _report_gated(rows, None)
+    out = buf.getvalue()
+
+    assert "ADOPT for the app: n/a — no relevance data in gated rows" in out
+    assert "ADOPT for the app: YES" not in out
+    assert code == 1

@@ -344,14 +344,21 @@ def _print_relevance_lines(
       abstention never reached the claims call at all.
     - every `abstain_reason` this run actually produced, by count.
 
-    A row with `relevance is None` is Run 5's own contract (no relevance
-    step ran at all) — it contributes to none of the four. A `gated` row
-    where the relevance step itself failed (two invalid-JSON attempts)
-    still carries a `relevance` DICT, never None — `{"answers": None,
-    "attempts": 2, "failure": True, "raw": [...]}` — so it contributes to
-    `relevance_failures` and to `abstain reasons` (`relevance_failure`), but
-    to neither of the first two counts, since its `answers` is neither
-    `True` nor `False`.
+    A row with `relevance is None` is NOT exclusively Run 5's signature: a
+    "gated" row with no sources at all (`claims.ClaimsGenerator.answer`'s
+    `no_sources` branch, which takes priority over the relevance step
+    since there is nothing to ask it about) ALSO carries `relevance=None`,
+    under either contract — it contributes to none of the first three
+    counts here, but it DOES still show up in the fourth: `abstain_reason`
+    is `"no_sources"` regardless of `relevance`, and the reasons `Counter`
+    below reads `abstain_reason` directly, never gating on `relevance`.
+
+    A `gated` row where the relevance step itself RAN and failed (two
+    invalid-JSON attempts) carries a `relevance` DICT, never None —
+    `{"answers": None, "attempts": 2, "failure": True, "raw": [...]}` — so
+    it contributes to `relevance_failures` and to `abstain reasons`
+    (`relevance_failure`), but to neither of the first two counts, since
+    its `answers` is neither `True` nor `False`.
     """
     said_no = [r for r in answerable
                if r.get("relevance") and r["relevance"]["answers"] is False]
@@ -408,14 +415,18 @@ def report_claims(
           f"(EVAL.md, {pre_registration_commit})")
     print("=" * 68)
 
-    # Detected from the data, not a separate flag: a "gated" row (Run 6)
-    # carries `relevance` on every row (a dict with `failure: True` on the
-    # rows where the relevance step itself failed before ever answering
-    # true/false — never None there); a "json" row (Run 5) never carries it
-    # at all, so `relevance` is None on every one of ITS rows. This is what
-    # lets a saved run answer its own question about which contract
-    # produced it, the same way `contract_name`/`pre_registration_commit`
-    # only change the header rather than needing a `is_gated` parameter.
+    # Detected from the data, not a separate flag: a "json" row (Run 5)
+    # never carries `relevance` at all, so it is None on every one of ITS
+    # rows. A "gated" row (Run 6) usually carries a `relevance` dict, but
+    # NOT always — a no-sources question abstains before the relevance
+    # step is ever reached (`claims.ClaimsGenerator.answer`) and carries
+    # `relevance=None` too, under either contract. `any(...)` rather than
+    # `all(...)` is what makes this still work: one row that reached the
+    # relevance step is enough to prove these are gated rows, even if
+    # another row in the same run never got there. This is what lets a
+    # saved run answer its own question about which contract produced it,
+    # the same way `contract_name`/`pre_registration_commit` only change
+    # the header rather than needing a `is_gated` parameter.
     has_relevance = any(r.get("relevance") is not None for r in rows)
     if has_relevance:
         _print_relevance_lines(rows, answerable, out_of_corpus)

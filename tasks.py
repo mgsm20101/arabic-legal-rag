@@ -10,6 +10,8 @@
     python tasks.py ocr-to-raw <in> <out> OCR pages -> raw text for ingest (ADR-020)
     python tasks.py answer-eval [--model SPEC] [--contract text|json|gated] [--report-only] [--overwrite]
                                           end-to-end answers: citations + abstention (M2)
+    python tasks.py app-eval [--retrieval-only] [--doc pdf|txt] [--model SPEC] [--overwrite]
+                                          the upload pipeline on the app-dev split (ADR-023)
     python tasks.py serve [--port 8000]   local test page (retrieval + eval run)
     python tasks.py test                  run the test suite
     python tasks.py setup                 install dependencies
@@ -46,6 +48,9 @@ def _run_module(module: str, *args: str) -> int:
     if module == "legalrag.answer_eval":
         from legalrag.answer_eval import main
         return main(list(args))
+    if module == "legalrag.app_eval":
+        from legalrag.app_eval import main
+        return main(list(args))
     if module == "legalrag.ocr_text":
         from legalrag.ocr_text import main
         return main(list(args))
@@ -74,6 +79,7 @@ TASKS = {
     "ocr-gate": lambda a: _run_module("legalrag.ocr_gate", *a),
     "ocr-to-raw": lambda a: _run_module("legalrag.ocr_text", *a),
     "answer-eval": lambda a: _run_module("legalrag.answer_eval", *a),
+    "app-eval": lambda a: _run_module("legalrag.app_eval", *a),
     "ingest": lambda a: _run_module("legalrag.ingest", *a),
     "serve": lambda a: _run_module("legalrag.server", *a),
     "verify-refs": lambda a: _run_module("legalrag.verify_refs", *a),

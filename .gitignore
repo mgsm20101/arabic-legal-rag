@@ -13,3 +13,5 @@ data/processed/*
 runs/
 .env
 !data/raw/SOURCE.txt
+# P1 demo layer (ADR-023): uploaded documents, their chunks and embeddings
+data/app/

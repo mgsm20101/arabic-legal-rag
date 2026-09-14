@@ -37,6 +37,10 @@ is an equivalent alias on Linux/CI.
 fresh clone with no model and no torch (it takes ~0.2s), while `ablate` loads
 ~1 GB of local models. Neither calls a paid API; retrieval runs entirely on CPU.
 
+Models are cached under `HF_HUB_CACHE` (default `~/.cache/huggingface/hub`).
+Point it at a disk with room before the first run — e5-base alone is ~1.1 GB.
+The demo layer's other settings are listed in `.env.example`.
+
 `python tasks.py eval` runs from a fresh clone with no corpus present — it
 reports the question set and an empty result column rather than failing. That is
 deliberate: the scoreboard exists before the system does.

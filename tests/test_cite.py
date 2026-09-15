@@ -15,6 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from legalrag.cite import (  # noqa: E402
     ABSTAIN_MARKER,
+    LOOSE_CITATION,
+    _WS,
     audit,
     citations,
     gate,
@@ -868,6 +870,8 @@ _BIDI_HAZARDS_BETWEEN_DIGITS = {
     "alm": "\u061C",
     "tatweel": "\u0640",
     "small_waw": "\u06E5",
+    "small_yeh": "\u06E6",       # Lm, bidi AL -- same hazard as small-waw, previously untested
+    "syriac_abbr": "\u070F",     # Cf AND bidi AL -- reachable via the same digit-gap path
 }
 
 
@@ -888,6 +892,90 @@ def test_a_bidi_hazard_between_two_digits_drops_the_claim(mark):
     assert result["dropped"][0]["reason"] == "ungrounded"
     assert result["dropped"][0]["text"] == claim_text
     assert result["kept"] == []
+
+
+def test_a_directional_override_wrapping_two_digits_drops_the_claim():
+    """The reviewer's exact HIGH exploit: RLO before "12" and PDF after it
+    doesn't touch the character directly between the digits (the gap check
+    alone would miss it) -- a bidi-aware renderer displays the enclosed run
+    reversed, as "21", while a plain strip-and-join reads "12". Previously
+    this claim was wrongly kept as grounded; `_has_directional_override`
+    now catches it over the whole claim text."""
+    claim_text = "\u064A\u0644\u0632\u0645 \u0627\u0644\u062D\u0641\u0638 \u0628\u0645\u0648\u062C\u0628 \u0627\u0644\u0645\u0627\u062F\u0629 \u202E12\u202C \u0644\u0645\u062F\u0629 \u0633\u0646\u0629 \u0643\u0627\u0645\u0644\u0629."
+    parsed = {"abstain": False, "claims": [{"text": claim_text, "sources": [1]}]}
+
+    result = gate(parsed, [12], ["\u0646\u0635 \u064A\u0630\u0643\u0631 \u0627\u0644\u0645\u0627\u062F\u0629 12 \u0628\u0648\u0636\u0648\u062D \u062A\u0627\u0645."])
+
+    assert result["ungrounded"] == 1
+    assert result["dropped"][0]["reason"] == "ungrounded"
+    assert result["dropped"][0]["text"] == claim_text
+    assert result["kept"] == []
+
+
+_EMBEDDING_OVERRIDE_ISOLATE_MARKS = {
+    "lre": "\u202A",
+    "rle": "\u202B",
+    "pdf": "\u202C",
+    "lro": "\u202D",
+    "rlo": "\u202E",
+    "lri": "\u2066",
+    "rli": "\u2067",
+    "fsi": "\u2068",
+    "pdi": "\u2069",
+}
+
+
+@pytest.mark.parametrize("mark", _EMBEDDING_OVERRIDE_ISOLATE_MARKS.values(),
+                          ids=_EMBEDDING_OVERRIDE_ISOLATE_MARKS.keys())
+def test_any_embedding_override_or_isolate_control_drops_the_claim_between_digits(mark):
+    """All 9 controls share one bidi class each (LRE/RLE/PDF/LRO/RLO/LRI/
+    RLI/FSI/PDI -- never plain R/AL), so `_is_bidi_hazard` alone would miss
+    every one of them; `_has_directional_override` catches them as a group
+    instead. Placed between two digits here to mirror the exploit shape."""
+    claim_text = f"\u064A\u0644\u0632\u0645 \u0627\u0644\u062D\u0641\u0638 \u0628\u0645\u0648\u062C\u0628 \u0627\u0644\u0645\u0627\u062F\u0629 1{mark}2 \u0644\u0645\u062F\u0629 \u0633\u0646\u0629 \u0643\u0627\u0645\u0644\u0629."
+    parsed = {"abstain": False, "claims": [{"text": claim_text, "sources": [1]}]}
+
+    result = gate(parsed, [12], ["\u0646\u0635 \u064A\u0630\u0643\u0631 \u0627\u0644\u0645\u0627\u062F\u0629 12 \u0628\u0648\u0636\u0648\u062D \u062A\u0627\u0645."])
+
+    assert result["ungrounded"] == 1
+    assert result["dropped"][0]["reason"] == "ungrounded"
+    assert result["kept"] == []
+
+
+def test_an_embedding_override_or_isolate_control_far_from_any_digit_still_drops_the_claim():
+    """`_has_directional_override` scans the WHOLE claim, not just a
+    digit-adjacent gap -- unlike `_is_bidi_hazard`, which only ever runs on
+    the single character between two digits. A control sitting nowhere near
+    a digit must still drop the claim, proving the check's scope is the
+    full text and not merely a wider digit-gap window."""
+    claim_text = "\u064A\u0644\u0632\u0645 \u202E\u0627\u0644\u062D\u0641\u0638\u202C \u0628\u0645\u0648\u062C\u0628 \u0627\u0644\u0645\u0627\u062F\u0629 30 \u0644\u0645\u062F\u0629 \u0633\u0646\u0629 \u0643\u0627\u0645\u0644\u0629."
+    parsed = {"abstain": False, "claims": [{"text": claim_text, "sources": [1]}]}
+
+    result = gate(parsed, [30], ["\u0646\u0635 \u064A\u0630\u0643\u0631 \u0627\u0644\u0645\u0627\u062F\u0629 30 \u0628\u0648\u0636\u0648\u062D \u062A\u0627\u0645."])
+
+    assert result["ungrounded"] == 1
+    assert result["dropped"][0]["reason"] == "ungrounded"
+    assert result["kept"] == []
+
+
+def test_the_ws_bound_is_20_per_slot_and_60_total_between_a_head_word_and_its_number():
+    """`_WS` bounds each whitespace slot at 20 chars for backtracking
+    safety. Between a singular head word and its number, up to THREE such
+    slots can sit back-to-back with nothing required between them (the
+    colon and "\u0631\u0642\u0645" are both optional): the tail `_WS` of the head clause,
+    the `_WS` guarding the optional "\u0631\u0642\u0645" group, and the leading `_WS`
+    inside `_NUMBER_GROUP` itself -- so the real whitespace cliff a
+    citation can hit is 60 chars, not 20. Pins both numbers so a future
+    change to either constant is a deliberate edit, not an accidental typo
+    that silently reopens the quadratic-blowup risk this bound exists to
+    prevent."""
+    assert _WS == r"[ \t]{0,20}"
+
+    sixty_spaces = "\u0645\u0627\u062F\u0629" + " " * 60 + "7"
+    assert LOOSE_CITATION.search(sixty_spaces) is not None
+
+    sixty_one_spaces = "\u0645\u0627\u062F\u0629" + " " * 61 + "7"
+    assert LOOSE_CITATION.search(sixty_one_spaces) is None
 
 
 _SAFE_GAPS_BETWEEN_DIGITS = {

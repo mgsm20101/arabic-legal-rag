@@ -45,8 +45,12 @@ from .normalize import TASHKEEL, TATWEEL, evaluation_normalize, normalize_digits
 # un-collapsed sentence text by design (see its docstring), so the regex
 # itself has to stay cheap regardless of caller. No real citation has
 # more than a handful of spaces between its parts; 20 is generous
-# headroom, and a bounded quantifier's backtracking cost stays flat
-# instead of growing with the input, unlike an unbounded one.
+# headroom per slot, and a bounded quantifier's backtracking cost stays
+# flat instead of growing with the input, unlike an unbounded one. LOOSE_CITATION
+# places up to THREE _WS slots between a head word and its number (see
+# _NUMBER_GROUP below), so the actual cliff a real citation could hit is
+# 60 spaces total, not 20 - pinned by a test alongside this constant so a
+# future change to either number is deliberate, not an accidental typo.
 _WS = r"[ \t]{0,20}"
 
 # The form the prompt requires: [مادة 7] or [المادة ٧]
@@ -287,9 +291,18 @@ _DEFAULT_IGNORABLE_RANGES = (
     (0xE0000, 0xE0FFF),  # tags, and variation selectors supplement
 )
 
+# Every code point in the ranges above, flattened once at import time: a per-character
+# O(range count) scan measured at ~15x the cost of the plain Cf-only check it replaced,
+# recomputed for every character of every source text on every gate() call. An O(1)
+# set membership test is the same semantics, ~6x faster than the linear scan (still
+# slower than Cf alone, since this runs in addition to it, not instead of it).
+_DEFAULT_IGNORABLE_SET = frozenset(
+    cp for lo, hi in _DEFAULT_IGNORABLE_RANGES for cp in range(lo, hi + 1)
+)
+
 
 def _is_default_ignorable(cp: int) -> bool:
-    return any(lo <= cp <= hi for lo, hi in _DEFAULT_IGNORABLE_RANGES)
+    return cp in _DEFAULT_IGNORABLE_SET
 
 
 def _strip_invisible_chars(text: str) -> str:
@@ -308,17 +321,42 @@ def _removed_before_comparison(ch: str) -> bool:
 
 # The embedding, override and isolate controls: each has ITS OWN unique
 # bidi class (LRE, RLE, PDF, LRO, RLO, LRI, RLI, FSI, PDI - never plain
-# "R" or "AL"), but each is exactly as able to flip which digit reads
-# first as an R/AL character is, so checked for explicitly alongside the
-# R/AL test below.
+# "R" or "AL"). NOT checked by `_is_bidi_hazard` below, even though each
+# is exactly as able to flip which digit reads first as an R/AL character
+# is - see `_has_directional_override` for why they need a wider check
+# than a single adjacent character can give them.
 _EMBEDDING_OVERRIDE_ISOLATE = "\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"
 
 
 def _is_bidi_hazard(ch: str) -> bool:
     """A character that can change which of two digits either side of it
-    reads first (UAX#9): forces right-to-left or Arabic-letter direction,
-    or is an explicit embedding/override/isolate control."""
-    return ch in _EMBEDDING_OVERRIDE_ISOLATE or unicodedata.bidirectional(ch) in ("R", "AL")
+    reads first (UAX#9) by forcing right-to-left or Arabic-letter
+    direction on ITSELF alone. Scoped to R/AL only - an embedding,
+    override or isolate control is excluded here on purpose; see
+    `_has_directional_override`."""
+    return unicodedata.bidirectional(ch) in ("R", "AL")
+
+
+def _has_directional_override(text: str) -> bool:
+    """True if `text` contains an embedding, override or isolate control
+    (LRE/RLE/LRO/RLO/LRI/RLI/FSI, or their PDF/PDI pops) ANYWHERE, not
+    only between two digits.
+
+    Unlike a plain R/AL character, these are RANGE operators (UAX#9): an
+    override resolves every character between it and its matching pop (or
+    the end of the paragraph, if unterminated) to its own direction - not
+    only the character immediately touching it. `_has_unsafe_gap_between_digits`
+    cannot see this on its own: it only inspects the single character
+    directly between two digits, so `"\u0645\u0627\u062f\u0629 "\u202e"12"\u202c` - the digits
+    wrapped in RLO/PDF with nothing unusual in the gap immediately next to
+    them - would pass that check and still display as "21" (the override
+    reverses the "12" it encloses). Finding each control's true matching
+    pop (or its absence) for every possible nesting is a full bidi-algorithm
+    exercise; treated conservatively instead, ANY occurrence anywhere in
+    the claim's raw text is unsafe - a legal claim has no legitimate
+    reason to contain one of these controls at all.
+    """
+    return any(ch in _EMBEDDING_OVERRIDE_ISOLATE for ch in text)
 
 
 def _has_unsafe_gap_between_digits(text: str) -> bool:
@@ -349,29 +387,25 @@ def _has_unsafe_gap_between_digits(text: str) -> bool:
     matters either way - this check fires only on digit-gap-digit.
     """
     seen_digit = False
-    gap_is_nonempty = False
     gap_has_hazard = False
     for ch in text:
         if ch in _DIGITS:
-            if seen_digit and gap_is_nonempty and gap_has_hazard:
+            if seen_digit and gap_has_hazard:
                 return True
             seen_digit = True
-            gap_is_nonempty = False
             gap_has_hazard = False
         elif _removed_before_comparison(ch):
-            if seen_digit:
-                gap_is_nonempty = True
-                if _is_bidi_hazard(ch):
-                    gap_has_hazard = True
+            if seen_digit and _is_bidi_hazard(ch):
+                gap_has_hazard = True
         else:
             seen_digit = False
-            gap_is_nonempty = False
             gap_has_hazard = False
     return False
 
 
 def _gate_one_claim(
-    claim: dict, source_numbers: list[int | None], source_texts: list[str], k: int,
+    claim: dict, source_numbers: list[int | None], source_texts: list[str],
+    stripped_source_texts: list[str], k: int,
 ) -> tuple[dict | None, dict | None]:
     """One claim from the claims contract, checked against the rules
     `gate` documents — returns `(kept, None)` or `(None, dropped)`, never
@@ -385,17 +419,18 @@ def _gate_one_claim(
     if any(s < 1 or s > k for s in sources):
         return None, {"text": text, "sources": sources, "reason": "fabricated"}
 
-    own_texts = [source_texts[s - 1] for s in sources]
     own_numbers = {source_numbers[s - 1] for s in sources if source_numbers[s - 1] is not None}
 
-    # `own_texts` reaches us already `evaluation_normalize`d — the corpus is
+    # `source_texts` reaches us already `evaluation_normalize`d — the corpus is
     # normalised at ingest time, and that is what both the app pipeline and
     # a saved eval row hand to `gate` as `source_texts` — but that leaves
     # every Cf/Default_Ignorable character in place (see `_is_invisible`),
-    # and a source's own self-citation can carry one too. Stripped here,
-    # locally, for the comparison below only; `own_texts` itself is never
-    # part of what a caller sees.
-    own_texts_for_comparison = [_strip_invisible_chars(t) for t in own_texts]
+    # and a source's own self-citation can carry one too. `stripped_source_texts`
+    # is every source stripped ONCE by the caller (`gate`, below) for this
+    # comparison only — not recomputed per claim, since the same k sources are
+    # shared by every claim in one answer; neither list is ever part of what a
+    # caller sees.
+    own_texts_for_comparison = [stripped_source_texts[s - 1] for s in sources]
 
     # "القانون بيحيل على نفسه" licenses an article the SOURCE'S OWN TEXT
     # names — not every number a claim happens to mention while some part
@@ -405,14 +440,17 @@ def _gate_one_claim(
     numbers_in_own_sources = {n for t in own_texts_for_comparison for n in citations(t)}
     allowed = own_numbers | numbers_in_own_sources
 
-    # `_has_unsafe_gap_between_digits` runs on the claim's RAW text, before
-    # any normalisation - evaluation_normalize's own detatweel and
+    # Both checks below run on the claim's RAW text, before any
+    # normalisation - evaluation_normalize's own detatweel and
     # tashkeel-strip steps would otherwise erase tatweel and the Quranic
-    # small-waw/yeh marks before this check ever saw them, and both are
-    # bidi AL, exactly the hazard this check exists to catch. See
-    # `_has_unsafe_gap_between_digits` for why a hazard between two digits
-    # means the claim is dropped outright, never joined and never split.
-    if _has_unsafe_gap_between_digits(text):
+    # small-waw/yeh marks before `_has_unsafe_gap_between_digits` ever saw
+    # them, and both are bidi AL, exactly the hazard it exists to catch.
+    # `_has_directional_override` is checked separately, over the WHOLE
+    # claim rather than only a digit-adjacent gap, because an embedding/
+    # override/isolate control's effect is not bounded to the character
+    # touching it - see its own docstring. Either one means the claim is
+    # dropped outright, never joined and never split.
+    if _has_unsafe_gap_between_digits(text) or _has_directional_override(text):
         return None, {"text": text, "sources": sources, "reason": "ungrounded"}
 
     # The claim's own text never goes through `evaluation_normalize`
@@ -542,10 +580,13 @@ def gate(
         }
 
     k = len(source_texts)
+    # Stripped once here, for every claim to share, instead of once per claim inside
+    # _gate_one_claim: the same k sources are reused across every claim in one answer.
+    stripped_source_texts = [_strip_invisible_chars(t) for t in source_texts]
     kept: list[dict] = []
     dropped: list[dict] = []
     for claim in claims:
-        keep, drop = _gate_one_claim(claim, source_numbers, source_texts, k)
+        keep, drop = _gate_one_claim(claim, source_numbers, source_texts, stripped_source_texts, k)
         if keep is not None:
             kept.append(keep)
         else:

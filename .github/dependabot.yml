@@ -1,0 +1,8 @@
+# Dependabot proposes updates to the actions the workflows pin by commit SHA,
+# rewriting each SHA together with its `# vX.Y.Z` comment.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

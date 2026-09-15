@@ -10,6 +10,7 @@ stands in for e5 throughout: no model, no network.
 
 import errno
 import hashlib
+import itertools
 import json
 import logging
 import os
@@ -398,8 +399,8 @@ def test_both_pdf_limits_reach_extract_pages_from_add(tmp_path, monkeypatch):
 
     library.add(b"%PDF-1.7 within the limits", "limits.pdf")
 
-    assert (library_mod.MAX_PDF_PAGES, library_mod.EXTRACTION_BUDGET_SECONDS) == (500, 180)
-    assert [(s["keep_latin"], s["max_pages"], s["deadline"]) for s in seen] == [(True, 500, 1180.0)]
+    assert (library_mod.MAX_PDF_PAGES, library_mod.EXTRACTION_BUDGET_SECONDS) == (250, 300)
+    assert [(s["keep_latin"], s["max_pages"], s["deadline"]) for s in seen] == [(True, 250, 1300.0)]
 
 
 _BODIES = [
@@ -437,12 +438,14 @@ def _stored_chunks(root: Path, meta) -> list[dict]:
 def test_a_statute_like_pdf_is_chunked_as_a_statute_from_a_second_arabic_only_extraction(tmp_path, monkeypatch):
     calls: list[tuple] = []
     monkeypatch.setattr(pdf_text, "extract_pages", _two_pass_extractor(STATUTE_LATIN, STATUTE_ARABIC, calls))
-    monkeypatch.setattr(library_mod, "monotonic", lambda: 1000.0)
+    ticks = itertools.count(1000.0, 60.0)  # each reading of the clock is a minute after the last
+    monkeypatch.setattr(library_mod, "monotonic", lambda: next(ticks))
     library = Library(tmp_path, encoder=KeywordEncoder())
 
     meta = library.add(b"%PDF-1.7 bilingual statute", "law.pdf")
 
-    assert calls == [(True, 500, 1180.0), (False, 500, 1180.0)]  # one budget for both passes
+    assert calls[1][2] == calls[0][2], "the Arabic-only pass was given a budget of its own"
+    assert calls == [(True, 250, 1300.0), (False, 250, 1300.0)]
     assert (meta.kind, meta.pages, meta.chunks) == ("statute", 3, 3)
     chunks = _stored_chunks(tmp_path, meta)
     assert [c["label"] for c in chunks] == ["مادة 1", "مادة 2", "مادة 3"]
@@ -479,21 +482,30 @@ def test_a_pdf_without_article_headers_is_extracted_once(tmp_path, monkeypatch):
     assert "VPN" in _stored_chunks(tmp_path, meta)[0]["text"]
 
 
-def test_a_deadline_hit_during_the_second_extraction_is_pdf_too_large_and_leaves_nothing_behind(tmp_path, monkeypatch):
+def test_a_deadline_hit_during_the_arabic_only_extraction_keeps_the_upload_as_the_first_extractions_page_chunks(
+    tmp_path, monkeypatch, caplog,
+):
+    """A statute too long for both passes in one budget already has usable pages from the
+    first: refusing it after that wait would throw them away."""
     calls: list[tuple] = []
     passed = pdf_text.DeadlineExceeded(1, len(STATUTE_ARABIC))
     monkeypatch.setattr(pdf_text, "extract_pages",
                         _two_pass_extractor(STATUTE_LATIN, STATUTE_ARABIC, calls, second_pass_error=passed))
     library = Library(tmp_path, encoder=KeywordEncoder())
-    before = _tree(tmp_path)
 
-    with pytest.raises(library_mod.PdfTooLarge) as refused:
-        library.add(b"%PDF-1.7 slow statute", "slow.pdf")
+    with caplog.at_level(logging.WARNING, logger="legalrag.library"):
+        meta = library.add(b"%PDF-1.7 slow statute", "slow.pdf")
 
-    assert refused.value.__cause__ is passed
     assert [keep_latin for keep_latin, _, _ in calls] == [True, False]
-    assert _tree(tmp_path) == before
-    assert library.documents() == []
+    assert (meta.kind, meta.pages, meta.chunks) == ("generic", 3, 3)
+    chunks = _stored_chunks(tmp_path, meta)
+    assert [c["label"] for c in chunks] == ["ص 1", "ص 2", "ص 3"]
+    assert all("Article" in c["text"] for c in chunks)  # the first extraction's pages, Latin kept
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any(meta.doc_id in w and "3 pages" in w for w in warnings), warnings
+    assert library.documents() == [meta]
+    assert _names(tmp_path / "docs" / meta.doc_id) == STORED_PDF
+    assert list((tmp_path / "tmp").iterdir()) == []
 
 
 @pytest.mark.skipif(not RAW_STATUTE.exists(), reason="the statute PDF is gitignored third-party text")

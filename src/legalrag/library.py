@@ -47,9 +47,11 @@ DOC_ID = re.compile(r"^[0-9a-f]{12}$")
 TEXT_ENCODINGS = ("utf-8-sig", "cp1256")
 # Staging untouched this long when a Library opens belongs to an upload that died.
 STALE_STAGING_SECONDS = 3600
-# A PDF past either limit is refused: at about 225 ms a page, 500 pages is about 112 s.
-MAX_PDF_PAGES = 500
-EXTRACTION_BUDGET_SECONDS = 180
+# A PDF past either limit is refused. Extraction was measured at 0.8-1.26 s a page, each pass,
+# so the budget follows the cap: budget ≈ cap × 1 s × 1.2. A statute's second, Arabic-only pass
+# shares the budget, and one that runs out leaves page chunks, not a refusal (see _pdf_chunks).
+MAX_PDF_PAGES = 250
+EXTRACTION_BUDGET_SECONDS = 300
 # A display title, not a path: long enough to recognise a file by.
 MAX_TITLE_CHARS = 120
 
@@ -76,7 +78,7 @@ class FileTooLarge(LibraryError):
 
 
 class PdfTooLarge(LibraryError):
-    """A PDF over MAX_PDF_PAGES pages, or still extracting after EXTRACTION_BUDGET_SECONDS."""
+    """A PDF over MAX_PDF_PAGES pages, or still on its first extraction after EXTRACTION_BUDGET_SECONDS."""
     code = "pdf_too_large"
 
 
@@ -345,11 +347,18 @@ def _pdf_chunks(doc_id: str, source: Path, pages: list[str], title: str, deadlin
     """A PDF's chunks. `pages` kept their Latin, which suits any document but a bilingual statute,
     whose translation column welds into the Arabic lines: Law 151/2020 shows 4 articles that way
     and 56 without. Pages showing enough headers are extracted again Arabic-only, under the same
-    deadline, and chunked as a statute if that validates; otherwise they stay page chunks."""
+    deadline, and chunked as a statute if that validates. Otherwise they stay page chunks, and so
+    they do when that second pass runs out of time: they are a usable document already."""
     if may_be_statute(pages):
-        statute = statute_chunks(doc_id, _pdf_pages(source, False, deadline), title)
-        if statute is not None:
-            return "statute", statute
+        try:
+            arabic = _pdf_pages(source, False, deadline)
+        except PdfTooLarge as e:  # the deadline: these pages already passed the page cap
+            logger.warning("document %s, %d pages: its Arabic-only extraction stopped (%s), so it is "
+                           "chunked by page and not checked as a statute", doc_id, len(pages), e)
+        else:
+            statute = statute_chunks(doc_id, arabic, title)
+            if statute is not None:
+                return "statute", statute
     return "generic", page_chunks(doc_id, pages)
 
 

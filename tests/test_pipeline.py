@@ -23,7 +23,7 @@ import legalrag.pipeline as pipeline_mod  # noqa: E402
 from legalrag.chunking import Chunk  # noqa: E402
 from legalrag.cite import citations, gate  # noqa: E402
 from legalrag.claims import ClaimsGenerator, final_abstain_reason  # noqa: E402
-from legalrag.library import Library, LibraryHit  # noqa: E402
+from legalrag.library import DocumentNotFound, Library, LibraryHit  # noqa: E402
 from legalrag.pipeline import (  # noqa: E402
     MAX_QUESTION_CHARS,
     MIN_QUESTION_CHARS,
@@ -259,14 +259,60 @@ def test_a_question_outside_the_length_limits_is_rejected_before_retrieval():
 
     too_short = "أ" * (MIN_QUESTION_CHARS - 1)
     for question in ("", "   ", too_short, f"   {too_short}   ", "س" * (MAX_QUESTION_CHARS + 1)):
-        with pytest.raises(ValueError):
+        with pytest.raises(pipeline_mod.QuestionRejected) as rejected:
             pipeline.ask(question)
+        assert rejected.value.code == "question_length"
+    # Its own type, so a caller never confuses it with another ValueError — but still one.
+    assert issubclass(pipeline_mod.QuestionRejected, ValueError)
     assert library.searches == [] and relevance.seen == [] and claims.seen == []
 
     # The limits themselves are allowed, measured after stripping.
     nothing_found = Pipeline(_FakeLibrary(), generator)
     for question in (f"  {'أ' * MIN_QUESTION_CHARS}  ", "س" * MAX_QUESTION_CHARS):
         assert nothing_found.ask(question).abstain_reason == "no_sources"
+
+
+def test_ask_searches_with_the_pipelines_own_k_and_exactly_the_doc_ids_it_was_given():
+    library = _FakeLibrary(*_two_hits())
+    generator, _, _ = _gated([ANSWERS_YES, ANSWERS_YES], [ONE_GOOD_CLAIM, ONE_GOOD_CLAIM])
+    pipeline = Pipeline(library, generator, k=3)
+
+    pipeline.ask("كم مهلة رد المدير؟", [POLICY_ID])
+    pipeline.ask("كم مهلة رد المدير؟")
+
+    assert library.searches == [("كم مهلة رد المدير؟", 3, [POLICY_ID]), ("كم مهلة رد المدير؟", 3, None)]
+    with pytest.raises(ValueError):
+        Pipeline(library, generator, k=0)  # refused when built, never as a raw error out of ask
+
+
+def test_a_damaged_document_reaches_the_caller_typed_never_as_a_raw_value_error(tmp_path):
+    """A chunks file that no longer parses raises json's own ValueError deep in
+    the library; out of `ask` it would read as a rejected question."""
+    library = Library(tmp_path, encoder=KeywordEncoder())
+    meta = library.add(text_document(POLICY_TEXT), "policy.txt")
+    (tmp_path / "docs" / meta.doc_id / "chunks.jsonl").write_text("{not json\n", encoding="utf-8")
+    generator, relevance, claims = _gated([], [])
+    pipeline = Pipeline(library, generator)
+
+    with pytest.raises(DocumentNotFound):
+        pipeline.ask("كم مهلة رد المدير؟", [meta.doc_id])
+    assert pipeline.ask("كم مهلة رد المدير؟").abstain_reason == "no_sources"
+    assert relevance.seen == [] and claims.seen == []
+
+
+def test_a_result_holding_a_lone_surrogate_still_encodes_as_utf8_json():
+    """json.loads accepts a model's escaped lone surrogate ("\\ud800") and UTF-8
+    cannot encode one, so a response carrying it would fail to send."""
+    reply = '{"abstain": false, "claims": [{"text": "يرد المدير خلال خمسة أيام \\ud800 عمل.", "sources": [1]}]}'
+    generator, _, _ = _gated([ANSWERS_YES], [reply])
+    library = _FakeLibrary(LibraryHit(POLICY_CHUNK, "سياسة \udc80 العمل", 0.91))
+
+    result = Pipeline(library, generator).ask("كم مهلة رد المدير؟")
+
+    body = json.dumps(result.to_dict(), ensure_ascii=False).encode("utf-8")
+    assert result.claims == [{"text": "يرد المدير خلال خمسة أيام \ufffd عمل.", "sources": [1]}]
+    assert result.sources[0].doc_title == "سياسة \ufffd العمل"
+    assert "\ufffd".encode("utf-8") in body
 
 
 class _OverlapChat(ScriptedChat):

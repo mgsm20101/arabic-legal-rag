@@ -22,6 +22,7 @@ import argparse
 import json
 import os
 import re
+import sys
 import tempfile
 from pathlib import Path
 
@@ -231,3 +232,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print_summary(summarize(rows, questions), one_page=meta.pages == 1)
     return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

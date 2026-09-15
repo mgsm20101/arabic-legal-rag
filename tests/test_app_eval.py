@@ -22,7 +22,7 @@ pytest.importorskip("numpy")
 
 import legalrag.app_eval as app_eval  # noqa: E402
 from legalrag.claims import ClaimsGenerator  # noqa: E402
-from legalrag.library import Library  # noqa: E402
+from legalrag.library import EncoderUnavailable, Library  # noqa: E402
 from legalrag.ollama import GeneratorUnavailable  # noqa: E402
 from stubs import ANSWERS_NO, ANSWERS_YES, KeywordEncoder, ScriptedChat, claims_json  # noqa: E402
 
@@ -161,6 +161,40 @@ def test_the_model_defaults_to_legalrag_model(offline, monkeypatch):
 
     assert built == ["ollama:qwen2.5:7b-instruct"]
     assert (offline / "app_eval-ollama-qwen2.5-7b-instruct-txt.json").exists()
+
+
+def test_a_model_spec_with_path_separators_names_one_file_inside_runs():
+    for spec in ("../../x", "..\\..\\x", "C:\\x", "ollama:../../x", "ollama:C:\\x"):
+        path = app_eval.rows_path(spec, "pdf")
+        assert path.parent == app_eval.RUNS, spec
+        assert not re.search(r"[\\/:]", path.name), spec
+
+
+class _NoModel:
+    def encode(self, texts, **kwargs):
+        raise EncoderUnavailable("sentence-transformers is not installed")
+
+
+def test_a_missing_embedding_model_exits_5(offline, monkeypatch, capsys):
+    monkeypatch.setattr(app_eval, "Library", lambda root: Library(root, encoder=_NoModel()))
+
+    assert app_eval.main(["--retrieval-only", "--doc", "txt"]) == 5
+    assert "sentence-transformers is not installed" in capsys.readouterr().out
+
+
+def test_a_full_run_refuses_a_spec_the_gated_contract_cannot_use_before_loading_anything(
+    offline, monkeypatch, capsys,
+):
+    def refuse(*args, **kwargs):
+        raise AssertionError("a refused run loaded something")
+
+    monkeypatch.setattr(app_eval, "Library", refuse)
+    monkeypatch.setattr(app_eval, "build_generators", refuse)
+
+    for spec in ("hf:Qwen/Qwen2.5-1.5B-Instruct", "bogus:x", "ollama:"):
+        assert app_eval.main(["--doc", "txt", "--model", spec]) == 2, spec
+    assert "needs an ollama: model" in capsys.readouterr().out
+    assert not offline.exists()
 
 
 def test_the_summary_counts_each_number_over_the_questions_it_is_about():

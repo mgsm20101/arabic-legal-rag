@@ -13,6 +13,7 @@ always says why (`claims.final_abstain_reason`).
 
 from __future__ import annotations
 
+import re
 import threading
 from dataclasses import asdict, dataclass
 from time import perf_counter
@@ -25,6 +26,17 @@ MIN_QUESTION_CHARS = 3
 MAX_QUESTION_CHARS = 500
 
 _DROP_REASONS = ("uncited", "fabricated", "ungrounded")
+
+# The only code points UTF-8 cannot encode. json.loads accepts one escaped in
+# a model's reply, and a result holding it could not be sent as a response.
+_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+class QuestionRejected(ValueError):
+    """A question outside MIN_QUESTION_CHARS..MAX_QUESTION_CHARS once stripped —
+    its own type, so a caller never mistakes another ValueError for it."""
+
+    code = "question_length"
 
 
 @dataclass(frozen=True)
@@ -56,9 +68,16 @@ class ChatResult:
 class Pipeline:
     """Retrieve, answer as claims, gate. `library` is anything with
     `Library.search`'s signature; `generator` is normally
-    `claims.build_generators(spec, "gated")`."""
+    `claims.build_generators(spec, "gated")`.
+
+    One Pipeline per generator. The lock that makes answers take turns belongs
+    to the Pipeline, but the call stats it protects live on the generator's
+    models: two Pipelines sharing one generator would mix them again.
+    """
 
     def __init__(self, library, generator: ClaimsGenerator, k: int = TOP_K):
+        if k < 1:
+            raise ValueError(f"k must be at least 1, got {k}")
         self.library = library
         self.generator = generator
         self.k = k
@@ -70,15 +89,20 @@ class Pipeline:
     def ask(self, question: str, doc_ids: list[str] | None = None) -> ChatResult:
         """Answer `question` from every live document, or from exactly `doc_ids`.
 
-        Raises ValueError, before anything is retrieved, when the stripped
-        question is outside MIN_QUESTION_CHARS..MAX_QUESTION_CHARS. The
-        library's own errors (DocumentNotFound, EncoderUnavailable) pass
-        through unchanged, as does a model error (GeneratorUnavailable).
+        Every anticipated failure arrives as one of these, never as a raw
+        library, parser or HTTP error:
+        - QuestionRejected, before anything is retrieved, when the stripped
+          question is outside MIN_QUESTION_CHARS..MAX_QUESTION_CHARS;
+        - `library.DocumentNotFound` for a malformed, unknown, deleted or
+          unreadable document in `doc_ids`, or another `library.LibraryError`;
+        - `library.EncoderUnavailable` when the embedding model cannot load;
+        - `ollama.GeneratorUnavailable` when the model server cannot be
+          reached or refuses the request.
         """
         started = perf_counter()
         question = question.strip()
         if not MIN_QUESTION_CHARS <= len(question) <= MAX_QUESTION_CHARS:
-            raise ValueError(
+            raise QuestionRejected(
                 f"a question must be {MIN_QUESTION_CHARS} to {MAX_QUESTION_CHARS} "
                 f"characters long, not {len(question)}"
             )
@@ -87,9 +111,9 @@ class Pipeline:
         hits = self.library.search(question, self.k, doc_ids)
         retrieval_s = perf_counter() - searching
         sources = [
-            Source(n=n, chunk_id=hit.chunk.id, doc_id=hit.chunk.doc_id, doc_title=hit.doc_title,
-                   label=hit.chunk.label, page=hit.chunk.page, article=hit.chunk.article,
-                   text=hit.chunk.text)
+            Source(n=n, chunk_id=hit.chunk.id, doc_id=hit.chunk.doc_id, doc_title=_encodable(hit.doc_title),
+                   label=_encodable(hit.chunk.label), page=hit.chunk.page, article=hit.chunk.article,
+                   text=_encodable(hit.chunk.text))
             for n, hit in enumerate(hits, start=1)
         ]
         texts = [s.text for s in sources]
@@ -104,7 +128,7 @@ class Pipeline:
         return ChatResult(
             status=verdict["status"],
             abstain_reason=final_abstain_reason(answer.abstain_reason, answer.parsed, verdict),
-            claims=[{"text": c["text"], "sources": list(c["sources"])} for c in verdict["kept"]],
+            claims=[{"text": _encodable(c["text"]), "sources": list(c["sources"])} for c in verdict["kept"]],
             sources=sources,
             dropped={reason: verdict[reason] for reason in _DROP_REASONS},
             timings_ms={
@@ -126,3 +150,8 @@ def _stage_seconds(calls: list[dict], stage: str) -> float:
 
 def _ms(seconds: float) -> int:
     return round(seconds * 1000)
+
+
+def _encodable(text: str) -> str:
+    """`text` with every lone surrogate replaced by U+FFFD, so any JSON encoder can send it."""
+    return _SURROGATE.sub("\ufffd", text)

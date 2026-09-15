@@ -48,7 +48,9 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from itertools import islice
 from pathlib import Path
+from time import monotonic
 
 # Arabic-Indic (٠-٩) and Extended Arabic-Indic (۰-۹) digits live INSIDE the
 # Arabic Unicode block but are not letters: bidi treats them as a weak LTR run.
@@ -309,10 +311,30 @@ def logical_line(chars: list[dict], keep_latin: bool = False) -> str:
     return re.sub(r"[ \t]{2,}", " ", out).strip()
 
 
+class ExtractionLimitExceeded(Exception):
+    """`extract_pages` stopped at a limit its caller set: the PDF is too big to take, not damaged."""
+
+
+class TooManyPages(ExtractionLimitExceeded):
+    def __init__(self, max_pages: int):
+        super().__init__(f"the PDF has more than {max_pages} pages")
+        self.max_pages = max_pages
+
+
+class DeadlineExceeded(ExtractionLimitExceeded):
+    def __init__(self, pages_done: int, pages: int):
+        super().__init__(f"extraction ran out of time after {pages_done} of {pages} pages")
+        self.pages_done = pages_done
+        self.pages = pages
+
+
 def extract_pages(
     path: Path | str,
     keep_latin: bool = False,
     line_tol: float | None = None,
+    *,
+    max_pages: int | None = None,
+    deadline: float | None = None,
 ) -> list[str]:
     """One logical-order string per PDF page — its lines joined by ``\\n``,
     or ``""`` for a page with no text.
@@ -329,12 +351,23 @@ def extract_pages(
     151/2020 are dual-language (Arabic statute beside an English translation);
     the translation is not the corpus and would otherwise be indexed as if it
     were part of the law.
+
+    Two limits for a PDF nobody vetted, both off by default so every other
+    caller extracts exactly as before. ``max_pages`` raises TooManyPages
+    before pdfplumber even opens the file. ``deadline``, a
+    ``time.monotonic()`` value, is checked between pages: once it has passed,
+    the page in progress completes and DeadlineExceeded is raised instead of
+    starting the next.
     """
     import pdfplumber  # imported lazily: only the PDF path needs it
 
+    if max_pages is not None and _page_count(path, stop=max_pages + 1) > max_pages:
+        raise TooManyPages(max_pages)
     pages: list[str] = []
     with pdfplumber.open(str(path)) as pdf:
         for page in pdf.pages:
+            if deadline is not None and pages and monotonic() > deadline:
+                raise DeadlineExceeded(len(pages), len(pdf.pages))
             try:
                 chars = page.chars if keep_latin else arabic_column(page.chars)
                 lines: list[str] = []
@@ -350,6 +383,25 @@ def extract_pages(
                 # even when this page's own extraction raised.
                 page.close()
     return pages
+
+
+def _page_count(path: Path | str, stop: int) -> int:
+    """How many pages the PDF's page tree holds, counted no further than `stop`.
+
+    Counted with pdfminer, before pdfplumber opens the file: closing a
+    pdfplumber PDF builds a page object for every page, read or not, so a
+    refusal made through it still paid for all of them. Measured on 100,000
+    blank pages (10 MiB): 35 s that way, about 3 s this way. What pdfminer's
+    lazy walk still pays in full is the parse of the cross-reference table and
+    page-tree nodes, which grows with the file's size, not the pages counted.
+    """
+    from pdfminer.pdfdocument import PDFDocument  # the parser pdfplumber is built on
+    from pdfminer.pdfpage import PDFPage
+    from pdfminer.pdfparser import PDFParser
+
+    with open(path, "rb") as fh:
+        document = PDFDocument(PDFParser(fh))
+        return sum(1 for _ in islice(PDFPage.create_pages(document), stop))
 
 
 def extract_text(

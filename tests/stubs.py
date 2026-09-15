@@ -85,6 +85,29 @@ def claims_json(*claims: tuple[str, list[int]], abstain: bool = False) -> str:
     )
 
 
+def blank_pdf(page_count: int) -> bytes:
+    """A valid PDF of `page_count` empty pages, written by hand — one catalog,
+    one flat page tree, a classic xref table — so no test needs a PDF library
+    or a fixture file to get a document of any length."""
+    out = bytearray(b"%PDF-1.4\n")
+    offsets: list[int] = []
+
+    def add(body: bytes) -> None:
+        offsets.append(len(out))
+        out.extend(b"%d 0 obj\n" % len(offsets) + body + b"\nendobj\n")
+
+    add(b"<< /Type /Catalog /Pages 2 0 R >>")
+    kids = b" ".join(b"%d 0 R" % (3 + i) for i in range(page_count))
+    add(b"<< /Type /Pages /Kids [" + kids + b"] /Count %d >>" % page_count)
+    for _ in range(page_count):
+        add(b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>")
+    xref = len(out)
+    out.extend(b"xref\n0 %d\n0000000000 65535 f \n" % (len(offsets) + 1))
+    out.extend(b"".join(b"%010d 00000 n \n" % offset for offset in offsets))
+    out.extend(b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(offsets) + 1, xref))
+    return bytes(out)
+
+
 def text_document(*pages: str) -> bytes:
     """The bytes of a UTF-8 .txt upload: `pages` joined by form feeds, each
     padded with `FILLER` so any document clears the library's

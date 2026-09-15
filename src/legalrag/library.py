@@ -30,6 +30,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from importlib.util import find_spec
 from pathlib import Path
+from time import monotonic
 
 from . import dense, pdf_text
 from .chunking import Chunk, chunk_document
@@ -47,6 +48,9 @@ DOC_ID = re.compile(r"^[0-9a-f]{12}$")
 TEXT_ENCODINGS = ("utf-8-sig", "cp1256")
 # Staging untouched this long when a Library opens belongs to an upload that died.
 STALE_STAGING_SECONDS = 3600
+# A PDF past either limit is refused: at about 225 ms a page, 500 pages is about 112 s.
+MAX_PDF_PAGES = 500
+EXTRACTION_BUDGET_SECONDS = 180
 # A display title, not a path: long enough to recognise a file by.
 MAX_TITLE_CHARS = 120
 
@@ -74,6 +78,11 @@ class FileTooLarge(LibraryError):
     code = "file_too_large"
 
 
+class PdfTooLarge(LibraryError):
+    """A PDF over MAX_PDF_PAGES pages, or still extracting after EXTRACTION_BUDGET_SECONDS."""
+    code = "pdf_too_large"
+
+
 class NoTextLayer(LibraryError):
     """Under MIN_TEXT_CHARS of extracted text: most likely a scanned PDF. OCR is out of scope."""
     code = "no_text"
@@ -85,9 +94,8 @@ class DocumentNotFound(LibraryError):
 
 
 class StorageError(LibraryError):
-    """The library's own files are not what it wrote or expects: staging that lost a file,
-    an index that will not load, a directory it did not skip at open, a stored document
-    whose full sha256 differs. A server-side fault, never the client's."""
+    """The library's own files are not what it wrote: staging that lost a file, an index that
+    will not load, a directory not skipped at open, a full sha256 that differs. Never the client's fault."""
     code = "internal"
 
 
@@ -109,18 +117,14 @@ class _DocumentIndex:
 
 
 class Library:
-    """Uploaded documents on disk, each with its own dense index.
-
-    One lock guards the in-memory registry and every final move or metadata
-    write. The slow part of an upload — extraction, chunking, embedding —
-    runs outside it, in a staging directory of its own.
-    """
+    """Uploaded documents on disk, each with its own dense index. One lock guards the in-memory
+    registry and every final move or metadata write; the slow part of an upload (extraction,
+    chunking, embedding) runs outside it, in a staging directory of its own."""
 
     def __init__(self, root: Path, encoder: Encoder | None = None, model_name: str = dense.DEFAULT_MODEL):
         self.root = Path(root)
         self.model_name = model_name
-        # ONE encoder behind every document's index: the injected one, or the
-        # real model, loaded the first time something is embedded.
+        # ONE encoder behind every document's index: the injected one, or the real model, loaded lazily.
         self._encoder = encoder if encoder is not None else _LazyEncoder(model_name)
         self._docs = self.root / "docs"
         self._tmp = self.root / "tmp"
@@ -146,7 +150,7 @@ class Library:
         """Store and index an upload, or return the document these exact bytes already
         are, restored first if it was soft-deleted. Checked before anything touches disk:
         size, suffix, PDF magic, then text decoding. Raises FileTooLarge, UnsupportedFile,
-        NoTextLayer, EncoderUnavailable or StorageError."""
+        NoTextLayer, PdfTooLarge, EncoderUnavailable or StorageError."""
         suffix = _checked_suffix(data, filename)
         text = _decode_text(data) if suffix == ".txt" else None
         sha256 = hashlib.sha256(data).hexdigest()
@@ -235,9 +239,8 @@ class Library:
         return [hit for _, hit in ranked[:k]]
 
     def _install(self, staging: Path, meta: DocMeta) -> None:
-        """Move a complete staging directory to docs/<doc_id> and register it; the caller
-        holds the lock. A directory already there is replaced only if it was skipped at
-        open: moved aside, put back if the move fails, deleted once the new one is in place."""
+        """Install complete staging as docs/<doc_id>; the caller holds the lock. What is already there is
+        replaced only if skipped at open: moved aside, put back if the move fails, deleted after success."""
         lost = missing(staging, (f"source{meta.suffix}", CHUNKS, EMBEDDINGS, META))
         if lost:  # cleared mid-upload, and saving the embeddings recreated the directory
             raise StorageError(f"the staged upload of {meta.doc_id} lost {', '.join(lost)}")
@@ -318,10 +321,9 @@ class _LazyEncoder:
 
 
 def _load_model(model_name: str):
-    """`dense.load_model`, with every way it fails turned into EncoderUnavailable.
-    It ends the process when an import fails (torch missing under an installed
-    sentence-transformers, say), which inside a server would take the server down;
-    OSError is weights it cannot find or read, e.g. offline with no cached copy."""
+    """`dense.load_model`, with every way it fails as EncoderUnavailable: it ends the process when
+    an import fails (torch missing under sentence-transformers, say), which would take a server
+    down, and raises OSError for weights it cannot read, e.g. offline with no cached copy."""
     if find_spec("sentence_transformers") is None:
         raise EncoderUnavailable("sentence-transformers is not installed, so documents cannot be embedded: "
                                  "python tasks.py setup (or: pip install -r requirements.txt)")
@@ -354,19 +356,19 @@ def _decode_text(data: bytes) -> str:
             return data.decode(encoding)
         except UnicodeDecodeError:
             continue
-    # cp1256 maps all 256 byte values, so under the default list the NUL check is
-    # what refuses a binary file; this refuses what a stricter list cannot decode.
+    # cp1256 decodes every byte, so under the default list the NUL check is what refuses a binary.
     raise UnsupportedFile("the text is not in an accepted encoding")
 
 
 def _pdf_pages(path: Path) -> list[str]:
     try:
-        # keep_latin=True: the default drops EVERY Latin glyph — right for the
-        # bilingual statute corpus, whose English column is a translation, but
-        # an uploaded Arabic document would lose its inline terms (VPN, Wi-Fi,
-        # Microsoft Teams). Known limit of this mode: a side-by-side bilingual
-        # page is not split, so its English column is chunked with the Arabic.
-        return pdf_text.extract_pages(path, keep_latin=True)
+        # keep_latin=True: the default drops EVERY Latin glyph, right for the bilingual statute
+        # corpus but losing an uploaded Arabic document's inline terms (VPN, Wi-Fi, Microsoft
+        # Teams). Known limit of this mode: a side-by-side bilingual page is not split.
+        return pdf_text.extract_pages(path, keep_latin=True, max_pages=MAX_PDF_PAGES,
+                                      deadline=monotonic() + EXTRACTION_BUDGET_SECONDS)
+    except pdf_text.ExtractionLimitExceeded as e:
+        raise PdfTooLarge(str(e)) from e
     except Exception as e:  # a damaged PDF raises whatever pdfminer hits first
         raise UnsupportedFile("the PDF could not be read") from e
 

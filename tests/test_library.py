@@ -44,7 +44,7 @@ from legalrag.library import (  # noqa: E402
     UnsupportedFile,
 )
 from legalrag.normalize import evaluation_normalize  # noqa: E402
-from stubs import KeywordEncoder, text_document  # noqa: E402
+from stubs import KeywordEncoder, blank_pdf, text_document  # noqa: E402
 
 POLICY = text_document("العمل عن بعد يحتاج موافقة المدير", "بدل الإنترنت الشهري للموظف")
 STORED_TXT = ["chunks.jsonl", "embeddings.npz", "meta.json", "source.txt"]
@@ -69,9 +69,9 @@ def _refuse_new_directories(monkeypatch) -> None:
 
 
 def _fake_extract_pages(*pages: str, seen: list | None = None):
-    def fake(path, keep_latin=False, line_tol=None):
+    def fake(path, keep_latin=False, line_tol=None, *, max_pages=None, deadline=None):
         if seen is not None:
-            seen.append({"path": Path(path), "keep_latin": keep_latin})
+            seen.append({"path": Path(path), "keep_latin": keep_latin, "max_pages": max_pages, "deadline": deadline})
         return list(pages)
 
     return fake
@@ -275,7 +275,7 @@ def test_a_pdf_without_a_text_layer_raises_no_text_layer_and_leaves_nothing_behi
 
 
 def test_a_pdf_the_extractor_cannot_read_is_unsupported_and_leaves_nothing_behind(tmp_path, monkeypatch):
-    def broken(path, keep_latin=False, line_tol=None):
+    def broken(path, keep_latin=False, line_tol=None, **limits):
         raise ValueError("corrupt cross-reference table")
 
     monkeypatch.setattr(pdf_text, "extract_pages", broken)
@@ -287,6 +287,47 @@ def test_a_pdf_the_extractor_cannot_read_is_unsupported_and_leaves_nothing_behin
 
     assert isinstance(rejected.value.__cause__, ValueError)
     assert _tree(tmp_path) == before
+
+
+def test_a_pdf_over_the_page_limit_is_pdf_too_large_and_leaves_nothing_behind(tmp_path, monkeypatch):
+    monkeypatch.setattr(library_mod, "MAX_PDF_PAGES", 3)
+    library = Library(tmp_path, encoder=KeywordEncoder())
+    before = _tree(tmp_path)
+
+    with pytest.raises(library_mod.PdfTooLarge) as refused:
+        library.add(blank_pdf(4), "long.pdf")
+
+    assert refused.value.code == "pdf_too_large"
+    assert isinstance(refused.value, LibraryError)
+    assert isinstance(refused.value.__cause__, pdf_text.TooManyPages)
+    assert _tree(tmp_path) == before
+    assert library.documents() == []
+
+
+def test_a_pdf_whose_extraction_outruns_its_budget_is_pdf_too_large_and_leaves_nothing_behind(tmp_path, monkeypatch):
+    monkeypatch.setattr(library_mod, "EXTRACTION_BUDGET_SECONDS", -1)  # the deadline has passed before page 2
+    library = Library(tmp_path, encoder=KeywordEncoder())
+    before = _tree(tmp_path)
+
+    with pytest.raises(library_mod.PdfTooLarge) as refused:
+        library.add(blank_pdf(2), "slow.pdf")
+
+    assert refused.value.code == "pdf_too_large"
+    assert isinstance(refused.value.__cause__, pdf_text.DeadlineExceeded)
+    assert _tree(tmp_path) == before
+    assert library.documents() == []
+
+
+def test_both_pdf_limits_reach_extract_pages_from_add(tmp_path, monkeypatch):
+    seen: list[dict] = []
+    monkeypatch.setattr(pdf_text, "extract_pages", _fake_extract_pages("نص مستخرج من ملف PDF " * 30, seen=seen))
+    monkeypatch.setattr(library_mod, "monotonic", lambda: 1000.0)
+    library = Library(tmp_path, encoder=KeywordEncoder())
+
+    library.add(b"%PDF-1.7 within the limits", "limits.pdf")
+
+    assert (library_mod.MAX_PDF_PAGES, library_mod.EXTRACTION_BUDGET_SECONDS) == (500, 180)
+    assert [(s["keep_latin"], s["max_pages"], s["deadline"]) for s in seen] == [(True, 500, 1180.0)]
 
 
 def test_a_text_file_in_cp1256_or_with_a_utf8_bom_is_decoded(tmp_path):

@@ -5,7 +5,7 @@
  *
  * The entry module: the element map, the in-memory state, and the event
  * wiring. The work lives in ./js/, and the server serves exactly these six
- * scripts. Rules the modules keep, pinned by tests/test_ui_static.py:
+ * scripts. Rules the modules keep, pinned by tests/test_ui_security.py:
  * - server text reaches the page only as textContent or attribute values;
  * - every request goes through one helper, which sends the X-LegalRAG header;
  * - nothing is written to browser storage: the documents are private, and the

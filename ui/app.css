@@ -129,7 +129,7 @@ h1{font-size:var(--text-xl);line-height:1.4;font-weight:700}
 @media (min-width:960px){
   .layout{grid-template-columns:minmax(300px,340px) minmax(0,1fr)}
 }
-/* keep this breakpoint in step with WIDE_LAYOUT in js/copy.js; tests/test_ui_static.py checks it */
+/* keep this breakpoint in step with WIDE_LAYOUT in js/copy.js; tests/test_ui_structure.py checks it */
 @media (min-width:1280px){
   .layout.has-source{grid-template-columns:minmax(300px,340px) minmax(0,1fr) minmax(360px,440px)}
 }

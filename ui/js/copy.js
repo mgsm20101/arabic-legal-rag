@@ -32,7 +32,7 @@ function countForms(one, two, few, many, other) {
 
 // How each counted noun reads after its number, by plural category. The one and
 // two forms stand in for the number itself; zero takes the few form. The grammar
-// behind each column is written out in tests/test_ui_static.py.
+// behind each column is written out in tests/test_ui_copy.py.
 export const COUNT_FORMS = Object.freeze({
   page: countForms("صفحة واحدة", "صفحتان", "صفحات", "صفحة", "صفحة"),
   article: countForms("مادة واحدة", "مادتان", "مواد", "مادة", "مادة"),

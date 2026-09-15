@@ -1,7 +1,10 @@
 # The model-free test suite on CI (.github/workflows/test.yml). No torch,
 # sentence-transformers or transformers: no test loads a model, and the
 # encoder is a stub in every test. Pinned to the versions the suite passes
-# with locally. requirements.txt stays the full install for the app and evals.
+# with locally, and installed with -c constraints.txt, which pins everything
+# these pull in as well. requirements.txt stays the full install for the app.
+# PyYAML: the container-file tests parse docker-compose.yml.
+PyYAML==6.0.3
 pytest==9.1.1
 numpy==2.5.1
 pdfplumber==0.11.10

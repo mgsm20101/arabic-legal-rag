@@ -1,0 +1,4 @@
+# Development: the app's requirements plus the test runner. The image installs
+# requirements.txt only, so pytest stays out of it.
+-r requirements.txt
+pytest==9.1.1

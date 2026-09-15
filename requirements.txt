@@ -4,7 +4,7 @@ pdfplumber>=0.11        # read the official law PDF (ADR-006/012)
 rank-bm25>=0.2.2        # lexical retrieval baseline
 sentence-transformers>=3.0   # dense baseline + cross-encoder reranker (ADR-015/017)
 numpy>=1.24             # embedding matrix; `eval` does not need it, `ablate` does
-pytest>=8.0
+# pytest is in requirements-dev.txt: this file is what the image installs.
 
 # P1 demo layer (ADR-023) — local upload + chat. Generation talks to a local
 # Ollama server over HTTP, so no model runtime is pinned here.

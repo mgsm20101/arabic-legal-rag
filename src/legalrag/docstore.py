@@ -43,10 +43,12 @@ class DocMeta:
     created_at: str      # UTC ISO-8601, seconds
     deleted: bool = False
     deleted_at: str | None = None
-    # A statute-like PDF whose Arabic-only pass hit its deadline or page limit and so was
-    # chunked generically instead: same bytes, a slower run, a different `kind`. Internal
-    # only — never serialized by the HTTP API. False for every document saved before this
-    # field existed, which is the only reading a missing key can have: this never happened.
+    # A statute-like PDF whose Arabic-only pass hit its deadline and so was chunked generically
+    # instead (the page limit cannot fire here: both passes share MAX_PDF_PAGES, and the first
+    # pass already raised PdfTooLarge before this one ever ran, had the page count been over it):
+    # same bytes, a slower run, a different `kind`. Internal only — never serialized by the HTTP
+    # API. False for every document saved before this field existed, which is the only reading a
+    # missing key can have: this never happened.
     fell_back_to_pages: bool = False
 
 

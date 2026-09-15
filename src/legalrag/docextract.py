@@ -32,8 +32,9 @@ class PdfChunks(NamedTuple):
     pages: list[str]     # the first extraction's, Latin kept: what the document's pages and characters count
     kind: str            # "statute" | "generic"
     chunks: list[Chunk]
-    # True only when this looked like a statute but its Arabic-only pass hit the deadline or
-    # page limit and so was never checked: same bytes, a slower run, "generic" instead of "statute".
+    # True only when this looked like a statute but its Arabic-only pass hit the deadline (the
+    # page limit cannot fire here: see docstore.DocMeta.fell_back_to_pages) and so was never
+    # checked: same bytes, a slower run, "generic" instead of "statute".
     fell_back_to_pages: bool
 
 

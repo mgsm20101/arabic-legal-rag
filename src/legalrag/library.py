@@ -109,21 +109,30 @@ class Library:
         text = _decode_text(data) if suffix == ".txt" else None
         sha256 = hashlib.sha256(data).hexdigest()
         doc_id = sha256[:12]
+        recovering = False
         with self._lock:
             known = self._metas.get(doc_id)
             if known is None and doc_id in self._skipped:
                 # A read that failed only once (another process had it open for a moment, say) is
                 # no sign the document is gone: try it again before treating doc_id as free to reuse.
+                # Not yet committed to _metas/_skipped here — only once _check_sha256 and _loads
+                # below have both run without raising, so a StorageError from either (a transient
+                # failure, not damage) leaves doc_id exactly as it was, retryable next time instead
+                # of wedged: neither known (in _metas) nor free to overwrite (out of _skipped).
                 recovered, problem = read_meta(self._docs / doc_id)
-                if recovered is not None and recovered.doc_id == doc_id:
-                    self._metas[doc_id] = recovered
-                    self._skipped.discard(doc_id)
+                if recovered is not None:
                     known = recovered
+                    recovering = True
                 else:
                     logger.info("document %s is still unreadable at upload time: %s", doc_id, problem)
         if known is not None:
             _check_sha256(known, sha256)
-            if self._loads(known):
+            loaded = self._loads(known)  # may raise StorageError: nothing committed below if it does
+            if recovering:
+                with self._lock:
+                    self._metas[doc_id] = known
+                    self._skipped.discard(doc_id)
+            if loaded:
                 with self._lock:
                     return self._restore(doc_id, sha256)
 

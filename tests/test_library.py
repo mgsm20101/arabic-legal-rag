@@ -278,8 +278,35 @@ def test_a_documents_own_directory_vanishing_is_a_storage_error_not_a_raw_file_n
         library.soft_delete(meta.doc_id)
 
     assert failed.value.code == "internal"
-    assert not isinstance(failed.value, FileNotFoundError)
     assert library.get(meta.doc_id) == meta  # unchanged: the write never reached memory
+
+
+def test_the_directory_vanishing_between_loading_the_index_and_restoring_is_also_a_storage_error(
+    tmp_path, monkeypatch,
+):
+    """The other call site `_write_meta` wraps (`_restore`, reached via re-uploading a soft-deleted
+    document's bytes): a plain `library.add` after `shutil.rmtree` never reaches it, since
+    `load_index` fails first and the missing document is treated as damaged, fully re-extracted,
+    and reinstalled. The narrower race D4 actually protects against is the directory vanishing in
+    the window between `load_index` succeeding and `_write_meta`'s own write — reproduced here by
+    deleting it right after `load_index` returns."""
+    library = Library(tmp_path, encoder=KeywordEncoder())
+    meta = library.add(POLICY, "policy.txt")
+    library.soft_delete(meta.doc_id)
+    doc_dir = tmp_path / "docs" / meta.doc_id
+    real_load_index = library_mod.load_index
+
+    def vanish_after_loading(*args, **kwargs):
+        index = real_load_index(*args, **kwargs)
+        shutil.rmtree(doc_dir)
+        return index
+
+    monkeypatch.setattr(library_mod, "load_index", vanish_after_loading)
+
+    with pytest.raises(StorageError) as failed:
+        library.add(POLICY, "policy.txt")
+
+    assert failed.value.code == "internal"
 
 
 def test_a_document_deleted_while_its_index_loads_serves_that_search_and_caches_nothing(tmp_path, monkeypatch):
@@ -775,6 +802,43 @@ def test_a_meta_json_unreadable_only_at_open_is_recovered_by_the_next_upload_not
     assert reopened.get(original.doc_id) == original
     assert _names(doc_dir) == STORED_TXT
     assert list((tmp_path / "tmp").iterdir()) == []
+
+
+def test_a_storage_error_while_recovering_a_skipped_document_does_not_wedge_it(tmp_path, monkeypatch):
+    """H1: the old code committed the recovered meta to _metas and cleared _skipped as soon as
+    meta.json became readable again — BEFORE _loads had actually run. If the index then failed
+    to load for a reason that is not damage (a transient StorageError, not DocumentDamaged), the
+    document was left permanently wedged: known (in _metas, so the fresh-extraction path below is
+    never reached) yet never successfully loaded (so every future add() of these exact bytes
+    raised StorageError forever, even once the transient problem cleared). Recovery must not
+    commit anything until _check_sha256 and _loads have both run without raising."""
+    library = Library(tmp_path, encoder=KeywordEncoder())
+    readings = iter(["2026-01-01T09:00:00+00:00", "2026-09-15T18:00:00+00:00"])
+    monkeypatch.setattr(library_mod, "_now", lambda: next(readings))
+    original = library.add(POLICY, "policy.txt")
+    doc_dir = tmp_path / "docs" / original.doc_id
+
+    _unreadable(monkeypatch, doc_dir / "meta.json")
+    reopened = Library(tmp_path, encoder=KeywordEncoder())
+    monkeypatch.undo()  # meta.json readable again
+    _unreadable(monkeypatch, doc_dir / "embeddings.npz")  # but the index is not, yet — a transient failure
+
+    with pytest.raises(StorageError):
+        reopened.add(POLICY, "policy.txt")
+
+    # Not wedged: still exactly as unresolved as before this failed attempt, not "known but broken".
+    assert reopened.documents() == []
+    with pytest.raises(DocumentNotFound):
+        reopened.get(original.doc_id)
+
+    monkeypatch.undo()  # embeddings.npz readable again too
+    monkeypatch.setattr(library_mod, "_now", lambda: next(readings))  # only a fresh document would call this again
+
+    restored = reopened.add(POLICY, "policy.txt")
+
+    assert restored == original  # recovered, not wedged and not duplicated
+    assert reopened.documents() == [original]
+    assert reopened.get(original.doc_id) == original
 
 
 # ------------------------------------------------------------ damaged disk --

@@ -23,9 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from ui_page import ROOT, all_js, copy_scripts_for_node, needs_node, read, run_node  # noqa: E402
-
-sys.path.insert(0, str(ROOT / "src"))
+from ui_page import all_js, copy_scripts_for_node, needs_node, read, run_node  # noqa: E402
 
 # --- every abstain reason has its sentence ----------------------------------
 
@@ -59,8 +57,6 @@ def test_every_abstain_reason_in_the_contract_has_an_arabic_sentence():
 
     fallback = re.search(r"const ABSTAIN_FALLBACK = \"([^\"]+)\";", source)
     assert fallback and ARABIC_LETTER.search(fallback.group(1)), "no Arabic sentence for an unknown reason"
-    # a reason named like an inherited property ("constructor") must not index the prototype
-    assert "Object.hasOwn(ABSTAIN_SENTENCES, " in source
 
 
 # --- every count agrees with its noun -----------------------------------------
@@ -211,6 +207,7 @@ def test_the_copy_module_counts_and_states_the_limits_the_server_enforces(tmp_pa
         "",
     ]
     assert nfc(out["abstain"][0]) == _nfc(ABSTAIN_SENTENCES["all_dropped"])
+    # a reason named like an inherited property ("constructor") gets the fallback, not what the prototype holds
     assert ARABIC_LETTER.search(out["abstain"][1]) and out["abstain"][1] not in ABSTAIN_SENTENCES.values()
 
 

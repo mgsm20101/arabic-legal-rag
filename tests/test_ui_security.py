@@ -21,7 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from ui_page import ALLOWLISTED_JS, TAG, all_js, attr, read  # noqa: E402
+from ui_page import ALLOWLISTED_JS, SCHEME, TAG, all_js, attr, leaves_the_page, page_references, read  # noqa: E402
 
 # --- server text never becomes markup or code ------------------------------
 
@@ -117,22 +117,20 @@ def test_the_chat_page_has_no_inline_script_or_style():
 
 # --- RTL Arabic, and only its own two assets --------------------------------
 
-URL_ATTRIBUTES = ("src", "href", "xlink:href", "srcset", "action", "formaction", "poster", "data")
-
 EXTERNAL_URL = re.compile(r"\bhttps?:", re.I)
 CSS_LOAD = re.compile(r"@import|url\(\s*[\"']?\s*(?!data:)", re.I)
 JS_PROTOCOL_RELATIVE = re.compile(r"[\"'`]//")
 
+# A data: URL loads nothing as an icon, but as a script's src it is the script.
+URL_SAMPLE = (
+    '<img src="//cdn.example/x.png"><a href="#top"><link rel="icon" href="data:,">'
+    '<script src="data:text/javascript,alert(1)"></script>'
+)
 
-def _urls(html: str) -> list[str]:
-    """Every URL the markup fetches, which leaves out #fragments and inline data: URLs."""
-    urls = []
-    for tag in TAG.findall(html):
-        for name in URL_ATTRIBUTES:
-            value = attr(tag, name)
-            if value is not None and not value.startswith(("#", "data:")):
-                urls.append(value)
-    return sorted(urls)
+
+def _leaving(html: str) -> list[str]:
+    """The URLs in `html` that request another origin or run code (ui_page.leaves_the_page)."""
+    return [url for element, url in page_references(html) if leaves_the_page(element, url)]
 
 
 def test_the_chat_page_is_rtl_arabic_and_loads_only_its_own_assets():
@@ -141,8 +139,7 @@ def test_the_chat_page_is_rtl_arabic_and_loads_only_its_own_assets():
     assert CSS_LOAD.search('@import "theme.css";') and CSS_LOAD.search("background: url(/bg.png)")
     assert not CSS_LOAD.search("background: url(data:image/png;base64,AAAA)")
     assert JS_PROTOCOL_RELATIVE.search('fetch("//cdn.example/x.js")')
-    sample = '<img src="//cdn.example/x.png"><a href="#top"><link rel="icon" href="data:,">'
-    assert _urls(sample) == ["//cdn.example/x.png"]
+    assert _leaving(URL_SAMPLE) == ["//cdn.example/x.png", "data:text/javascript,alert(1)"]
 
     html = read("app.html")
     root = re.search(r"<html\b[^>]*>", html, re.I)
@@ -159,7 +156,8 @@ def test_the_chat_page_is_rtl_arabic_and_loads_only_its_own_assets():
     scripts = [attr(tag, "src") for tag in tags if re.match(r"<script\b", tag, re.I)]
     assert stylesheets == ["app.css"]
     assert scripts == ["app.js"]
-    assert _urls(html) == ["app.css", "app.js"]
+    assert _leaving(html) == []
+    assert sorted(url for _, url in page_references(html) if SCHEME.match(url) is None) == ["app.css", "app.js"]
 
     for name in ("app.html", "app.css", *ALLOWLISTED_JS):
         assert not EXTERNAL_URL.search(read(name)), f"{name} names an http(s) URL"

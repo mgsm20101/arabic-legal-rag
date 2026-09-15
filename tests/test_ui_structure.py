@@ -34,6 +34,7 @@ from ui_page import (  # noqa: E402
     all_js,
     attr,
     copy_scripts_for_node,
+    import_specifiers,
     needs_node,
     read,
     run_node,
@@ -41,19 +42,15 @@ from ui_page import (  # noqa: E402
 
 # --- every script the page imports is one the server serves ------------------
 
-IMPORT_SPECIFIER = re.compile(
-    r"^\s*(?:import|export)\b[^;'\"`]*?\bfrom\s*(['\"])(?P<spec>[^'\"]+)\1"
-    r"|^\s*import\s*(['\"])(?P<bare>[^'\"]+)\3",
-    re.M,
-)
-
 IMPORT_SAMPLES = {
     "a bare specifier": {"app.js": 'import { html } from "lit";'},
     "a URL": {"app.js": 'import confetti from "https://cdn.example/confetti.js";'},
+    "a dynamic import of a URL": {"app.js": 'const confetti = () => import("https://cdn.example/confetti.js");'},
     "a module the server does not serve": {"app.js": 'import { x } from "./js/extra.js";'},
     "a path that climbs out of ui/": {"app.js": 'import "../src/legalrag/secret.js";'},
     "a multi-line import of a missing module": {"app.js": 'import {\n  a,\n  b,\n} from "./js/gone.js";'},
     "a re-export of a missing module": {"app.js": 'export { a } from "./js/gone.js";'},
+    "a dynamic import of a missing module": {"app.js": 'const later = () => import("./js/later.js");'},
     "a module nothing imports": {
         "app.js": 'import { a } from "./js/a.js";',
         "js/a.js": "export const a = 1;",
@@ -62,7 +59,7 @@ IMPORT_SAMPLES = {
 }
 
 GOOD_IMPORT_SAMPLE = {
-    "app.js": 'import { api } from "./js/api.js";\nimport {\n  TEXT,\n} from "./js/copy.js";',
+    "app.js": 'import { api } from "./js/api.js";\nimport {\n  TEXT,\n} from "./js/copy.js";\nconst later = () => import("./js/api.js");',
     "js/api.js": 'import { TEXT } from "./copy.js";\nexport async function api() {}',
     "js/copy.js": 'export const TEXT = Object.freeze({ from: "a key, not an import" });',
 }
@@ -73,8 +70,7 @@ def _import_problems(files: dict[str, str]) -> list[str]:
     problems: list[str] = []
     imports: dict[str, set[str]] = {name: set() for name in files}
     for name, source in files.items():
-        for match in IMPORT_SPECIFIER.finditer(source):
-            spec = match.group("spec") or match.group("bare")
+        for spec in import_specifiers(source):
             if not spec.startswith(("./", "../")):
                 problems.append(f"{name} imports {spec!r}, which is not a relative path")
                 continue

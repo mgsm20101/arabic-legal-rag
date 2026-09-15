@@ -10,7 +10,9 @@ Without a build, these checks are all the verification the Dockerfile,
 - the port is published on the host's loopback only;
 - the image looks for its data and its model cache where compose mounts them;
 - the image installs its requirements under constraints.txt, and a CUDA torch
-  fails the build.
+  fails the build;
+- compose never creates the data directory on the host, and the container
+  runs with an init process, no capabilities and no way to gain privileges.
 
 The Dockerfile and .dockerignore are read as Docker reads them; a harmless
 rewrite (`EXPOSE 8000/tcp`, `USER 1000`, `data/**`) still passes. The compose
@@ -304,3 +306,29 @@ def test_the_image_installs_no_test_tooling():
 
     assert names, "requirements.txt names nothing"
     assert "pytest" not in names, "pytest belongs in requirements-dev.txt, out of the image"
+
+
+# --- compose on a Linux host: no root-owned data directory, a hardened container ----
+
+
+def test_compose_never_creates_the_data_directory_on_the_host():
+    env = _env(_final_stage(_instructions(_read("Dockerfile"))))
+    mounts = [volume for volume in _compose()["services"]["app"].get("volumes") or []
+              if isinstance(volume, dict) and volume.get("target") == env["LEGALRAG_DATA_DIR"]]
+
+    # The short syntax, or create_host_path left on, lets Docker create a missing
+    # ./data/app owned by root, which the app (uid 1000) cannot write.
+    assert mounts, "the data mount is not in the long syntax"
+    assert mounts[0].get("type") == "bind"
+    assert (mounts[0].get("bind") or {}).get("create_host_path") is False
+
+
+def test_the_app_container_is_hardened():
+    app = _compose()["services"]["app"]
+    security = {str(option).replace("=", ":") for option in app.get("security_opt") or []}
+
+    assert app.get("init") is True, "no init process: PID 1 neither forwards signals nor reaps children"
+    assert "ALL" in {str(cap).upper() for cap in app.get("cap_drop") or []}, "capabilities are not all dropped"
+    assert not app.get("cap_add"), "a capability is added back"
+    assert security & {"no-new-privileges", "no-new-privileges:true"}, "a setuid binary could still gain privileges"
+    assert not app.get("privileged"), "privileged undoes every restriction"

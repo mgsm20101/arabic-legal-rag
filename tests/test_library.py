@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 pytest.importorskip("numpy")
 
+import legalrag.docindex as docindex_mod  # noqa: E402
 import legalrag.library as library_mod  # noqa: E402
 from legalrag import dense, pdf_text  # noqa: E402
 from legalrag.library import (  # noqa: E402
@@ -723,7 +724,7 @@ def test_every_way_the_model_fails_to_load_is_encoder_unavailable_and_never_ends
     def load_model(name=dense.DEFAULT_MODEL):
         raise failure
 
-    monkeypatch.setattr(library_mod, "find_spec", lambda name: object())  # the package looks installed
+    monkeypatch.setattr(docindex_mod, "find_spec", lambda name: object())  # the package looks installed
     monkeypatch.setattr(dense, "load_model", load_model)
     library = Library(tmp_path)
 

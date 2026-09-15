@@ -28,15 +28,15 @@ import uuid
 import zipfile
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from importlib.util import find_spec
 from pathlib import Path
 from time import monotonic
 
 from . import dense, pdf_text
 from .chunking import Chunk, chunk_document
 from .dense import DenseIndex, Encoder
+from .docindex import DocumentIndex, EncoderUnavailable, LazyEncoder, index_docs, load_index
 from .docstore import CHUNKS, EMBEDDINGS, META, DocMeta, clear_stale, missing
-from .docstore import read_chunks, read_meta, write_chunks, write_meta
+from .docstore import read_meta, write_chunks, write_meta
 
 logger = logging.getLogger(__name__)
 
@@ -99,21 +99,11 @@ class StorageError(LibraryError):
     code = "internal"
 
 
-class EncoderUnavailable(RuntimeError):
-    """The embedding model cannot be loaded: a server configuration problem, not a client error."""
-
-
 @dataclass(frozen=True)
 class LibraryHit:
     chunk: Chunk
     doc_title: str
     score: float
-
-
-@dataclass(frozen=True)
-class _DocumentIndex:
-    dense: DenseIndex
-    chunks: dict[str, Chunk]  # by chunk id, which is what a dense Hit carries
 
 
 class Library:
@@ -125,12 +115,12 @@ class Library:
         self.root = Path(root)
         self.model_name = model_name
         # ONE encoder behind every document's index: the injected one, or the real model, loaded lazily.
-        self._encoder = encoder if encoder is not None else _LazyEncoder(model_name)
+        self._encoder = encoder if encoder is not None else LazyEncoder(model_name)
         self._docs = self.root / "docs"
         self._tmp = self.root / "tmp"
         self._lock = threading.Lock()
         self._metas: dict[str, DocMeta] = {}
-        self._indexes: dict[str, _DocumentIndex] = {}
+        self._indexes: dict[str, DocumentIndex] = {}
         self._skipped: set[str] = set()  # document directories found unservable at open
 
         self._docs.mkdir(parents=True, exist_ok=True)
@@ -174,7 +164,7 @@ class Library:
             if not chunks:
                 raise NoTextLayer("no readable text was found in the document")
             write_chunks(staging / CHUNKS, chunks)
-            DenseIndex(_index_docs(chunks, title), encoder=self._encoder,
+            DenseIndex(index_docs(chunks, title), encoder=self._encoder,
                        cache_path=staging / EMBEDDINGS, model_name=self.model_name).save()
             meta = DocMeta(doc_id=doc_id, title=title, kind=kind, suffix=suffix,
                            size_bytes=len(data), sha256=sha256, pages=len(pages),
@@ -282,7 +272,7 @@ class Library:
             self._metas[doc_id] = meta
         return meta
 
-    def _index(self, meta: DocMeta) -> _DocumentIndex:
+    def _index(self, meta: DocMeta) -> DocumentIndex:
         """`meta`'s dense index: cached, or loaded from its chunks and saved embeddings —
         nothing is embedded when the fingerprint matches. StorageError if they will not load."""
         with self._lock:
@@ -290,47 +280,15 @@ class Library:
         if cached is not None:
             return cached
 
-        doc_dir = self._docs / meta.doc_id
         try:
-            chunks = read_chunks(doc_dir / CHUNKS)
-            index = DenseIndex(_index_docs(chunks, meta.title), encoder=self._encoder,
-                               cache_path=doc_dir / EMBEDDINGS, model_name=self.model_name)
+            loaded = load_index(self._docs / meta.doc_id, meta.title, self._encoder, self.model_name)
         except _LOAD_ERRORS as e:
             raise StorageError(f"the index of document {meta.doc_id} will not load: {e}") from e
-        loaded = _DocumentIndex(dense=index, chunks={c.id: c for c in chunks})
         with self._lock:
             current = self._metas.get(meta.doc_id)
             if current is None or current.deleted:
                 return loaded  # deleted while it loaded: serve this search, cache nothing
             return self._indexes.setdefault(meta.doc_id, loaded)
-
-
-class _LazyEncoder:
-    """The real model, loaded on the first `encode`, so opening a library never pays for torch."""
-
-    def __init__(self, model_name: str):
-        self.model_name = model_name
-        self._model = None
-        self._lock = threading.Lock()
-
-    def encode(self, texts, **kwargs):
-        with self._lock:
-            if self._model is None:
-                self._model = _load_model(self.model_name)
-        return self._model.encode(texts, **kwargs)
-
-
-def _load_model(model_name: str):
-    """`dense.load_model`, with every way it fails as EncoderUnavailable: it ends the process when
-    an import fails (torch missing under sentence-transformers, say), which would take a server
-    down, and raises OSError for weights it cannot read, e.g. offline with no cached copy."""
-    if find_spec("sentence_transformers") is None:
-        raise EncoderUnavailable("sentence-transformers is not installed, so documents cannot be embedded: "
-                                 "python tasks.py setup (or: pip install -r requirements.txt)")
-    try:
-        return dense.load_model(model_name)
-    except (SystemExit, ImportError, OSError) as e:
-        raise EncoderUnavailable(f"the embedding model {model_name!r} could not be loaded: {e}") from e
 
 
 def _checked_suffix(data: bytes, filename: str | None) -> str:
@@ -390,10 +348,6 @@ def _display_title(filename: str | None, suffix: str) -> str:
                    if unicodedata.category(ch) != "Cc" and ch not in _BIDI_CONTROLS)
     title = " ".join(name.split())[:MAX_TITLE_CHARS].rstrip()
     return title or f"document{suffix}"
-
-
-def _index_docs(chunks: list[Chunk], title: str) -> list[dict]:
-    return [{"id": c.id, "number": c.number, "text": c.text, "law_name": title} for c in chunks]
 
 
 def _now() -> str:

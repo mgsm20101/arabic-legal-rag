@@ -22,6 +22,7 @@ from legalrag.cite import (  # noqa: E402
     sentences,
     strict_citations,
 )
+from legalrag.normalize import evaluation_normalize  # noqa: E402
 
 CORPUS = set(range(1, 50))       # the law has 49 articles
 RETRIEVED = {4, 7, 12}
@@ -466,3 +467,137 @@ def test_gate_raises_when_source_numbers_and_source_texts_disagree_in_length():
 
     with pytest.raises(ValueError):
         gate(parsed, [7, 12], ["نص واحد فقط"])
+
+
+# --- Round 5's fix: gate must normalise the claim before checking ----------
+#
+# `_gate_one_claim` compared a claim's RAW text against `source_texts`,
+# which arrive already `evaluation_normalize`d — the corpus is normalised at
+# ingest time, and that normalised text is what both the app pipeline and a
+# saved eval row hand to `gate`. A diacritic, a tatweel, or a no-break space
+# the model's own generation left between "مادة" and its number broke the
+# literal regex match, so `citations` on the raw claim silently found
+# nothing — and the "does this claim name an article none of its sources
+# support" check (rule 3) passed vacuously, keeping a claim it should have
+# dropped. A second, independent gap: even already-normalised text with a
+# colon between the head word and the number ("المادة: 30") was never
+# recognised at all, because `LOOSE_CITATION` never allowed one.
+
+_UNNORMALISED_ARTICLE_30_SPELLINGS = {
+    "shadda": "للمادّة 30",
+    "fatha": "للمَادة 30",
+    "tatweel": "للمـادة 30",
+    "no_break_space": "المادة 30",
+}
+
+
+@pytest.mark.parametrize("spelling", _UNNORMALISED_ARTICLE_30_SPELLINGS.values(),
+                          ids=_UNNORMALISED_ARTICLE_30_SPELLINGS.keys())
+def test_citations_misses_an_unnormalised_article_reference_on_raw_text(spelling):
+    """Pins the starting bug precisely: `citations` normalises nothing on
+    its own — that is the caller's job. Each of these is a real article-30
+    reference that a diacritic, a tatweel, or a no-break space hides from
+    the literal regex match."""
+    assert citations(spelling) == []
+
+
+@pytest.mark.parametrize("spelling", _UNNORMALISED_ARTICLE_30_SPELLINGS.values(),
+                          ids=_UNNORMALISED_ARTICLE_30_SPELLINGS.keys())
+def test_citations_finds_it_once_the_caller_normalises_first(spelling):
+    """The other half of the pin: normalising first — what `_gate_one_claim`
+    now does before checking a claim — is enough on its own, with no change
+    to the regex, to recognise all four spellings from the bug report."""
+    assert citations(evaluation_normalize(spelling)) == [30]
+
+
+@pytest.mark.parametrize("spelling", _UNNORMALISED_ARTICLE_30_SPELLINGS.values(),
+                          ids=_UNNORMALISED_ARTICLE_30_SPELLINGS.keys())
+def test_a_claim_naming_an_uncited_article_is_ungrounded_even_when_unnormalised(spelling):
+    """The bug as it actually reaches the gate: same shape as
+    `test_a_claim_naming_an_article_it_does_not_cite_is_ungrounded`, but
+    written the way a model actually writes — with a diacritic, a tatweel,
+    or a no-break space it left in while generating. Before the fix,
+    `_gate_one_claim` ran `citations` on this text raw, found nothing, and
+    kept the claim, because the "names an article no source supports" check
+    never saw a number to check against `allowed`."""
+    claim_text = f"يلزم الحفظ لمدة سنة كاملة {spelling}."
+    parsed = {"abstain": False, "claims": [{"text": claim_text, "sources": [1]}]}
+
+    result = gate(parsed, SOURCE_NUMBERS, SOURCE_TEXTS)
+
+    assert result["ungrounded"] == 1
+    assert result["dropped"][0]["reason"] == "ungrounded"
+    assert result["dropped"][0]["text"] == claim_text
+    assert result["kept"] == []
+
+
+@pytest.mark.parametrize("text,expected", [
+    pytest.param("المادة: 30", [30], id="colon_then_space"),
+    pytest.param("المادة :30", [30], id="space_then_colon"),
+])
+def test_a_colon_between_the_head_word_and_the_number_is_recognised(text, expected):
+    """The second gap: even on already-normalised text, a colon between the
+    head word and the number was not recognised at all."""
+    assert citations(text) == expected
+
+
+def test_an_unrelated_colon_next_to_a_number_is_not_read_as_a_citation():
+    """The colon is only meaningful right after a head word like `مادة` —
+    guards against a change loose enough to read any `text:number` as a
+    citation."""
+    assert citations("الاجتماع الساعة 5:30 مساءً، والحضور إلزامي.") == []
+
+
+def test_a_claim_naming_an_uncited_article_by_colon_is_ungrounded():
+    """The colon gap, at the same integration level as the diacritic tests
+    above — before the regex extension, this claim's citation was invisible
+    to rule 3 regardless of normalisation."""
+    claim_text = "يلزم الحفظ لمدة سنة كاملة المادة: 30."
+    parsed = {"abstain": False, "claims": [{"text": claim_text, "sources": [1]}]}
+
+    result = gate(parsed, SOURCE_NUMBERS, SOURCE_TEXTS)
+
+    assert result["ungrounded"] == 1
+    assert result["dropped"][0]["reason"] == "ungrounded"
+    assert result["kept"] == []
+
+
+def test_copied_is_still_detected_when_the_claim_repeats_the_source_with_a_stray_diacritic():
+    """`copied_from_context` has the same raw-claim-vs-normalised-source
+    asymmetry as rule 3, and the same fix applies: normalise the claim
+    before comparing. A single stray diacritic — the kind a model's own
+    generation leaves in while quoting a source verbatim — breaks the
+    literal substring match `copied_from_context` runs; before the fix,
+    this claim (identical to its source but for one damma) was scored
+    `copied: False`."""
+    source_text = (
+        "استثناء من حكم المادة (14) من هذا القانون يجوز نقل البيانات "
+        "بموافقة صريحة."
+    )
+    claim_with_stray_diacritic = (
+        "استثناء من حُكم المادة (14) من هذا القانون يجوز نقل البيانات "
+        "بموافقة صريحة."
+    )
+    parsed = {"abstain": False, "claims": [
+        {"text": claim_with_stray_diacritic, "sources": [1]},
+    ]}
+
+    result = gate(parsed, [14], [source_text])
+
+    assert result["kept"] == [
+        {"text": claim_with_stray_diacritic, "sources": [1], "copied": True},
+    ]
+
+
+def test_a_dropped_claims_text_is_the_original_not_the_normalised_one():
+    """Normalising is for comparison only — display is the caller's
+    business. A dropped claim must still show exactly what the model wrote,
+    tashkeel and all, not the stripped version used internally to find the
+    citation."""
+    claim_text = "يلزم الحفظ لمدة سنة كاملة للمادّة 30."
+    parsed = {"abstain": False, "claims": [{"text": claim_text, "sources": [1]}]}
+
+    result = gate(parsed, SOURCE_NUMBERS, SOURCE_TEXTS)
+
+    assert result["dropped"][0]["text"] == claim_text
+    assert "ّ" in result["dropped"][0]["text"]

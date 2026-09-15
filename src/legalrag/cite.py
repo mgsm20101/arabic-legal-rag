@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import re
 
-from .normalize import normalize_digits
+from .normalize import evaluation_normalize, normalize_digits
 
 # The form the prompt requires: [مادة 7] or [المادة ٧]
 STRICT_CITATION = re.compile(r"\[[ \t]*(?:ال)?مادة[ \t]*\(?[ \t]*([0-9٠-٩۰-۹]{1,3})[ \t]*\)?[ \t]*\]")
@@ -42,7 +42,10 @@ STRICT_CITATION = re.compile(r"\[[ \t]*(?:ال)?مادة[ \t]*\(?[ \t]*([0-9٠-�
 # singular, dual or plural: مادة ٧ · المادة (٧) · المادتين ٧ و٨ · المواد ٣٦، ٣٧
 LOOSE_HEAD = re.compile(r"(?:ال)?(?:مادة|مادتين|مادتي|مواد|مادتان)")
 LOOSE_CITATION = re.compile(
-    LOOSE_HEAD.pattern + r"[ \t]*(?:رقم)?[ \t]*"
+    # The optional `:?` right after the head word recognises «المادة: 30»
+    # and «المادة :30» — a colon a reader still reads as the same reference,
+    # which the regex did not, even on already-normalised text.
+    LOOSE_HEAD.pattern + r"[ \t]*:?[ \t]*(?:رقم)?[ \t]*"
     r"((?:[\(\[]?[ \t]*[0-9٠-٩۰-۹]{1,3}[ \t]*[\)\]]?[ \t]*[،,و]?[ \t]*){1,8})"
 )
 NUMBER = re.compile(r"[0-9٠-٩۰-۹]{1,3}")
@@ -141,6 +144,23 @@ def audit(
 
     An abstention is not audited for citations — refusing to answer is the
     behaviour being asked for, not a failure to cite.
+
+    **Deliberately NOT given `gate`'s normalisation.** `context` reaches
+    this function just as `evaluation_normalize`d as `gate`'s
+    `source_texts` — both come from the same ingested corpus — so the same
+    raw-candidate-vs-normalised-context asymmetry exists here in principle.
+    Left alone for Runs 3/4 anyway: this function splits `text` into
+    `sentences` on raw `.`/`!`/`؟`/`؛`/newline boundaries *before* checking
+    any of them, and `evaluation_normalize`'s whitespace collapse turns a
+    newline into a space. Normalising the whole answer up front, the way
+    `gate` normalises a whole claim, would silently merge sentences a raw
+    newline used to separate — a different and worse failure than the one
+    being fixed here. Doing this safely would mean normalising per sentence
+    *after* the split, touching every call site below rather than one, on
+    the function two already-adopted, pre-registered runs are scored by.
+    That is a follow-up in its own right, not a rider on this fix. Note
+    that `LOOSE_CITATION`'s colon extension is a shared regex constant —
+    unlike the normalisation question, it applies here regardless.
     """
     if is_abstention(text):
         return {
@@ -204,14 +224,27 @@ def _gate_one_claim(
     numbers_in_own_sources = {n for t in own_texts for n in citations(t)}
     allowed = own_numbers | numbers_in_own_sources
 
+    # `own_texts` reaches us already `evaluation_normalize`d — the corpus is
+    # normalised at ingest time, and that is what both the app pipeline and
+    # a saved eval row hand to `gate` as `source_texts`. The claim's own
+    # text never goes through that step; it is the model's raw output.
+    # Checking it raw against a normalised world let a diacritic, a
+    # tatweel, or a no-break space between "مادة" and its number hide a
+    # citation from both checks below: `citations` found nothing, so the
+    # "names an article no source supports" check below passed vacuously,
+    # and a claim that should have been dropped was kept. Normalising here,
+    # the same way the sources already are, closes that gap; `text` itself
+    # stays raw below, since normalising is for comparison, not display.
+    normalised_text = evaluation_normalize(text)
+
     # `copied` is still computed and still reported (`report_claims`'s own
     # rate) — it just no longer decides what is allowed. See `gate`'s
     # docstring for the bug this replaces: a claim built from a 60+
     # character copied run plus one invented sentence used to have EVERY
     # number it mentioned exempted, including one the source never named.
-    copied = copied_from_context(text, own_texts)
+    copied = copied_from_context(normalised_text, own_texts)
 
-    mentioned = citations(text)
+    mentioned = citations(normalised_text)
     if any(n not in allowed for n in mentioned):
         return None, {"text": text, "sources": sources, "reason": "ungrounded"}
 

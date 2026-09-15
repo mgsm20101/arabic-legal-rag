@@ -40,7 +40,7 @@ from .claims import build_generators
 from .generate import parse_model_spec
 from .library import DocMeta, DocumentNotFound, EncoderUnavailable, Library, LibraryError
 from .ollama import GeneratorUnavailable
-from .pipeline import MAX_QUESTION_CHARS, MIN_QUESTION_CHARS, Pipeline
+from .pipeline import Pipeline, QuestionRejected
 from .web_guard import (  # noqa: F401  ALLOWED_HOSTS, APP_HEADER, SECURITY_HEADERS: this module's contract too
     ALLOWED_HOSTS,
     APP_HEADER,
@@ -83,10 +83,6 @@ class AppConfigError(RuntimeError):
     """The environment names a configuration the app refuses to start with."""
 
 
-class InvalidQuestion(Exception):
-    """The question's length is outside what the pipeline answers."""
-
-
 class ChatRequest(BaseModel):
     question: StrictStr  # its length is the pipeline's to enforce
     doc_ids: list[StrictStr] | None = Field(default=None, max_length=MAX_DOC_IDS)
@@ -114,22 +110,33 @@ def create_app(library, pipeline, *, health_probe: Callable[[], dict] | None = N
     generator reads as unreachable. Only those keys, each of its own type,
     ever reach the client."""
     app = FastAPI(title="arabic-legal-rag", docs_url=None, redoc_url=None, openapi_url=None)
-    limits = {
+    app.add_middleware(Guard, limits={
         CHAT_PATH: chat_limiter if chat_limiter is not None else RateLimiter(*CHAT_LIMIT),
         UPLOAD_PATH: upload_limiter if upload_limiter is not None else RateLimiter(*UPLOAD_LIMIT),
-    }
-    app.add_middleware(Guard, limits=limits)
+    })
     _add_error_handlers(app)
+    _add_ui_routes(app, Path(ui_dir))
+    _add_health_route(app, library, health_probe)
+    _add_document_routes(app, library)
+    _add_chat_route(app, pipeline)
+    return app
+
+
+def _add_ui_routes(app: FastAPI, ui_dir: Path) -> None:
     for url, (name, content_type) in UI_FILES.items():
-        app.add_api_route(url, _ui_file(Path(ui_dir) / name, content_type), methods=["GET"],
+        app.add_api_route(url, _ui_file(ui_dir / name, content_type), methods=["GET"],
                           include_in_schema=False)
 
+
+def _add_health_route(app: FastAPI, library, probe: Callable[[], dict] | None) -> None:
     @app.get("/api/health")
     def health() -> dict:
-        generator = _generator_status(health_probe)
+        generator = _generator_status(probe)
         return {"status": "ok" if generator["reachable"] else "degraded", "generator": generator,
                 "documents": len(library.documents())}
 
+
+def _add_document_routes(app: FastAPI, library) -> None:
     @app.get(UPLOAD_PATH)
     def documents() -> dict:
         return {"documents": [_document(meta) for meta in library.documents()]}
@@ -150,17 +157,13 @@ def create_app(library, pipeline, *, health_probe: Callable[[], dict] | None = N
         library.soft_delete(doc_id)
         return {"deleted": doc_id}
 
+
+def _add_chat_route(app: FastAPI, pipeline) -> None:
     @app.post(CHAT_PATH)
     def chat(body: ChatRequest) -> dict:
-        try:
-            result = pipeline.ask(body.question, body.doc_ids)
-        except ValueError as e:
-            if MIN_QUESTION_CHARS <= len(body.question.strip()) <= MAX_QUESTION_CHARS:
-                raise  # not the question: a fault on this side, answered as `internal`
-            raise InvalidQuestion() from e
-        return result.to_dict()
-
-    return app
+        # QuestionRejected is the question's fault (400); any other ValueError
+        # is a fault on this side, answered as `internal` by the catch-all.
+        return pipeline.ask(body.question, body.doc_ids).to_dict()
 
 
 def _ui_file(path: Path, content_type: str) -> Callable[[], Response]:
@@ -207,7 +210,7 @@ def _add_error_handlers(app: FastAPI) -> None:
         logger.error("%s %s failed (%s)", request.method, request.url.path, code, exc_info=exc)
         return error_response(code)
 
-    async def invalid_question(request, exc: InvalidQuestion) -> JSONResponse:
+    async def invalid_question(request, exc: QuestionRejected) -> JSONResponse:
         return error_response("invalid_request", message=QUESTION_MESSAGE_AR)
 
     async def invalid_input(request, exc: RequestValidationError) -> JSONResponse:
@@ -226,7 +229,7 @@ def _add_error_handlers(app: FastAPI) -> None:
         return error_response("internal")
 
     for exc_type, handler in ((LibraryError, library_error), (EncoderUnavailable, unavailable),
-                              (GeneratorUnavailable, unavailable), (InvalidQuestion, invalid_question),
+                              (GeneratorUnavailable, unavailable), (QuestionRejected, invalid_question),
                               (RequestValidationError, invalid_input), (StarletteHTTPException, http_error),
                               (Exception, internal)):
         app.add_exception_handler(exc_type, handler)

@@ -142,6 +142,17 @@ class OllamaChat:
         return self._client
 
     def __call__(self, messages: list[dict]) -> str:
+        resp = self._post(self._request_body(messages))
+        if not (200 <= resp.status_code < 300):
+            raise GeneratorUnavailable(_error_message(resp, self.model, self.host))
+
+        data, content = self._parse_reply(resp)
+        stats = _stats(data, self.num_ctx)
+        self.last_stats = stats
+        self.calls.append(stats)
+        return content.strip()
+
+    def _request_body(self, messages: list[dict]) -> dict:
         body: dict = {
             "model": self.model,
             "messages": messages,
@@ -158,10 +169,12 @@ class OllamaChat:
             body["format"] = self.fmt
         if self.think is not None:
             body["think"] = self.think
+        return body
 
+    def _post(self, body: dict) -> httpx.Response:
         client = self._ensure_client()
         try:
-            resp = client.post(f"{self.host}/api/chat", json=body)
+            return client.post(f"{self.host}/api/chat", json=body)
         except (httpx.ReadTimeout, httpx.WriteTimeout) as e:
             # Connected, then no reply in time: the server is up but slow or
             # stuck (a model still loading, a prompt too big for the machine),
@@ -176,9 +189,7 @@ class OllamaChat:
                 "Start the Ollama server and try again."
             ) from e
 
-        if not (200 <= resp.status_code < 300):
-            raise GeneratorUnavailable(_error_message(resp, self.model, self.host))
-
+    def _parse_reply(self, resp: httpx.Response) -> tuple[dict, str]:
         try:
             data = resp.json()
         except ValueError as e:
@@ -205,11 +216,7 @@ class OllamaChat:
                 f"Ollama at {self.host} sent a 200 response with no usable "
                 "'message.content' string"
             )
-
-        stats = _stats(data, self.num_ctx)
-        self.last_stats = stats
-        self.calls.append(stats)
-        return content.strip()
+        return data, content
 
 
 def _error_message(resp: httpx.Response, model: str, host: str) -> str:
@@ -313,59 +320,10 @@ def health(host: str | None = None, client: httpx.Client | None = None) -> dict:
             # non-JSON body. Raising ValueError from the same isinstance
             # checks routes both failure modes through one handler instead
             # of two.
-            version = None
-            if 200 <= version_resp.status_code < 300:
-                version_payload = version_resp.json()
-                if not isinstance(version_payload, dict):
-                    raise ValueError("'/api/version' response is not a JSON object")
-                version = version_payload.get("version")
-
-            loaded = []
-            if 200 <= ps_resp.status_code < 300:
-                ps_payload = ps_resp.json()
-                if not isinstance(ps_payload, dict):
-                    raise ValueError("'/api/ps' response is not a JSON object")
-                models = ps_payload.get("models", [])
-                if not isinstance(models, list):
-                    raise ValueError("'models' is not a list")
-                for m in models:
-                    if not isinstance(m, dict):
-                        raise ValueError("a 'models' entry is not a JSON object")
-                    # Not `or 0`: that would turn a MISSING or explicitly
-                    # null `size`/`size_vram` into the integer 0, and a
-                    # missing value dividing cleanly to `gpu_share: 0.0`
-                    # reads as "measured zero, ran on CPU" — a real
-                    # (if misleading) claim — rather than "unknown", which is
-                    # what a missing field actually means. An explicit 0 (a
-                    # model that really did report no VRAM use) is left
-                    # alone: it is still a number, so it still divides.
-                    size = m.get("size")
-                    size_vram = m.get("size_vram")
-                    details = m.get("details") or {}
-                    if not isinstance(details, dict):
-                        details = {}
-                    # Ollama itself always sends `size`/`size_vram` as
-                    # numbers, but nothing else guarantees it (a proxy, a
-                    # different server version) — dividing a string like
-                    # "4GB" would raise TypeError instead of the clean
-                    # `gpu_share: None` a value this function cannot use
-                    # should produce.
-                    size_is_number = isinstance(size, (int, float)) and not isinstance(size, bool)
-                    vram_is_number = (
-                        isinstance(size_vram, (int, float)) and not isinstance(size_vram, bool)
-                    )
-                    can_divide = size_is_number and vram_is_number and size
-                    loaded.append({
-                        "name": m.get("name"),
-                        "size": size,
-                        "size_vram": size_vram,
-                        # None, not 0.0: a share of zero is a measurement: a
-                        # missing, zero, or non-numeric `size`/`size_vram`
-                        # is the absence of one.
-                        "gpu_share": (size_vram / size) if can_divide else None,
-                        "digest": m.get("digest"),
-                        "quantization": details.get("quantization_level"),
-                    })
+            version_payload = _json_object(version_resp, "/api/version")
+            ps_payload = _json_object(ps_resp, "/api/ps")
+            version = version_payload.get("version") if version_payload is not None else None
+            loaded = _loaded_models(ps_payload) if ps_payload is not None else []
         except ValueError as e:
             # `.json()` on a truncated or non-JSON body raises here too. A
             # health check reporting a badly-formed or wrong-shaped response
@@ -376,6 +334,65 @@ def health(host: str | None = None, client: httpx.Client | None = None) -> dict:
     finally:
         if owns_client:
             c.close()
+
+
+def _json_object(resp: httpx.Response, path: str) -> dict | None:
+    """A 2xx response's body, which must be a JSON object; None for any other
+    status. ValueError, as from `.json()` itself, when the body is not one."""
+    if not 200 <= resp.status_code < 300:
+        return None
+    payload = resp.json()
+    if not isinstance(payload, dict):
+        raise ValueError(f"'{path}' response is not a JSON object")
+    return payload
+
+
+def _loaded_models(ps_payload: dict) -> list[dict]:
+    models = ps_payload.get("models", [])
+    if not isinstance(models, list):
+        raise ValueError("'models' is not a list")
+    return [_loaded_model(m) for m in models]
+
+
+def _loaded_model(m: object) -> dict:
+    """One `/api/ps` entry, as `health` reports it."""
+    if not isinstance(m, dict):
+        raise ValueError("a 'models' entry is not a JSON object")
+    # Not `or 0`: that would turn a MISSING or explicitly
+    # null `size`/`size_vram` into the integer 0, and a
+    # missing value dividing cleanly to `gpu_share: 0.0`
+    # reads as "measured zero, ran on CPU" — a real
+    # (if misleading) claim — rather than "unknown", which is
+    # what a missing field actually means. An explicit 0 (a
+    # model that really did report no VRAM use) is left
+    # alone: it is still a number, so it still divides.
+    size = m.get("size")
+    size_vram = m.get("size_vram")
+    details = m.get("details") or {}
+    if not isinstance(details, dict):
+        details = {}
+    # Ollama itself always sends `size`/`size_vram` as
+    # numbers, but nothing else guarantees it (a proxy, a
+    # different server version) — dividing a string like
+    # "4GB" would raise TypeError instead of the clean
+    # `gpu_share: None` a value this function cannot use
+    # should produce.
+    size_is_number = isinstance(size, (int, float)) and not isinstance(size, bool)
+    vram_is_number = (
+        isinstance(size_vram, (int, float)) and not isinstance(size_vram, bool)
+    )
+    can_divide = size_is_number and vram_is_number and size
+    return {
+        "name": m.get("name"),
+        "size": size,
+        "size_vram": size_vram,
+        # None, not 0.0: a share of zero is a measurement: a
+        # missing, zero, or non-numeric `size`/`size_vram`
+        # is the absence of one.
+        "gpu_share": (size_vram / size) if can_divide else None,
+        "digest": m.get("digest"),
+        "quantization": details.get("quantization_level"),
+    }
 
 
 def _matches_spec(loaded_name: str, spec_name: str) -> bool:

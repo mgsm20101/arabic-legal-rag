@@ -601,3 +601,130 @@ def test_a_dropped_claims_text_is_the_original_not_the_normalised_one():
 
     assert result["dropped"][0]["text"] == claim_text
     assert "ّ" in result["dropped"][0]["text"]
+
+
+# --- Round 6's follow-ups: narrow the colon, allow it after رقم, and strip -
+# --- invisible format characters in the gate's own comparison step --------
+#
+# Three reviewer findings on the fix above:
+#
+# 1. `:?` right after ANY head word over-fired: «عدد المواد: 12» ("number of
+#    subjects: 12") is a count, not a citation, but `مواد` is a valid head
+#    word too, so the unnarrowed regex read it as citing article 12 — a
+#    false drop when a CLAIM says it, a false keep when a claim's own
+#    SOURCE happens to say it. Narrowed to the singular head word only
+#    (`مادة` / `المادة`): a colon reads as a citation there, not after the
+#    dual or plural forms.
+# 2. «المادة رقم: 30» was still missed — the colon needs to be recognised
+#    after «رقم» too, with the same narrowing.
+# 3. RLM (U+200F), LRM (U+200E), ZWNJ (U+200C), ZWJ (U+200D) and ALM
+#    (U+061C) have no visible glyph and are not whitespace, so none of them
+#    are touched by `evaluation_normalize`'s NFKC/tashkeel/tatweel/
+#    whitespace-collapse steps — a claim or a source can carry one between
+#    "مادة" and its number with nothing to see. Stripped locally, in the
+#    gate's own comparison step, on both the claim's text and its sources'
+#    text — `evaluation_normalize` itself is untouched, since it is the
+#    benchmark's shared scoring normaliser.
+
+
+def test_a_claim_mentioning_a_count_of_articles_with_a_colon_is_not_misread_as_citing_that_number():
+    """«عدد المواد: 12» is a count, not a citation — «مواد» is plural, and
+    the colon is narrowed to the singular head word precisely so a claim
+    that happens to mention a count is not misread as citing article 12,
+    which would otherwise cause a false 'ungrounded' drop alongside the
+    claim's real, legitimate citation to article 7."""
+    claim_text = ("بلغ عدد المواد: 12 مادة في هذا الباب، "
+                  "ونصت المادة 7 على الإبلاغ خلال ستة أيام.")
+    parsed = {"abstain": False, "claims": [{"text": claim_text, "sources": [1]}]}
+
+    result = gate(parsed, SOURCE_NUMBERS, SOURCE_TEXTS)
+
+    assert result["ungrounded"] == 0
+    assert result["kept"] == [{"text": claim_text, "sources": [1], "copied": False}]
+
+
+def test_a_source_mentioning_a_count_of_articles_does_not_license_a_claim_citing_that_count():
+    """The same narrowing, from the other side: a claim's own cited source
+    happens to mention «عدد المواد: 12» — a count, not the source citing
+    article 12 as its own self-reference. Unnarrowed, `numbers_in_own_sources`
+    misread that count as article 12 and wrongly licensed a claim naming
+    article 12, even though its cited source never actually references it."""
+    source_text = "يشتمل هذا الباب على عدد المواد: 12 مادة، تبدأ بتنظيم الإخطار."
+    claim_text = "تنص المادة 12 على إجراء إضافي يجب اتباعه."
+    parsed = {"abstain": False, "claims": [{"text": claim_text, "sources": [1]}]}
+
+    result = gate(parsed, [7], [source_text])
+
+    assert result["ungrounded"] == 1
+    assert result["dropped"][0]["reason"] == "ungrounded"
+    assert result["kept"] == []
+
+
+@pytest.mark.parametrize("text,expected", [
+    pytest.param("المادة: 30", [30], id="colon_then_space"),
+    pytest.param("المادة :30", [30], id="space_then_colon"),
+    pytest.param("المادة رقم: 30", [30], id="colon_after_raqm"),
+])
+def test_a_colon_after_the_singular_head_word_or_after_raqm_is_recognised(text, expected):
+    assert citations(text) == expected
+
+
+@pytest.mark.parametrize("text", [
+    pytest.param("عدد المواد: 12", id="plural_bare"),
+    pytest.param("عدد المواد رقم: 12", id="plural_with_raqm"),
+])
+def test_a_colon_after_a_dual_or_plural_head_word_is_still_not_a_citation(text):
+    """The narrowing holds whether or not «رقم» sits between the head word
+    and the colon."""
+    assert citations(text) == []
+
+
+_INVISIBLE_FORMAT_CHARS = {
+    # Spelled out as explicit escapes, not literal characters — each one is
+    # invisible in an editor, which is exactly the property under test.
+    "rlm": "\u200f",
+    "lrm": "\u200e",
+    "zwnj": "\u200c",
+    "zwj": "\u200d",
+    "alm": "\u061c",
+}
+
+
+@pytest.mark.parametrize("mark", _INVISIBLE_FORMAT_CHARS.values(),
+                          ids=_INVISIBLE_FORMAT_CHARS.keys())
+def test_a_claim_naming_an_uncited_article_is_ungrounded_across_an_invisible_format_character(mark):
+    """RLM, LRM, ZWNJ, ZWJ and ALM have no visible glyph and are not
+    whitespace — on screen, a claim carrying one between "المادة" and its
+    number looks identical to a plain one. `evaluation_normalize` does not
+    strip them (it is the benchmark's shared scoring normaliser, not this
+    gate's own comparison step); before this fix such a claim was silently
+    kept regardless of whether any cited source supported it."""
+    claim_text = f"يلزم الحفظ لمدة سنة كاملة المادة {mark}30."
+    parsed = {"abstain": False, "claims": [{"text": claim_text, "sources": [1]}]}
+
+    result = gate(parsed, SOURCE_NUMBERS, SOURCE_TEXTS)
+
+    assert result["ungrounded"] == 1
+    assert result["dropped"][0]["reason"] == "ungrounded"
+    assert result["dropped"][0]["text"] == claim_text
+    assert result["kept"] == []
+
+
+def test_a_sources_self_citation_is_still_recognised_across_an_invisible_format_character():
+    """The same stripping applies to the source side of the comparison: a
+    source that cites itself with an invisible mark between the head word
+    and its number must still license a claim that repeats that same, real
+    self-citation — the paraphrase case from
+    `test_a_claim_may_name_an_article_that_its_own_source_names`, with an
+    RLM the model's own generation of the SOURCE left in (sources are the
+    ingested corpus text, not something this gate controls the byte
+    content of)."""
+    source_text = ("استثناء من حكم المادة \u200f(14) من هذا القانون، "
+                   "يجوز نقل البيانات بموافقة صريحة.")
+    claim_text = "يوجد استثناء بموجب المادة 14 يسمح بنقل البيانات بموافقة صريحة من صاحبها."
+    parsed = {"abstain": False, "claims": [{"text": claim_text, "sources": [1]}]}
+
+    result = gate(parsed, [7], [source_text])
+
+    assert result["ungrounded"] == 0
+    assert result["kept"] == [{"text": claim_text, "sources": [1], "copied": False}]

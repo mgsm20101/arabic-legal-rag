@@ -40,13 +40,24 @@ STRICT_CITATION = re.compile(r"\[[ \t]*(?:ال)?مادة[ \t]*\(?[ \t]*([0-9٠-�
 
 # Anything a reader would take as a reference to an article, bracketed or not,
 # singular, dual or plural: مادة ٧ · المادة (٧) · المادتين ٧ و٨ · المواد ٣٦، ٣٧
-LOOSE_HEAD = re.compile(r"(?:ال)?(?:مادة|مادتين|مادتي|مواد|مادتان)")
+_SINGULAR_HEAD = r"(?:ال)?مادة"
+_DUAL_OR_PLURAL_HEAD = r"(?:ال)?(?:مادتين|مادتي|مواد|مادتان)"
+LOOSE_HEAD = re.compile(f"{_SINGULAR_HEAD}|{_DUAL_OR_PLURAL_HEAD}")
+
+_NUMBER_GROUP = r"((?:[\(\[]?[ \t]*[0-9٠-٩۰-۹]{1,3}[ \t]*[\)\]]?[ \t]*[،,و]?[ \t]*){1,8})"
+
 LOOSE_CITATION = re.compile(
-    # The optional `:?` right after the head word recognises «المادة: 30»
-    # and «المادة :30» — a colon a reader still reads as the same reference,
-    # which the regex did not, even on already-normalised text.
-    LOOSE_HEAD.pattern + r"[ \t]*:?[ \t]*(?:رقم)?[ \t]*"
-    r"((?:[\(\[]?[ \t]*[0-9٠-٩۰-۹]{1,3}[ \t]*[\)\]]?[ \t]*[،,و]?[ \t]*){1,8})"
+    r"(?:"
+    # A colon reads the same as a space to anyone fluent — «المادة: 30»،
+    # «المادة :30» and «المادة رقم: 30» are unambiguously citations — but
+    # ONLY after the SINGULAR head word. After a dual or plural one
+    # ("المواد: 12", "عدد المواد رقم: 12") a colon is far more likely to
+    # introduce a count or a list than to cite that number as an article;
+    # unnarrowed, this once misread «عدد المواد: 12» ("number of subjects:
+    # 12") as citing article 12.
+    + _SINGULAR_HEAD + r"[ \t]*(?:رقم[ \t]*)?:?[ \t]*"
+    r"|" + _DUAL_OR_PLURAL_HEAD + r"[ \t]*(?:رقم)?[ \t]*"
+    r")" + _NUMBER_GROUP
 )
 NUMBER = re.compile(r"[0-9٠-٩۰-۹]{1,3}")
 
@@ -161,6 +172,13 @@ def audit(
     That is a follow-up in its own right, not a rider on this fix. Note
     that `LOOSE_CITATION`'s colon extension is a shared regex constant —
     unlike the normalisation question, it applies here regardless.
+
+    Confirmed real, still not fixed here: a copied sentence carrying one
+    stray diacritic escapes `copied_from_context` the same way it once did
+    in `gate`, which can flip `grounded`. Confirmed separately: normalising
+    per sentence, after the split, leaves Run 3 and Run 4 byte-identical.
+    Before any new text-contract run: normalise per sentence, after
+    splitting.
     """
     if is_abstention(text):
         return {
@@ -199,6 +217,21 @@ def audit(
     }
 
 
+# RLM, LRM, ZWNJ, ZWJ and ALM (Unicode "format" characters, category Cf)
+# have no visible glyph and are not whitespace by Python's `\s` either, so
+# one sitting between a head word and its number is invisible on screen and
+# untouched by `evaluation_normalize`'s NFKC/tashkeel/tatweel/whitespace
+# steps. `evaluation_normalize` is not the place to fix that: it is the
+# benchmark's scoring normaliser, shared with every comparison of a
+# candidate answer to a reference, and is left alone here on purpose.
+# Stripped instead in the gate's own comparison step below, on both sides.
+_INVISIBLE_FORMAT_CHARS = str.maketrans("", "", "\u200e\u200f\u200c\u200d\u061c")
+
+
+def _strip_invisible_format_chars(text: str) -> str:
+    return text.translate(_INVISIBLE_FORMAT_CHARS)
+
+
 def _gate_one_claim(
     claim: dict, source_numbers: list[int | None], source_texts: list[str], k: int,
 ) -> tuple[dict | None, dict | None]:
@@ -216,33 +249,43 @@ def _gate_one_claim(
 
     own_texts = [source_texts[s - 1] for s in sources]
     own_numbers = {source_numbers[s - 1] for s in sources if source_numbers[s - 1] is not None}
+
+    # `own_texts` reaches us already `evaluation_normalize`d — the corpus is
+    # normalised at ingest time, and that is what both the app pipeline and
+    # a saved eval row hand to `gate` as `source_texts` — but that leaves
+    # RLM/LRM/ZWNJ/ZWJ/ALM in place (see `_strip_invisible_format_chars`),
+    # and a source's own self-citation can carry one too. Stripped here,
+    # locally, for the comparison below only; `own_texts` itself is never
+    # part of what a caller sees.
+    own_texts_for_comparison = [_strip_invisible_format_chars(t) for t in own_texts]
+
     # "القانون بيحيل على نفسه" licenses an article the SOURCE'S OWN TEXT
     # names — not every number a claim happens to mention while some part
     # of it is copied. Scoped to the claim's own cited sources only: a
     # number some OTHER retrieved source names does not license a claim
     # that never cited that source.
-    numbers_in_own_sources = {n for t in own_texts for n in citations(t)}
+    numbers_in_own_sources = {n for t in own_texts_for_comparison for n in citations(t)}
     allowed = own_numbers | numbers_in_own_sources
 
-    # `own_texts` reaches us already `evaluation_normalize`d — the corpus is
-    # normalised at ingest time, and that is what both the app pipeline and
-    # a saved eval row hand to `gate` as `source_texts`. The claim's own
-    # text never goes through that step; it is the model's raw output.
-    # Checking it raw against a normalised world let a diacritic, a
-    # tatweel, or a no-break space between "مادة" and its number hide a
-    # citation from both checks below: `citations` found nothing, so the
-    # "names an article no source supports" check below passed vacuously,
-    # and a claim that should have been dropped was kept. Normalising here,
-    # the same way the sources already are, closes that gap; `text` itself
-    # stays raw below, since normalising is for comparison, not display.
-    normalised_text = evaluation_normalize(text)
+    # The claim's own text never goes through `evaluation_normalize`
+    # upstream; it is the model's raw output. Checking it raw against a
+    # normalised world let a diacritic, a tatweel, or a no-break space
+    # between "مادة" and its number hide a citation from both checks below:
+    # `citations` found nothing, so the "names an article no source
+    # supports" check below passed vacuously, and a claim that should have
+    # been dropped was kept. Normalising here, the same way the sources
+    # already are, closes that gap — and stripping the same invisible
+    # format characters as above closes the gap `evaluation_normalize`
+    # itself does not cover. `text` itself stays raw below, since
+    # normalising is for comparison, not display.
+    normalised_text = _strip_invisible_format_chars(evaluation_normalize(text))
 
     # `copied` is still computed and still reported (`report_claims`'s own
     # rate) — it just no longer decides what is allowed. See `gate`'s
     # docstring for the bug this replaces: a claim built from a 60+
     # character copied run plus one invented sentence used to have EVERY
     # number it mentioned exempted, including one the source never named.
-    copied = copied_from_context(normalised_text, own_texts)
+    copied = copied_from_context(normalised_text, own_texts_for_comparison)
 
     mentioned = citations(normalised_text)
     if any(n not in allowed for n in mentioned):

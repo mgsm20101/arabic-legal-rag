@@ -28,11 +28,14 @@ import uuid
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from time import monotonic
 
-from . import dense, pdf_text
-from .chunking import Chunk, chunk_document, may_be_statute, page_chunks, statute_chunks
+from . import dense
+from .chunking import Chunk, chunk_document
 from .dense import DenseIndex, Encoder
+# Every library error stays importable from here, where webapp and other callers take them from.
+from .docerrors import DocumentDamaged, DocumentNotFound, FileTooLarge, LibraryError, NoTextLayer, PdfTooLarge
+from .docerrors import StorageError, UnsupportedFile
+from .docextract import extract_pdf
 from .docindex import DocumentIndex, EncoderUnavailable, IndexDamaged, IndexUnreadable, LazyEncoder, index_docs
 from .docindex import load_index
 from .docstore import CHUNKS, EMBEDDINGS, META, DocMeta, clear_stale, missing
@@ -48,11 +51,6 @@ DOC_ID = re.compile(r"^[0-9a-f]{12}$")
 TEXT_ENCODINGS = ("utf-8-sig", "cp1256")
 # Staging untouched this long when a Library opens belongs to an upload that died.
 STALE_STAGING_SECONDS = 3600
-# A PDF past either limit is refused. Extraction was measured at 0.8-1.26 s a page, each pass,
-# so the budget follows the cap: budget ≈ cap × 1 s × 1.2. A statute's second, Arabic-only pass
-# shares the budget, and one that runs out leaves page chunks, not a refusal (see _pdf_chunks).
-MAX_PDF_PAGES = 250
-EXTRACTION_BUDGET_SECONDS = 300
 # A display title, not a path: long enough to recognise a file by.
 MAX_TITLE_CHARS = 120
 
@@ -62,45 +60,6 @@ _BIDI_CONTROLS = frozenset(
     map(chr, (0x061C, 0x200E, 0x200F, *range(0x202A, 0x202F), *range(0x2066, 0x206A)))
 )
 _PATH_SEPARATORS = re.compile(r"[\\/]")
-
-
-class LibraryError(Exception):
-    """Raised on purpose, with a stable `code` for an HTTP layer to map."""
-    code = "library_error"
-
-
-class UnsupportedFile(LibraryError):
-    """A bad suffix, no %PDF- magic, a .txt with NUL bytes or undecodable text, an unreadable PDF."""
-    code = "unsupported_file"
-
-
-class FileTooLarge(LibraryError):
-    code = "file_too_large"
-
-
-class PdfTooLarge(LibraryError):
-    """A PDF over MAX_PDF_PAGES pages, or still on its first extraction after EXTRACTION_BUDGET_SECONDS."""
-    code = "pdf_too_large"
-
-
-class NoTextLayer(LibraryError):
-    """Under MIN_TEXT_CHARS of extracted text: most likely a scanned PDF. OCR is out of scope."""
-    code = "no_text"
-
-
-class DocumentNotFound(LibraryError):
-    """A malformed id, an unknown one, or a soft-deleted document."""
-    code = "not_found"
-
-
-class StorageError(LibraryError):
-    """The library's own files could not be read, or are not what it wrote: staging that lost a file, an
-    index that will not load, a directory not skipped at open, a full sha256 that differs. Never the client's fault."""
-    code = "internal"
-
-
-class DocumentDamaged(StorageError):
-    """Index files that are not what the library wrote: uploading the document's bytes again replaces them."""
 
 
 @dataclass(frozen=True)
@@ -165,16 +124,15 @@ class Library:
             staging.mkdir(parents=True)
             source = staging / f"source{suffix}"
             source.write_bytes(data)
-            deadline = monotonic() + EXTRACTION_BUDGET_SECONDS  # one budget for every extraction of this upload
-            pages = _pdf_pages(source, True, deadline) if text is None else text.split("\f")
+            if text is None:
+                pages, kind, chunks = extract_pdf(doc_id, source, title)
+            else:
+                pages = text.split("\f")
+                kind, chunks = chunk_document(doc_id, pages, title)
             chars = sum(len(run) for page in pages for run in page.split())
             if chars < MIN_TEXT_CHARS:
                 raise NoTextLayer(f"only {chars} characters of text were found; at least "
                                   f"{MIN_TEXT_CHARS} are needed (a scanned PDF needs OCR first)")
-            if text is None:
-                kind, chunks = _pdf_chunks(doc_id, source, pages, title, deadline)
-            else:
-                kind, chunks = chunk_document(doc_id, pages, title)
             if not chunks:
                 raise NoTextLayer("no readable text was found in the document")
             write_chunks(staging / CHUNKS, chunks)
@@ -351,37 +309,6 @@ def _decode_text(data: bytes) -> str:
             continue
     # cp1256 decodes every byte, so under the default list the NUL check is what refuses a binary.
     raise UnsupportedFile("the text is not in an accepted encoding")
-
-
-def _pdf_chunks(doc_id: str, source: Path, pages: list[str], title: str, deadline: float) -> tuple[str, list[Chunk]]:
-    """A PDF's chunks. `pages` kept their Latin, which suits any document but a bilingual statute,
-    whose translation column welds into the Arabic lines: Law 151/2020 shows 4 articles that way
-    and 56 without. Pages showing any article header are extracted again Arabic-only, under the same
-    deadline, and chunked as a statute if that validates. Otherwise they stay page chunks, and so
-    they do when that second pass runs out of time: they are a usable document already."""
-    if may_be_statute(pages):
-        try:
-            arabic = _pdf_pages(source, False, deadline)
-        except PdfTooLarge as e:  # the deadline: these pages already passed the page cap
-            logger.warning("document %s, %d pages: its Arabic-only extraction stopped (%s), so it is "
-                           "chunked by page and not checked as a statute", doc_id, len(pages), e)
-        else:
-            statute = statute_chunks(doc_id, arabic, title)
-            if statute is not None:
-                return "statute", statute
-    return "generic", page_chunks(doc_id, pages)
-
-
-def _pdf_pages(path: Path, keep_latin: bool, deadline: float) -> list[str]:
-    """A PDF's pages within MAX_PDF_PAGES and `deadline`. keep_latin=True keeps an uploaded Arabic
-    document's inline terms (VPN, Wi-Fi, Microsoft Teams), which the default drops; its known limit,
-    a side-by-side bilingual page left unsplit, is why a statute gets a second, Arabic-only pass."""
-    try:
-        return pdf_text.extract_pages(path, keep_latin=keep_latin, max_pages=MAX_PDF_PAGES, deadline=deadline)
-    except pdf_text.ExtractionLimitExceeded as e:
-        raise PdfTooLarge(str(e)) from e
-    except Exception as e:  # a damaged PDF raises whatever pdfminer hits first
-        raise UnsupportedFile("the PDF could not be read") from e
 
 
 def _basename(filename: str | None) -> str:

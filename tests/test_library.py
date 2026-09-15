@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 pytest.importorskip("numpy")
 
+import legalrag.docextract as docextract_mod  # noqa: E402
 import legalrag.docindex as docindex_mod  # noqa: E402
 import legalrag.library as library_mod  # noqa: E402
 from legalrag import dense, pdf_text  # noqa: E402
@@ -73,7 +74,7 @@ def _refuse_new_directories(monkeypatch) -> None:
 
 
 def _fake_extract_pages(*pages: str, seen: list | None = None):
-    def fake(path, keep_latin=False, line_tol=None, *, max_pages=None, deadline=None):
+    def fake(path, keep_latin=False, line_tol=None, *, max_pages=None, deadline=None, report=None):
         if seen is not None:
             seen.append({"path": Path(path), "keep_latin": keep_latin, "max_pages": max_pages, "deadline": deadline})
         return list(pages)
@@ -365,7 +366,7 @@ def test_a_pdf_the_extractor_cannot_read_is_unsupported_and_leaves_nothing_behin
 
 
 def test_a_pdf_over_the_page_limit_is_pdf_too_large_and_leaves_nothing_behind(tmp_path, monkeypatch):
-    monkeypatch.setattr(library_mod, "MAX_PDF_PAGES", 3)
+    monkeypatch.setattr(docextract_mod, "MAX_PDF_PAGES", 3)
     library = Library(tmp_path, encoder=KeywordEncoder())
     before = _tree(tmp_path)
 
@@ -380,7 +381,7 @@ def test_a_pdf_over_the_page_limit_is_pdf_too_large_and_leaves_nothing_behind(tm
 
 
 def test_a_pdf_whose_extraction_outruns_its_budget_is_pdf_too_large_and_leaves_nothing_behind(tmp_path, monkeypatch):
-    monkeypatch.setattr(library_mod, "EXTRACTION_BUDGET_SECONDS", -1)  # the deadline has passed before page 2
+    monkeypatch.setattr(docextract_mod, "EXTRACTION_BUDGET_SECONDS", -1)  # the deadline has passed before page 2
     library = Library(tmp_path, encoder=KeywordEncoder())
     before = _tree(tmp_path)
 
@@ -396,12 +397,12 @@ def test_a_pdf_whose_extraction_outruns_its_budget_is_pdf_too_large_and_leaves_n
 def test_both_pdf_limits_reach_extract_pages_from_add(tmp_path, monkeypatch):
     seen: list[dict] = []
     monkeypatch.setattr(pdf_text, "extract_pages", _fake_extract_pages("نص مستخرج من ملف PDF " * 30, seen=seen))
-    monkeypatch.setattr(library_mod, "monotonic", lambda: 1000.0)
+    monkeypatch.setattr(docextract_mod, "monotonic", lambda: 1000.0)
     library = Library(tmp_path, encoder=KeywordEncoder())
 
     library.add(b"%PDF-1.7 within the limits", "limits.pdf")
 
-    assert (library_mod.MAX_PDF_PAGES, library_mod.EXTRACTION_BUDGET_SECONDS) == (250, 300)
+    assert (docextract_mod.MAX_PDF_PAGES, docextract_mod.EXTRACTION_BUDGET_SECONDS) == (250, 300)
     assert [(s["keep_latin"], s["max_pages"], s["deadline"]) for s in seen] == [(True, 250, 1300.0)]
 
 
@@ -423,7 +424,7 @@ RAW_STATUTE = Path(__file__).resolve().parents[1] / "data" / "raw" / "law-151-20
 
 
 def _two_pass_extractor(latin: list[str], arabic: list[str], calls: list, second_pass_error=None):
-    def fake(path, keep_latin=False, line_tol=None, *, max_pages=None, deadline=None):
+    def fake(path, keep_latin=False, line_tol=None, *, max_pages=None, deadline=None, report=None):
         calls.append((keep_latin, max_pages, deadline))
         if not keep_latin and second_pass_error is not None:
             raise second_pass_error
@@ -441,7 +442,7 @@ def test_a_statute_like_pdf_is_chunked_as_a_statute_from_a_second_arabic_only_ex
     calls: list[tuple] = []
     monkeypatch.setattr(pdf_text, "extract_pages", _two_pass_extractor(STATUTE_LATIN, STATUTE_ARABIC, calls))
     ticks = itertools.count(1000.0, 60.0)  # each reading of the clock is a minute after the last
-    monkeypatch.setattr(library_mod, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(docextract_mod, "monotonic", lambda: next(ticks))
     library = Library(tmp_path, encoder=KeywordEncoder())
 
     meta = library.add(b"%PDF-1.7 bilingual statute", "law.pdf")

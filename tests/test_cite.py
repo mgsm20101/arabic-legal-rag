@@ -6,6 +6,7 @@ correct one. These tests pin the distinctions that make it visible.
 """
 
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -825,3 +826,114 @@ def test_a_claim_naming_an_uncited_article_by_colon_before_raqm_is_ungrounded():
     assert result["ungrounded"] == 1
     assert result["dropped"][0]["reason"] == "ungrounded"
     assert result["kept"] == []
+
+
+# --- Fourth round of follow-ups: every Default_Ignorable_Code_Point, a ---
+# --- narrower bidi-hazard-only digit-adjacency rule, and a cubic-regex ---
+# --- backtracking fix in LOOSE_CITATION -----------------------------------
+#
+# A reviewer found the previous fix still too narrow in one direction (Cf
+# alone misses non-Cf Default_Ignorable characters) and too broad in
+# another (every Cf/Default_Ignorable character between two digits was
+# dropped, when only a BIDI HAZARD actually makes the digit order
+# ambiguous) -- plus a pre-existing cubic backtracking blowup in the
+# citation regex itself, unrelated to either fix.
+
+_DEFAULT_IGNORABLE_NON_CF = {
+    "cgj": "\u034F",
+    "vs16": "\uFE0F",
+    "hangul_filler": "\u3164",
+}
+
+
+@pytest.mark.parametrize("mark", _DEFAULT_IGNORABLE_NON_CF.values(),
+                          ids=_DEFAULT_IGNORABLE_NON_CF.keys())
+def test_a_claim_naming_an_uncited_article_is_ungrounded_across_a_non_cf_default_ignorable_character(mark):
+    """Cf covers RLM/LRM/.../ZWSP; Default_Ignorable_Code_Point is wider
+    still and includes marks with no Cf category at all: CGJ (Mn), a
+    variation selector (Mn), the Hangul filler (Lo). All three must be
+    stripped in the gate's comparison exactly like the Cf members are."""
+    claim_text = f"يلزم الحفظ لمدة سنة كاملة المادة {mark}30."
+    parsed = {"abstain": False, "claims": [{"text": claim_text, "sources": [1]}]}
+
+    result = gate(parsed, SOURCE_NUMBERS, SOURCE_TEXTS)
+
+    assert result["ungrounded"] == 1
+    assert result["dropped"][0]["reason"] == "ungrounded"
+    assert result["kept"] == []
+
+
+_BIDI_HAZARDS_BETWEEN_DIGITS = {
+    "rlm": "\u200F",
+    "alm": "\u061C",
+    "tatweel": "\u0640",
+    "small_waw": "\u06E5",
+}
+
+
+@pytest.mark.parametrize("mark", _BIDI_HAZARDS_BETWEEN_DIGITS.values(),
+                          ids=_BIDI_HAZARDS_BETWEEN_DIGITS.keys())
+def test_a_bidi_hazard_between_two_digits_drops_the_claim(mark):
+    """RLM and ALM force right-to-left/Arabic-letter direction directly;
+    tatweel and the Quranic small-waw mark are bidi AL too, and are only
+    caught because the check now runs BEFORE evaluation_normalize erases
+    them (detatweel, tashkeel-strip) -- checked after, as before this fix,
+    the hazard would already be gone by the time the check ran."""
+    claim_text = f"يلزم الحفظ بموجب المادة 1{mark}2 لمدة سنة كاملة."
+    parsed = {"abstain": False, "claims": [{"text": claim_text, "sources": [1]}]}
+
+    result = gate(parsed, [12], ["نص يذكر المادة 12 بوضوح تام."])
+
+    assert result["ungrounded"] == 1
+    assert result["dropped"][0]["reason"] == "ungrounded"
+    assert result["dropped"][0]["text"] == claim_text
+    assert result["kept"] == []
+
+
+_SAFE_GAPS_BETWEEN_DIGITS = {
+    "lrm": "\u200E",
+    "zwsp": "\u200B",
+    "zwj": "\u200D",
+    "cgj": "\u034F",
+}
+
+
+@pytest.mark.parametrize("mark", _SAFE_GAPS_BETWEEN_DIGITS.values(),
+                          ids=_SAFE_GAPS_BETWEEN_DIGITS.keys())
+def test_a_non_hazard_gap_between_two_digits_is_still_joined_and_kept(mark):
+    """Narrower than the previous fix on purpose: LRM (bidi L), ZWSP/ZWJ
+    (bidi BN) and CGJ (Mn, bidi NSM, not even Cf) cannot change which
+    digit reads first, so stripping and joining them is safe -- unlike the
+    previous fix, which dropped every one of these too."""
+    claim_text = f"يلزم الحفظ بموجب المادة 1{mark}2 لمدة سنة كاملة."
+    parsed = {"abstain": False, "claims": [{"text": claim_text, "sources": [1]}]}
+
+    result = gate(parsed, [12], ["نص يذكر المادة 12 بوضوح تام."])
+
+    assert result["ungrounded"] == 0
+    assert result["kept"] == [{"text": claim_text, "sources": [1], "copied": False}]
+
+
+def test_citations_stays_fast_on_a_long_run_of_spaces():
+    """LOOSE_CITATION's whitespace used to be unbounded ("[ \t]*"),
+    several in a row over the same class -- when what follows fails to
+    match, the backtracking cost grew with the SQUARE of a run of spaces
+    (measured before this fix: "مادة" + 800 spaces took 2.4s)."""
+    text = "مادة" + " " * 800
+    start = time.perf_counter()
+    result = citations(text)
+    elapsed = time.perf_counter() - start
+    assert elapsed < 1.0
+    assert result == []
+
+
+def test_audit_stays_fast_on_a_long_run_of_spaces_inside_a_sentence():
+    """gate() never sees this: evaluation_normalize collapses whitespace
+    before citations() runs on it. audit() matches raw, un-collapsed
+    sentence text by design (see its docstring), so the regex itself has
+    to stay cheap regardless of caller."""
+    text = "مادة" + " " * 800 + " كلام عادي يكمل به الجملة هنا فعلا."
+    start = time.perf_counter()
+    audit(text, set(), set())
+    elapsed = time.perf_counter() - start
+    assert elapsed < 1.0

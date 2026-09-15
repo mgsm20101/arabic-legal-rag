@@ -34,10 +34,26 @@ from __future__ import annotations
 import re
 import unicodedata
 
-from .normalize import evaluation_normalize, normalize_digits
+from .normalize import TASHKEEL, TATWEEL, evaluation_normalize, normalize_digits
+
+# Whitespace between citation tokens, bounded rather than "*": several
+# unbounded "[ \t]*" in a row over the same class made LOOSE_CITATION's
+# match cost grow with the SQUARE of a run of spaces once what follows
+# fails to match (measured: "مادة" + 800 spaces took 2.4s).
+# gate() never sees this, because evaluation_normalize collapses
+# whitespace before citations() runs on it - but audit() matches on raw,
+# un-collapsed sentence text by design (see its docstring), so the regex
+# itself has to stay cheap regardless of caller. No real citation has
+# more than a handful of spaces between its parts; 20 is generous
+# headroom, and a bounded quantifier's backtracking cost stays flat
+# instead of growing with the input, unlike an unbounded one.
+_WS = r"[ \t]{0,20}"
 
 # The form the prompt requires: [مادة 7] or [المادة ٧]
-STRICT_CITATION = re.compile(r"\[[ \t]*(?:ال)?مادة[ \t]*\(?[ \t]*([0-9٠-٩۰-۹]{1,3})[ \t]*\)?[ \t]*\]")
+STRICT_CITATION = re.compile(
+    r"\[" + _WS + r"(?:ال)?مادة" + _WS + r"\(?" + _WS
+    + r"([0-9٠-٩۰-۹]{1,3})" + _WS + r"\)?" + _WS + r"\]"
+)
 
 # Anything a reader would take as a reference to an article, bracketed or not,
 # singular, dual or plural: مادة ٧ · المادة (٧) · المادتين ٧ و٨ · المواد ٣٦، ٣٧
@@ -45,7 +61,10 @@ _SINGULAR_HEAD = r"(?:ال)?مادة"
 _DUAL_OR_PLURAL_HEAD = r"(?:ال)?(?:مادتين|مادتي|مواد|مادتان)"
 LOOSE_HEAD = re.compile(f"{_SINGULAR_HEAD}|{_DUAL_OR_PLURAL_HEAD}")
 
-_NUMBER_GROUP = r"((?:[\(\[]?[ \t]*[0-9٠-٩۰-۹]{1,3}[ \t]*[\)\]]?[ \t]*[،,و]?[ \t]*){1,8})"
+_NUMBER_GROUP = (
+    r"((?:[\(\[]?" + _WS + r"[0-9٠-٩۰-۹]{1,3}" + _WS
+    + r"[\)\]]?" + _WS + r"[،,و]?" + _WS + r"){1,8})"
+)
 
 LOOSE_CITATION = re.compile(
     r"(?:"
@@ -57,8 +76,8 @@ LOOSE_CITATION = re.compile(
     # than to cite that number as an article; unnarrowed, this once
     # misread «عدد المواد: 12» ("number of subjects: 12") as citing
     # article 12.
-    + _SINGULAR_HEAD + r"[ \t]*:?[ \t]*(?:رقم[ \t]*:?[ \t]*)?"
-    r"|" + _DUAL_OR_PLURAL_HEAD + r"[ \t]*(?:رقم)?[ \t]*"
+    + _SINGULAR_HEAD + _WS + r":?" + _WS + r"(?:رقم" + _WS + r":?" + _WS + r")?"
+    r"|" + _DUAL_OR_PLURAL_HEAD + _WS + r"(?:رقم)?" + _WS +
     r")" + _NUMBER_GROUP
 )
 NUMBER = re.compile(r"[0-9٠-٩۰-۹]{1,3}")
@@ -219,58 +238,135 @@ def audit(
     }
 
 
-# Every Unicode category Cf ("format") character \u2014 RLM, LRM, ZWNJ, ZWJ,
-# ALM, ZWSP (U+200B), word joiner (U+2060), the BOM (U+FEFF), soft hyphen
-# (U+00AD), the bidi embeddings/overrides (U+202A-202E) and isolates
-# (U+2066-2069), and any future addition to the category \u2014 has no visible
-# glyph and is not whitespace by Python's `\s` either, so one sitting
-# between a head word and its number, or between two digits, is invisible
-# on screen and untouched by `evaluation_normalize`'s NFKC/tashkeel/
-# tatweel/whitespace steps. `evaluation_normalize` is not the place to fix
-# that: it is the benchmark's scoring normaliser, shared with every
-# comparison of a candidate answer to a reference, and is left alone here
-# on purpose. Handled instead in the gate's own comparison step below, on
-# both sides \u2014 tested against `unicodedata.category` directly rather than
-# a fixed list, so a Cf character no one has hit yet is still covered.
-def _is_format_char(ch: str) -> bool:
-    return unicodedata.category(ch) == "Cf"
+# Two different notions of "invisible", both handled here rather than in
+# evaluation_normalize (the benchmark's shared scoring normaliser, left
+# alone on purpose - see its own module docstring):
+#
+# 1. Every Unicode category Cf ("format") character, UNIONED with every
+#    Default_Ignorable_Code_Point (DerivedCoreProperties.txt) - a wider
+#    property than Cf alone: it also covers combining marks such as CGJ
+#    (U+034F, category Mn) and variation selectors (U+FE00-FE0F, category
+#    Mn), and letter-like filler characters (category Lo) such as the
+#    Hangul fillers. None of these have a visible glyph, none are
+#    whitespace by Python's `\s`, and none are touched by
+#    evaluation_normalize's NFKC/tashkeel/tatweel/whitespace steps - so
+#    one sitting between a head word and its number is invisible on
+#    screen and invisible to a raw string compare. Tested against
+#    `unicodedata.category` plus an explicit range table (Python has no
+#    Default_Ignorable_Code_Point lookup of its own), rather than a fixed
+#    character list, so a member no one has hit yet is still covered.
+# 2. Whether a character between two digits is a BIDI HAZARD: forces
+#    right-to-left or Arabic-letter reading direction (bidi class R or
+#    AL), or is an explicit embedding/override/isolate control. See
+#    `_has_unsafe_gap_between_digits`.
+def _is_invisible(ch: str) -> bool:
+    return unicodedata.category(ch) == "Cf" or _is_default_ignorable(ord(ch))
 
 
-def _strip_invisible_format_chars(text: str) -> str:
-    return "".join(ch for ch in text if not _is_format_char(ch))
+# DerivedCoreProperties.txt's Default_Ignorable_Code_Point ranges that are
+# not already category Cf (some entries below overlap Cf; the overlap is
+# harmless, this is a union either way). Kept as an explicit, commented
+# table: Python's unicodedata has no property lookup for this one.
+_DEFAULT_IGNORABLE_RANGES = (
+    (0x00AD, 0x00AD),    # soft hyphen
+    (0x034F, 0x034F),    # combining grapheme joiner (CGJ)
+    (0x061C, 0x061C),    # Arabic letter mark (ALM) - also Cf
+    (0x115F, 0x1160),    # Hangul choseong/jungseong filler
+    (0x17B4, 0x17B5),    # Khmer inherent vowels AQ/AA
+    (0x180B, 0x180F),    # Mongolian free variation selectors + MVS
+    (0x200B, 0x200F),    # ZWSP, ZWNJ, ZWJ, LRM, RLM - also Cf
+    (0x202A, 0x202E),    # bidi embeddings/overrides - also Cf
+    (0x2060, 0x206F),    # word joiner and other deprecated format chars
+    (0x3164, 0x3164),    # Hangul filler
+    (0xFE00, 0xFE0F),    # variation selectors 1-16
+    (0xFEFF, 0xFEFF),    # byte order mark - also Cf
+    (0xFFA0, 0xFFA0),    # halfwidth Hangul filler
+    (0xFFF0, 0xFFF8),    # reserved/unassigned, default ignorable
+    (0x1BCA0, 0x1BCA3),  # shorthand format controls
+    (0x1D173, 0x1D17A),  # musical symbol format controls
+    (0xE0000, 0xE0FFF),  # tags, and variation selectors supplement
+)
+
+
+def _is_default_ignorable(cp: int) -> bool:
+    return any(lo <= cp <= hi for lo, hi in _DEFAULT_IGNORABLE_RANGES)
+
+
+def _strip_invisible_chars(text: str) -> str:
+    return "".join(ch for ch in text if not _is_invisible(ch))
 
 
 _DIGITS = "0123456789\u0660\u0661\u0662\u0663\u0664\u0665\u0666\u0667\u0668\u0669\u06f0\u06f1\u06f2\u06f3\u06f4\u06f5\u06f6\u06f7\u06f8\u06f9"
 
+# Characters evaluation_normalize itself removes, ON TOP of what the gate
+# additionally strips (_is_invisible): tashkeel (Arabic diacritics) and
+# tatweel. Needed for _has_unsafe_gap_between_digits, which must run
+# BEFORE evaluation_normalize - see there for why.
+def _removed_before_comparison(ch: str) -> bool:
+    return bool(TASHKEEL.match(ch)) or ch == TATWEEL or _is_invisible(ch)
 
-def _has_format_char_between_digits(text: str) -> bool:
-    """True if a Cf character sits directly between two digits, with
-    nothing else between them.
 
-    RLM between "1" and "2" makes `_strip_invisible_format_chars` read
-    "12" \u2014 but a bidi-aware renderer displays that same text as "21"
-    (UAX#9): the mark changes which digit a reader sees first. Joining the
-    two digits guesses at a number the claim never unambiguously named,
-    and splitting them (treating each as its own number) is not obviously
-    safer either. Neither is attempted: a claim whose text has this
-    anywhere is dropped outright, before any number is read from it.
+# The embedding, override and isolate controls: each has ITS OWN unique
+# bidi class (LRE, RLE, PDF, LRO, RLO, LRI, RLI, FSI, PDI - never plain
+# "R" or "AL"), but each is exactly as able to flip which digit reads
+# first as an R/AL character is, so checked for explicitly alongside the
+# R/AL test below.
+_EMBEDDING_OVERRIDE_ISOLATE = "\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"
 
-    Between a letter and a digit, or between two letters, a Cf character
-    is stripped as before \u2014 this check fires only on digit-Cf(+)-digit.
+
+def _is_bidi_hazard(ch: str) -> bool:
+    """A character that can change which of two digits either side of it
+    reads first (UAX#9): forces right-to-left or Arabic-letter direction,
+    or is an explicit embedding/override/isolate control."""
+    return ch in _EMBEDDING_OVERRIDE_ISOLATE or unicodedata.bidirectional(ch) in ("R", "AL")
+
+
+def _has_unsafe_gap_between_digits(text: str) -> bool:
+    """True if two digits are separated only by characters the gate's
+    comparison would remove (_removed_before_comparison), AND at least
+    one of those characters is a bidi hazard (_is_bidi_hazard).
+
+    RLM between "1" and "2" makes a plain strip read "12" - but a
+    bidi-aware renderer displays that same text as "21" (UAX#9): the mark
+    changes which digit a reader sees first. Joining the two digits
+    guesses at a number the claim never unambiguously named, and
+    splitting them (treating each as its own number) is not obviously
+    safer either. Neither is attempted: a claim with a bidi hazard
+    anywhere between two digits is dropped outright, before any number is
+    read from it.
+
+    Not every character removed before comparison is a hazard: LRM (bidi
+    L), ZWSP/ZWJ (bidi BN) and CGJ (Mn, bidi NSM, not even Cf) are all
+    safe to strip and join, since none of them can change reading order -
+    only R/AL characters and the explicit direction controls can. Tatweel
+    (U+0640) and the Quranic small-waw/yeh marks (U+06E5/U+06E6) ARE
+    hazards (bidi AL) even though evaluation_normalize removes them too
+    (detatweel, tashkeel-strip) - which is exactly why this check must run
+    on text BEFORE evaluation_normalize touches it: normalised first, the
+    hazard would already be gone by the time this function ever saw it.
+
+    Between a letter and a digit, or between two letters, nothing here
+    matters either way - this check fires only on digit-gap-digit.
     """
     seen_digit = False
-    format_chars_since_digit = 0
+    gap_is_nonempty = False
+    gap_has_hazard = False
     for ch in text:
         if ch in _DIGITS:
-            if seen_digit and format_chars_since_digit > 0:
+            if seen_digit and gap_is_nonempty and gap_has_hazard:
                 return True
             seen_digit = True
-            format_chars_since_digit = 0
-        elif _is_format_char(ch):
-            format_chars_since_digit += 1
+            gap_is_nonempty = False
+            gap_has_hazard = False
+        elif _removed_before_comparison(ch):
+            if seen_digit:
+                gap_is_nonempty = True
+                if _is_bidi_hazard(ch):
+                    gap_has_hazard = True
         else:
             seen_digit = False
-            format_chars_since_digit = 0
+            gap_is_nonempty = False
+            gap_has_hazard = False
     return False
 
 
@@ -295,11 +391,11 @@ def _gate_one_claim(
     # `own_texts` reaches us already `evaluation_normalize`d — the corpus is
     # normalised at ingest time, and that is what both the app pipeline and
     # a saved eval row hand to `gate` as `source_texts` — but that leaves
-    # RLM/LRM/ZWNJ/ZWJ/ALM in place (see `_strip_invisible_format_chars`),
+    # every Cf/Default_Ignorable character in place (see `_is_invisible`),
     # and a source's own self-citation can carry one too. Stripped here,
     # locally, for the comparison below only; `own_texts` itself is never
     # part of what a caller sees.
-    own_texts_for_comparison = [_strip_invisible_format_chars(t) for t in own_texts]
+    own_texts_for_comparison = [_strip_invisible_chars(t) for t in own_texts]
 
     # "القانون بيحيل على نفسه" licenses an article the SOURCE'S OWN TEXT
     # names — not every number a claim happens to mention while some part
@@ -309,6 +405,16 @@ def _gate_one_claim(
     numbers_in_own_sources = {n for t in own_texts_for_comparison for n in citations(t)}
     allowed = own_numbers | numbers_in_own_sources
 
+    # `_has_unsafe_gap_between_digits` runs on the claim's RAW text, before
+    # any normalisation - evaluation_normalize's own detatweel and
+    # tashkeel-strip steps would otherwise erase tatweel and the Quranic
+    # small-waw/yeh marks before this check ever saw them, and both are
+    # bidi AL, exactly the hazard this check exists to catch. See
+    # `_has_unsafe_gap_between_digits` for why a hazard between two digits
+    # means the claim is dropped outright, never joined and never split.
+    if _has_unsafe_gap_between_digits(text):
+        return None, {"text": text, "sources": sources, "reason": "ungrounded"}
+
     # The claim's own text never goes through `evaluation_normalize`
     # upstream; it is the model's raw output. Checking it raw against a
     # normalised world let a diacritic, a tatweel, or a no-break space
@@ -317,20 +423,10 @@ def _gate_one_claim(
     # supports" check below passed vacuously, and a claim that should have
     # been dropped was kept. Normalising here, the same way the sources
     # already are, closes that gap — and stripping the same invisible
-    # format characters as above closes the gap `evaluation_normalize`
-    # itself does not cover. `text` itself stays raw below, since
-    # normalising is for comparison, not display.
-    normalised_for_digits = evaluation_normalize(text)
-
-    # Checked BEFORE stripping: once the format characters are gone, "1"
-    # and "2" with an RLM between them are indistinguishable from a plain
-    # "12" — see `_has_format_char_between_digits` for why neither joining
-    # nor splitting them is safe. A claim with this anywhere is dropped
-    # outright, never mind what number `citations` might otherwise read.
-    if _has_format_char_between_digits(normalised_for_digits):
-        return None, {"text": text, "sources": sources, "reason": "ungrounded"}
-
-    normalised_text = _strip_invisible_format_chars(normalised_for_digits)
+    # characters as above closes the gap `evaluation_normalize` itself does
+    # not cover. `text` itself stays raw below, since normalising is for
+    # comparison, not display.
+    normalised_text = _strip_invisible_chars(evaluation_normalize(text))
 
     # `copied` is still computed and still reported (`report_claims`'s own
     # rate) — it just no longer decides what is allowed. See `gate`'s

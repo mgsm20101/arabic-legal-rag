@@ -1,4 +1,4 @@
-"""Static checks on the chat page: ui/app.html, ui/app.css and ui/app.js.
+"""Static checks on the chat page: ui/app.html, ui/app.css, and ui/app.js with its modules.
 
 No browser. Each test reads the files as text and pins one property that the
 page's safety or its API contract rests on, and that an edit could break with
@@ -8,7 +8,9 @@ no visible symptom:
 - nothing on the page needs an exception to its Content-Security-Policy, and
   nothing is loaded from another origin;
 - every request goes through one helper that sends the app header;
-- every abstain reason the API can return has its Arabic sentence.
+- every script the page imports is one the server serves;
+- every abstain reason the API can return has its Arabic sentence;
+- every count the page shows agrees with its noun.
 
 Every scan first runs on known-bad samples, so a pattern that has quietly
 stopped matching cannot pass for a clean page.
@@ -16,6 +18,7 @@ stopped matching cannot pass for a clean page.
 
 from __future__ import annotations
 
+import posixpath
 import re
 import unicodedata
 from pathlib import Path
@@ -24,9 +27,17 @@ UI = Path(__file__).resolve().parents[1] / "ui"
 
 TAG = re.compile(r"<[a-zA-Z][^>]*>")
 
+# The scripts the server serves, and nothing else: the entry and its five modules.
+ALLOWLISTED_JS = ("app.js", "js/copy.js", "js/api.js", "js/dom.js", "js/documents.js", "js/chat.js")
+
 
 def _read(name: str) -> str:
     return (UI / name).read_text(encoding="utf-8")
+
+
+def _all_js() -> str:
+    """Every allowlisted script as one text, so that no scan can miss a module."""
+    return "\n;\n".join(_read(name) for name in ALLOWLISTED_JS)
 
 
 def _attr(tag: str, name: str) -> str | None:
@@ -83,7 +94,7 @@ def test_the_chat_page_never_assigns_html_from_strings():
         assert _html_sinks(sample), f"the scan misses {sample!r}"
     assert _html_sinks(SAFE_JS_SAMPLE) == []
 
-    source = _read("app.js")
+    source = _all_js()
     assert _html_sinks(source) == []
     assert "textContent" in source, "server text is expected to render as text"
 
@@ -176,10 +187,10 @@ def test_the_chat_page_is_rtl_arabic_and_loads_only_its_own_assets():
     assert scripts == ["app.js"]
     assert _urls(html) == ["app.css", "app.js"]
 
-    for name in ("app.html", "app.css", "app.js"):
+    for name in ("app.html", "app.css", *ALLOWLISTED_JS):
         assert not EXTERNAL_URL.search(_read(name)), f"{name} names an http(s) URL"
     assert not CSS_LOAD.search(_read("app.css")), "app.css loads a resource"
-    assert not JS_PROTOCOL_RELATIVE.search(_read("app.js")), "app.js names a protocol-relative URL"
+    assert not JS_PROTOCOL_RELATIVE.search(_all_js()), "a script names a protocol-relative URL"
 
 
 # --- one request helper, and it sends the app header ------------------------
@@ -294,7 +305,7 @@ def test_every_request_goes_through_one_helper_that_sends_the_app_header():
         assert _request_problems(sample), f"the scan misses {label}"
     assert _request_problems(GOOD_REQUEST_SAMPLE) == []
 
-    assert _request_problems(_read("app.js")) == []
+    assert _request_problems(_all_js()) == []
 
 
 # --- every abstain reason has its sentence ----------------------------------
@@ -319,9 +330,9 @@ def _nfc(text: str) -> str:
 
 
 def test_every_abstain_reason_in_the_contract_has_an_arabic_sentence():
-    source = _read("app.js")
+    source = _all_js()
     table = re.search(r"const ABSTAIN_SENTENCES = Object\.freeze\(\{(.*?)\}\);", source, re.S)
-    assert table, "app.js has no ABSTAIN_SENTENCES table"
+    assert table, "no script has an ABSTAIN_SENTENCES table"
     entries = re.findall(r"^\s*([a-z_]+)\s*:\s*\"([^\"]*)\",?\s*$", table.group(1), re.M)
     assert {reason: _nfc(text) for reason, text in entries} == {
         reason: _nfc(text) for reason, text in ABSTAIN_SENTENCES.items()
@@ -353,4 +364,166 @@ def test_the_chat_page_keeps_nothing_in_browser_storage():
     for sample in STORAGE_SAMPLES:
         assert BROWSER_STORAGE.search(sample), f"the scan misses {sample!r}"
 
-    assert not BROWSER_STORAGE.search(_read("app.js"))
+    assert not BROWSER_STORAGE.search(_all_js())
+
+
+# --- every script the page imports is one the server serves ------------------
+
+IMPORT_SPECIFIER = re.compile(
+    r"^\s*(?:import|export)\b[^;'\"`]*?\bfrom\s*(['\"])(?P<spec>[^'\"]+)\1"
+    r"|^\s*import\s*(['\"])(?P<bare>[^'\"]+)\3",
+    re.M,
+)
+
+IMPORT_SAMPLES = {
+    "a bare specifier": {"app.js": 'import { html } from "lit";'},
+    "a URL": {"app.js": 'import confetti from "https://cdn.example/confetti.js";'},
+    "a module the server does not serve": {"app.js": 'import { x } from "./js/extra.js";'},
+    "a path that climbs out of ui/": {"app.js": 'import "../src/legalrag/secret.js";'},
+    "a multi-line import of a missing module": {"app.js": 'import {\n  a,\n  b,\n} from "./js/gone.js";'},
+    "a re-export of a missing module": {"app.js": 'export { a } from "./js/gone.js";'},
+    "a module nothing imports": {
+        "app.js": 'import { a } from "./js/a.js";',
+        "js/a.js": "export const a = 1;",
+        "js/b.js": "export const b = 2;",
+    },
+}
+
+GOOD_IMPORT_SAMPLE = {
+    "app.js": 'import { api } from "./js/api.js";\nimport {\n  TEXT,\n} from "./js/copy.js";',
+    "js/api.js": 'import { TEXT } from "./copy.js";\nexport async function api() {}',
+    "js/copy.js": 'export const TEXT = Object.freeze({ from: "a key, not an import" });',
+}
+
+
+def _import_problems(files: dict[str, str]) -> list[str]:
+    """Imports that are not relative or resolve outside `files`, and files app.js never reaches."""
+    problems: list[str] = []
+    imports: dict[str, set[str]] = {name: set() for name in files}
+    for name, source in files.items():
+        for match in IMPORT_SPECIFIER.finditer(source):
+            spec = match.group("spec") or match.group("bare")
+            if not spec.startswith(("./", "../")):
+                problems.append(f"{name} imports {spec!r}, which is not a relative path")
+                continue
+            target = posixpath.normpath(posixpath.join(posixpath.dirname(name), spec))
+            if target in files:
+                imports[name].add(target)
+            else:
+                problems.append(f"{name} imports {spec!r}, which resolves to {target!r}, not an allowlisted file")
+    reached, pending = {"app.js"}, ["app.js"]
+    while pending:
+        for target in imports.get(pending.pop(), set()) - reached:
+            reached.add(target)
+            pending.append(target)
+    return problems + [f"{name} is never imported from app.js" for name in files if name not in reached]
+
+
+def test_every_relative_import_resolves_to_an_allowlisted_file():
+    for label, files in IMPORT_SAMPLES.items():
+        assert _import_problems(files), f"the scan misses {label}"
+    assert _import_problems(GOOD_IMPORT_SAMPLE) == []
+
+    on_disk = sorted(path.relative_to(UI).as_posix() for path in UI.rglob("*.js"))
+    assert on_disk == sorted(ALLOWLISTED_JS), "a script under ui/ that the server would not serve"
+    assert _import_problems({name: _read(name) for name in ALLOWLISTED_JS}) == []
+
+    scripts = [tag for tag in TAG.findall(_read("app.html")) if re.match(r"<script\b", tag, re.I)]
+    assert [(_attr(tag, "type"), _attr(tag, "src")) for tag in scripts] == [("module", "app.js")]
+
+
+# --- every count agrees with its noun -----------------------------------------
+
+# How each counted noun reads, in the order Intl.PluralRules("ar") names the
+# categories: «one» and «two» stand in for the number itself; «few» follows
+# 3-10; «many» follows 11-99, where the noun is a singular tamyiz, so a
+# masculine noun takes tanween; «other» follows 100-102 and the like. Zero
+# takes the «few» form.
+COUNT_FORMS = {
+    "page": ("صفحة واحدة", "صفحتان", "صفحات", "صفحة", "صفحة"),
+    "article": ("مادة واحدة", "مادتان", "مواد", "مادة", "مادة"),
+    "chunk": ("مقطع واحد", "مقطعان", "مقاطع", "مقطعاً", "مقطع"),
+    "sentence": ("جملة واحدة", "جملتان", "جمل", "جملة", "جملة"),
+    "second": ("ثانية واحدة", "ثانيتان", "ثوانٍ", "ثانية", "ثانية"),
+    "document": ("مستند واحد", "مستندان", "مستندات", "مستنداً", "مستند"),
+    "letter": ("حرف واحد", "حرفان", "أحرف", "حرفاً", "حرف"),
+}
+
+HARAKAT = re.compile(r"[ً-ْ]")
+_COUNTED_WORDS = sorted(
+    {HARAKAT.sub("", form) for forms in COUNT_FORMS.values() for form in forms[2:]}, key=len, reverse=True
+)
+NUMBER_BEFORE_NOUN = re.compile(
+    r"(?:\$\{[^}]*\}|[0-9٠-٩]+)\s*(?:" + "|".join(map(re.escape, _COUNTED_WORDS)) + ")"
+)
+COUNT_TABLE = re.compile(r"export const COUNT_FORMS = Object\.freeze\(\{.*?\}\);", re.S)
+FORMAT_COUNT_CALL = re.compile(r"(?<!function )\bformatCount\(")
+
+COUNT_SAMPLES = {
+    "a number interpolated before a noun": "const pages = (n) => `${n} صفحة`;",
+    "a count written out": 'const kind = "قانون · 49 مادة";',
+    "a dual written by hand": 'const note = "حُذفت جملتان";',
+    "an unknown noun": 'const size = formatCount(n, "pages");',
+    "a call the scan cannot read": 'const wait = formatCount(Math.floor(ms / 1000), "second");',
+}
+
+GOOD_COUNT_SAMPLE = (
+    "export const COUNT_FORMS = Object.freeze({\n"
+    '  page: countForms("صفحة واحدة", "صفحتان", "صفحات", "صفحة", "صفحة"),\n'
+    "});\n"
+    "export function formatCount(n, noun) { return `${n} ${noun}`; }\n"
+    'const kind = (n) => `قانون · ${formatCount(n, "article")}`;\n'
+)
+
+
+def _count_problems(js: str, html: str = "") -> list[str]:
+    """Counts shown without the plural formatter, or through it with a noun it does not know."""
+    outside = COUNT_TABLE.sub("", js)
+    text = outside + "\n" + html
+    problems = [f"a number set against a noun: {m.group(0)!r}" for m in NUMBER_BEFORE_NOUN.finditer(text)]
+    problems += [
+        f"a count form outside COUNT_FORMS: {form!r}"
+        for forms in COUNT_FORMS.values()
+        for form in forms[:2]
+        if _nfc(form) in _nfc(text)
+    ]
+    calls = re.findall(r"(?<!function )\bformatCount\(([^()]*)\)", outside)
+    if len(calls) != len(FORMAT_COUNT_CALL.findall(outside)):
+        problems.append("a formatCount call whose arguments the scan cannot read")
+    for arguments in calls:
+        noun = re.fullmatch(r'[^,]+,\s*"(\w+)"', arguments.strip())
+        if noun is None or noun.group(1) not in COUNT_FORMS:
+            problems.append(f"formatCount({arguments}) names no noun in COUNT_FORMS")
+    return problems
+
+
+def test_every_count_on_the_page_goes_through_the_plural_formatter():
+    for label, sample in COUNT_SAMPLES.items():
+        assert _count_problems(sample), f"the scan misses {label}"
+    assert _count_problems(GOOD_COUNT_SAMPLE) == []
+
+    assert _count_problems(_all_js(), _read("app.html")) == []
+
+
+def test_the_count_forms_follow_arabic_number_agreement():
+    copy = _read("js/copy.js")
+    assert 'new Intl.PluralRules("ar")' in copy
+    assert "function countForms(one, two, few, many, other)" in copy
+    table = COUNT_TABLE.search(copy)
+    assert table, "js/copy.js has no COUNT_FORMS table"
+    rows = re.findall(r'^\s*(\w+): countForms\(((?:"[^"]+"(?:, )?){5})\),$', table.group(0), re.M)
+    parsed = {noun: tuple(_nfc(form) for form in re.findall(r'"([^"]+)"', forms)) for noun, forms in rows}
+    assert parsed == {noun: tuple(_nfc(form) for form in forms) for noun, forms in COUNT_FORMS.items()}
+
+
+# --- the limits the server enforces ---------------------------------------------
+
+
+def test_the_limits_are_stated_as_the_server_enforces_them():
+    copy = _read("js/copy.js")
+    assert "export const MAX_DOC_IDS = 20;" in copy
+    assert "export const MAX_UPLOAD_MB = 20;" in copy
+    # a file just over the limit is told the limit, never its own size rounded to read as the limit
+    assert "tooLarge: `الحد الأقصى لحجم الملف ${MAX_UPLOAD_MB} ميجابايت.`," in copy
+    assert "formatSize(file.size)" not in _all_js()
+    assert 'يمكن اختيار ${formatCount(MAX_DOC_IDS, "document")} كحد أقصى، أو اختيار الكل.' in copy

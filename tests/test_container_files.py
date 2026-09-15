@@ -8,7 +8,9 @@ Without a build, these checks are all the verification the Dockerfile,
   those directories out, and no RUN can download a model while the image builds;
 - the app runs as a non-root user that owns the directories it writes;
 - the port is published on the host's loopback only;
-- the image looks for its data and its model cache where compose mounts them.
+- the image looks for its data and its model cache where compose mounts them;
+- the image installs its requirements under constraints.txt, and a CUDA torch
+  fails the build.
 
 The Dockerfile and .dockerignore are read as Docker reads them; a harmless
 rewrite (`EXPOSE 8000/tcp`, `USER 1000`, `data/**`) still passes. The compose
@@ -27,9 +29,10 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_DIRS = ("data", "runs", "models")
-# All the image may copy from the build context: the app, and the synthetic
-# demo document it is shown with (evals/app/README.md). Never `.`.
-IMAGE_SOURCES = {"src", "ui", "tasks.py", "requirements.txt", "evals/app"}
+# All the image may copy from the build context: the app, the constraints its
+# requirements install under, and the synthetic demo document it is shown with
+# (evals/app/README.md). Never `.`.
+IMAGE_SOURCES = {"src", "ui", "tasks.py", "requirements.txt", "constraints.txt", "evals/app"}
 APP_CMD = ["python", "tasks.py", "app", "--host", "0.0.0.0", "--port", "8000"]
 # Anything that would fetch a model while the image builds: the weights belong
 # in the hf-cache volume at run time, never in a layer.
@@ -245,3 +248,59 @@ def test_the_app_service_is_built_here_and_reaches_ollama_on_the_host():
     assert environment.get("OLLAMA_HOST") == "http://host.docker.internal:11434"
     assert environment.get("LEGALRAG_MODEL") == "ollama:gemma3:4b"
     assert _pairs(app.get("extra_hosts"), ":=").get("host.docker.internal") == "host-gateway"
+
+
+# --- one pinned set for the image: constraints.txt, and no CUDA torch --------------
+
+CPU_INDEX = "https://download.pytorch.org/whl/cpu"
+
+
+def _pip_installs(stage: list[tuple[str, str]]) -> list[tuple[tuple[int, int], list[str]]]:
+    """((instruction index, command index), words) for each pip install a RUN makes, in build order."""
+    return [((i, j), command) for i, (keyword, arguments) in enumerate(stage) if keyword == "RUN"
+            for j, command in enumerate(_commands(arguments))
+            if command[:2] in (["pip", "install"], ["pip3", "install"]) or command[1:4] == ["-m", "pip", "install"]]
+
+
+def _constraint_files(command: list[str]) -> list[str]:
+    return ([command[i + 1] for i, word in enumerate(command[:-1]) if word in ("-c", "--constraint")]
+            + [word.split("=", 1)[1] for word in command if word.startswith("--constraint=")])
+
+
+def _requirements(name: str) -> list[str]:
+    lines: list[str] = []
+    for raw in _read(name).splitlines():
+        line = re.sub(r"(?:^|\s)#.*$", "", raw).strip()
+        if line.startswith(("-r ", "--requirement ")):
+            lines += _requirements(line.split(maxsplit=1)[1])
+        elif line and not line.startswith("-"):
+            lines.append(line)
+    return lines
+
+
+def test_the_image_installs_under_constraints_and_refuses_a_cuda_torch():
+    stage = _final_stage(_instructions(_read("Dockerfile")))
+    installs = _pip_installs(stage)
+    from_cpu_index = [command for _, command in installs if any(CPU_INDEX in word for word in command)]
+    constrained = [(position, command) for position, command in installs if command not in from_cpu_index]
+
+    assert constrained, "nothing installs the requirements"
+    for _, command in constrained:
+        # Without the constraints, a release asking for a newer torch swaps in the CUDA build from PyPI.
+        assert "constraints.txt" in _constraint_files(command), f"unconstrained: {' '.join(command)}"
+    torch_pin = next(line for line in _read("constraints.txt").splitlines() if line.startswith("torch=="))
+    assert all(torch_pin in command for command in from_cpu_index), f"torch from the CPU index is not {torch_pin}"
+    copied = [i for i, (keyword, arguments) in enumerate(stage)
+              if keyword in ("COPY", "ADD") and "constraints.txt" in _copy_sources(arguments)]
+    assert copied and copied[0] < constrained[0][0][0], "constraints.txt is not copied before it is used"
+    checks = [(i, j) for i, (keyword, arguments) in enumerate(stage) if keyword == "RUN"
+              for j, command in enumerate(_commands(arguments))
+              if "torch" in " ".join(command) and "version.cuda" in " ".join(command)]
+    assert any(check > installs[-1][0] for check in checks), "no torch.version.cuda check after the last install"
+
+
+def test_the_image_installs_no_test_tooling():
+    names = {re.split(r"[\s<>=!~\[;@]", line, maxsplit=1)[0].lower() for line in _requirements("requirements.txt")}
+
+    assert names, "requirements.txt names nothing"
+    assert "pytest" not in names, "pytest belongs in requirements-dev.txt, out of the image"

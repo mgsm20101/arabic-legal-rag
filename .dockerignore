@@ -1,7 +1,7 @@
 # The build context. The Dockerfile copies only src/, ui/, tasks.py,
-# requirements.txt and evals/app/; this keeps everything else out of the
-# context, third-party text and model weights above all. Patterns are anchored
-# at the context root, hence **/ for what can sit at any depth.
+# requirements.txt, constraints.txt and evals/app/; this keeps everything else
+# out of the context, third-party text and model weights above all. Patterns
+# are anchored at the context root, hence **/ for what can sit at any depth.
 
 # The statute corpus, uploaded documents, eval runs and local model weights
 data/

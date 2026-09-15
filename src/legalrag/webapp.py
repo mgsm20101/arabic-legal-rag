@@ -103,13 +103,15 @@ def _document(meta: DocMeta) -> dict:
     return {name: getattr(meta, name) for name in _DOCUMENT_FIELDS}
 
 
-def create_app(library, pipeline, *, health_probe: Callable[[], dict] | None = None,
+def create_app(library, pipeline, *, model_spec: str = DEFAULT_MODEL,
+               health_probe: Callable[[], dict] | None = None,
                chat_limiter: RateLimiter | None = None, upload_limiter: RateLimiter | None = None,
                ui_dir: Path = UI_DIR) -> FastAPI:
-    """The app over `library` and `pipeline`. `health_probe` answers
-    `{"reachable", "model", "gpu_share"}` (see `ollama_probe`); without one the
-    generator reads as unreachable. Only those keys, each of its own type,
-    ever reach the client."""
+    """The app over `library` and `pipeline`. /api/health names `model_spec`,
+    the spec the pipeline answers with, whatever the probe does. `health_probe`
+    answers `{"reachable", "gpu_share"}` (see `ollama_probe`); without one, or
+    when it fails, the generator reads as unreachable. Only those values, each
+    of its own type, ever reach the client."""
     app = FastAPI(title="arabic-legal-rag", docs_url=None, redoc_url=None, openapi_url=None)
     app.add_middleware(Guard, limits={
         CHAT_PATH: chat_limiter if chat_limiter is not None else RateLimiter(*CHAT_LIMIT),
@@ -117,7 +119,7 @@ def create_app(library, pipeline, *, health_probe: Callable[[], dict] | None = N
     })
     _add_error_handlers(app)
     _add_ui_routes(app, Path(ui_dir))
-    _add_health_route(app, library, health_probe)
+    _add_health_route(app, library, model_spec, health_probe)
     _add_document_routes(app, library)
     _add_chat_route(app, pipeline)
     return app
@@ -129,10 +131,10 @@ def _add_ui_routes(app: FastAPI, ui_dir: Path) -> None:
                           include_in_schema=False)
 
 
-def _add_health_route(app: FastAPI, library, probe: Callable[[], dict] | None) -> None:
+def _add_health_route(app: FastAPI, library, model_spec: str, probe: Callable[[], dict] | None) -> None:
     @app.get("/api/health")
     def health() -> dict:
-        generator = _generator_status(probe)
+        generator = _generator_status(probe, model_spec)
         return {"status": "ok" if generator["reachable"] else "degraded", "generator": generator,
                 "documents": len(library.documents())}
 
@@ -177,7 +179,7 @@ def _ui_file(path: Path, content_type: str) -> Callable[[], Response]:
     return serve
 
 
-def _generator_status(probe: Callable[[], dict] | None) -> dict:
+def _generator_status(probe: Callable[[], dict] | None, model_spec: str) -> dict:
     """The generator as /api/health reports it, whatever the probe returned or raised."""
     info: object = {}
     if probe is not None:
@@ -187,10 +189,9 @@ def _generator_status(probe: Callable[[], dict] | None) -> dict:
             logger.warning("the generator health probe failed", exc_info=True)
     if not isinstance(info, dict):
         info = {}
-    model, share = info.get("model"), info.get("gpu_share")
+    share = info.get("gpu_share")
     numeric = isinstance(share, (int, float)) and not isinstance(share, bool) and math.isfinite(share)
-    return {"reachable": info.get("reachable") is True,
-            "model": model if isinstance(model, str) else None,
+    return {"reachable": info.get("reachable") is True, "model": model_spec,
             "gpu_share": float(share) if numeric else None}
 
 
@@ -198,7 +199,7 @@ def _add_error_handlers(app: FastAPI) -> None:
     """Every exception a request can raise, mapped to its error response in one place."""
 
     async def library_error(request, exc: LibraryError) -> JSONResponse:
-        code = exc.code if exc.code in MESSAGES_AR else "invalid_request"
+        code = exc.code if exc.code in MESSAGES_AR else "internal"  # a code this API has no sentence for
         response = error_response(code)
         if response.status_code >= 500:  # a fault on this side (storage, say), not the client's
             logger.error("%s %s failed (%s)", request.method, request.url.path, code, exc_info=exc)
@@ -253,7 +254,7 @@ def ollama_probe(spec: str) -> Callable[[], dict]:
 
     def probe() -> dict:
         meta = ollama.run_metadata(chat)
-        return {"reachable": meta["reachable"], "model": spec, "gpu_share": meta["gpu_share"]}
+        return {"reachable": meta["reachable"], "gpu_share": meta["gpu_share"]}
 
     return probe
 
@@ -287,7 +288,7 @@ def build_from_env() -> FastAPI:
                        "leave this machine, and ADR-023 keeps the demo fully local", ollama.OLLAMA_HOST)
     library = Library(Path(os.environ.get("LEGALRAG_DATA_DIR") or DEFAULT_DATA_DIR))
     pipeline = Pipeline(library, build_generators(spec, "gated"))
-    return create_app(library, pipeline, health_probe=ollama_probe(spec))
+    return create_app(library, pipeline, model_spec=spec, health_probe=ollama_probe(spec))
 
 
 def main(argv: list[str] | None = None) -> int:

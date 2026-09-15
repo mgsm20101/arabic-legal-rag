@@ -54,6 +54,7 @@ SECURITY_HEADERS = {
 MESSAGES_AR = {
     "unsupported_file": "نوع الملف غير مدعوم. ارفع ملف PDF أو TXT.",
     "file_too_large": "حجم الملف أكبر من الحد المسموح (20 ميجابايت).",
+    "pdf_too_large": "تعذّرت معالجة الملف: عدد صفحاته أو وقت استخراج نصه أكبر من الحد المسموح.",
     "no_text": "لم يُعثر على نص كافٍ في الملف. إن كان PDF ممسوحاً ضوئياً، "
                "فالتعرّف الضوئي (OCR) غير مدعوم في هذه النسخة.",
     "not_found": "المستند غير موجود.",
@@ -69,7 +70,7 @@ QUESTION_MESSAGE_AR = f"السؤال يجب أن يكون بين {MIN_QUESTION_C
 
 _STATUS = {
     "unsupported_file": 400, "no_text": 400, "invalid_request": 400, "forbidden": 403,
-    "not_found": 404, "file_too_large": 413, "rate_limited": 429, "internal": 500,
+    "not_found": 404, "file_too_large": 413, "pdf_too_large": 413, "rate_limited": 429, "internal": 500,
     "generator_unavailable": 503, "encoder_unavailable": 503,
 }
 _UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})

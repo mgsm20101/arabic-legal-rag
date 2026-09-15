@@ -53,6 +53,7 @@ def test_every_error_code_has_its_arabic_sentence():
     expected = {
         "unsupported_file": "نوع الملف غير مدعوم. ارفع ملف PDF أو TXT.",
         "file_too_large": "حجم الملف أكبر من الحد المسموح (20 ميجابايت).",
+        "pdf_too_large": "تعذّرت معالجة الملف: عدد صفحاته أو وقت استخراج نصه أكبر من الحد المسموح.",
         "no_text": "لم يُعثر على نص كافٍ في الملف. إن كان PDF ممسوحاً ضوئياً، "
                    "فالتعرّف الضوئي (OCR) غير مدعوم في هذه النسخة.",
         "not_found": "المستند غير موجود.",
@@ -194,7 +195,7 @@ def test_the_rate_limit_key_is_the_connection_address_never_a_header(make):
 
 def test_health_never_exposes_the_host_or_exception_text(make):
     def leaky():
-        return {"reachable": False, "model": "ollama:gemma3:4b", "gpu_share": None, "version": "0.0-secret",
+        return {"reachable": False, "model": "ollama:secret-model", "gpu_share": None, "version": "0.0-secret",
                 "error": "cannot reach Ollama at http://secret-host:9 (raw body)", "host": "http://secret-host:9"}
 
     def exploding():
@@ -205,7 +206,7 @@ def test_health_never_exposes_the_host_or_exception_text(make):
 
     cases = (
         (leaky, "degraded", {"reachable": False, "model": "ollama:gemma3:4b", "gpu_share": None}),
-        (exploding, "degraded", {"reachable": False, "model": None, "gpu_share": None}),
+        (exploding, "degraded", {"reachable": False, "model": "ollama:gemma3:4b", "gpu_share": None}),
         (up, "ok", {"reachable": True, "model": "ollama:gemma3:4b", "gpu_share": 1.0}),
     )
     for probe, status, generator in cases:
@@ -217,6 +218,19 @@ def test_health_never_exposes_the_host_or_exception_text(make):
 
     h.upload()
     assert h.client.get("/api/health").json()["documents"] == 1
+
+
+def test_health_always_names_the_configured_model(make):
+    def exploding():
+        raise RuntimeError("http://secret-host:9")
+
+    probes = (None, exploding, lambda: "not a dict", lambda: {}, lambda: {"reachable": True, "model": None},
+              lambda: {"reachable": True, "model": "ollama:another-model", "gpu_share": 0.5})
+    for probe in probes:
+        h = make(health_probe=probe, model_spec="ollama:qwen2.5:7b-instruct")
+        assert h.client.get("/api/health").json()["generator"]["model"] == "ollama:qwen2.5:7b-instruct", probe
+
+    assert make().client.get("/api/health").json()["generator"]["model"] == webapp.DEFAULT_MODEL
 
 
 def test_every_response_carries_the_security_headers(make):
@@ -256,20 +270,41 @@ def test_an_unexpected_error_is_500_with_no_detail(make, monkeypatch, caplog):
 
 
 def test_a_library_fault_on_this_side_is_500_and_logged_with_its_traceback(make, monkeypatch, caplog):
-    h = make()
-
     class DiskGone(library_mod.LibraryError):
         code = "internal"
 
-    def fail():
-        raise DiskGone("the disk under /secret/data went away")
+    class SomethingNew(library_mod.LibraryError):
+        code = "a_code_the_api_does_not_map"
 
-    monkeypatch.setattr(h.library, "documents", fail)
+    for error in (DiskGone, SomethingNew, library_mod.LibraryError):
+        h = make()
 
-    with caplog.at_level(logging.INFO, logger="legalrag.webapp"):
-        response = h.client.get("/api/documents")
+        def fail(error=error):
+            raise error("the disk under /secret/data went away")
 
-    assert_error(response, 500, "internal")
+        monkeypatch.setattr(h.library, "documents", fail)
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="legalrag.webapp"):
+            response = h.client.get("/api/documents")
+
+        assert_error(response, 500, "internal")
+        assert "secret" not in response.text and "a_code_the_api" not in response.text
+        errors = [record for record in caplog.records if record.levelno >= logging.ERROR]
+        assert errors and errors[0].exc_info, f"{error.__name__} is logged as an error, with its traceback"
+
+
+def test_a_pdf_too_long_or_too_slow_to_read_is_413(make, monkeypatch):
+    h = make()
+
+    class PdfTooLarge(library_mod.LibraryError):  # mapped by its code, whichever class carries it
+        code = "pdf_too_large"
+
+    def refuse(data, filename):
+        raise PdfTooLarge("12,000 pages under /secret/path")
+
+    monkeypatch.setattr(h.library, "add", refuse)
+
+    response = h.upload(text_document("مستند طويل جدا"), "long.pdf")
+
+    assert assert_error(response, 413, "pdf_too_large")["message_ar"] == "تعذّرت معالجة الملف: عدد صفحاته أو وقت استخراج نصه أكبر من الحد المسموح."
     assert "secret" not in response.text
-    errors = [record for record in caplog.records if record.levelno >= logging.ERROR]
-    assert errors and errors[0].exc_info, "a fault on this side is logged as an error, with its traceback"

@@ -60,7 +60,20 @@ def test_a_listed_ui_file_that_does_not_exist_yet_is_404(make, tmp_path):
 IMPORT_SPECIFIER = re.compile(r"""\b(?:import|export)\s*(?:[^'"`;]*?\bfrom\s*)?\(?\s*["']([^"']+)["']""")
 
 
-def test_every_ui_file_the_page_loads_is_served():
+CONTENT_TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
+                 ".js": "text/javascript; charset=utf-8"}
+
+
+def test_every_ui_file_the_page_loads_is_served(make):
+    # Requested, not only listed: a module served as text/plain never runs in a
+    # browser, and a route to a file that is not there is a 404 the page cannot survive.
+    h = make()
+    for url, (name, _) in webapp.UI_FILES.items():
+        response = h.client.get(url)
+        assert response.status_code == 200, f"{url} ({name}) answered {response.status_code}"
+        assert response.headers["content-type"] == CONTENT_TYPES[Path(name).suffix], url
+        assert response.content == (webapp.UI_DIR / name).read_bytes(), url
+
     html = (webapp.UI_DIR / "app.html").read_text(encoding="utf-8")
     references = set()
     for tag in re.findall(r"<(?:script|link)\b[^>]*>", html, re.I):

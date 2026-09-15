@@ -14,6 +14,7 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 
@@ -105,6 +106,39 @@ def test_requirement_files_are_read_through_their_r_includes_without_options_or_
                                       encoding="utf-8")
 
     assert make_constraints.read_requirements(tmp_path / "dev.txt") == ["numpy>=1.24", "pytest==9.1.1"]
+
+
+def test_requirements_dev_is_one_of_the_generators_roots():
+    # tasks.py and the Makefile install requirements-dev.txt under constraints.txt
+    # too, so anything it alone needs (pytest's own dependencies, say) must be
+    # reachable from here as well, not just incidentally pinned by another root.
+    assert "requirements-dev.txt" in make_constraints.ROOTS
+
+
+@pytest.mark.parametrize("line", [
+    "-e git+https://github.com/example/pkg.git#egg=pkg",
+    "--editable git+https://github.com/example/pkg.git#egg=pkg",
+    "--editable=git+https://github.com/example/pkg.git#egg=pkg",
+])
+def test_an_editable_or_vcs_requirement_line_fails_loudly_instead_of_being_silently_dropped(tmp_path, line):
+    (tmp_path / "req.txt").write_text(line + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        make_constraints.read_requirements(tmp_path / "req.txt")
+
+
+def test_a_direct_url_requirement_fails_loudly_instead_of_pinning_whatever_is_installed(tmp_path):
+    (tmp_path / "req.txt").write_text("pkg @ https://example.invalid/pkg-1.0-py3-none-any.whl\n", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        make_constraints.read_requirements(tmp_path / "req.txt")
+
+
+def test_an_unparsable_requirement_line_fails_loudly(tmp_path):
+    (tmp_path / "req.txt").write_text(">=1.0\n", encoding="utf-8")  # an operator with no package name
+
+    with pytest.raises(ValueError):
+        make_constraints.read_requirements(tmp_path / "req.txt")
 
 
 def test_the_file_is_its_header_then_one_pin_per_line_sorted_by_canonical_name():

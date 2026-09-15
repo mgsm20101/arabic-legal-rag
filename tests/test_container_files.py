@@ -39,10 +39,17 @@ APP_CMD = ["python", "tasks.py", "app", "--host", "0.0.0.0", "--port", "8000"]
 # Anything that would fetch a model while the image builds: the weights belong
 # in the hf-cache volume at run time, never in a layer.
 BUILD_TIME_DOWNLOAD = re.compile(
-    r"SentenceTransformer|snapshot_download|from_pretrained|\bhf\s+download\b|huggingface-cli|tasks\.py")
+    r"SentenceTransformer|snapshot_download|from_pretrained|\bhf\s+download\b|huggingface-cli|tasks\.py"
+    r"|load_model|huggingface\.co")
 SHELL_SEPARATORS = {"&&", "||", ";", "|", "&"}
 # .dockerignore patterns that each exclude a whole top-level directory d.
 WHOLE_DIRECTORY = ("{d}", "{d}/**", "{d}/*", "**/{d}", "**/{d}/**")
+# A heredoc opens a RUN's body across lines this line-based scanner never
+# reconstructs, so it could hide anything from every check below.
+HEREDOC = re.compile(r"<<-?\s*['\"]?\w")
+# This Dockerfile copies from no external image by stage name or digest; a
+# `--from=` may only reference one of its own, earlier stages.
+FROM_ALLOWLIST: frozenset[str] = frozenset()
 
 
 def _read(name: str) -> str:
@@ -52,19 +59,25 @@ def _read(name: str) -> str:
 def _instructions(dockerfile: str) -> list[tuple[str, str]]:
     """(INSTRUCTION, arguments) per instruction, as Docker reads the file: a
     trailing backslash continues the line, and comment lines are dropped, even
-    inside a continued instruction."""
+    inside a continued instruction. Splits the keyword from its arguments on
+    any run of whitespace (a tab, or more than one space), not just a single
+    space, so a stray tab cannot fold a word into the keyword and drop it from
+    the arguments a check below scans. Heredoc syntax (`<<EOF`) is refused
+    outright: see HEREDOC above."""
     instructions: list[tuple[str, str]] = []
     pending = ""
     for line in dockerfile.splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
+        if HEREDOC.search(stripped):
+            raise ValueError(f"heredoc syntax is not supported by this scanner: {stripped!r}")
         if stripped.endswith("\\"):
             pending += stripped[:-1] + " "
             continue
-        keyword, _, arguments = (pending + stripped).partition(" ")
+        parts = re.split(r"\s+", pending + stripped, maxsplit=1)
         pending = ""
-        instructions.append((keyword.upper(), arguments.strip()))
+        instructions.append((parts[0].upper(), parts[1].strip() if len(parts) > 1 else ""))
     return instructions
 
 
@@ -105,6 +118,39 @@ def _copy_sources(arguments: str) -> list[str]:
     if any(part.startswith("--from") for part in parts):
         return []
     return [part for part in parts if not part.startswith("--")][:-1]
+
+
+def _defined_stage_names(instructions: list[tuple[str, str]]) -> set[str]:
+    """Every name a `--from=` may legitimately target: each stage's 0-based
+    ordinal among FROM instructions, and its `AS name` alias when it has one."""
+    names: set[str] = set()
+    stage_number = 0
+    for keyword, arguments in instructions:
+        if keyword != "FROM":
+            continue
+        names.add(str(stage_number))
+        words = arguments.split()
+        if len(words) >= 3 and words[1].upper() == "AS":
+            names.add(words[2])
+        stage_number += 1
+    return names
+
+
+def _bad_from_flags(instructions: list[tuple[str, str]]) -> list[str]:
+    """`--from=` targets on a COPY or RUN that name neither an earlier stage in
+    this Dockerfile nor an entry in the fixed allowlist: an external image, or
+    a stage that does not exist yet."""
+    stages = _defined_stage_names(instructions)
+    bad = []
+    for keyword in ("COPY", "RUN"):
+        for arguments in _all(instructions, keyword):
+            parts = json.loads(arguments) if arguments.startswith("[") else shlex.split(arguments)
+            for part in parts:
+                if part.startswith("--from="):
+                    target = part.split("=", 1)[1]
+                    if target not in stages and target not in FROM_ALLOWLIST:
+                        bad.append(target)
+    return bad
 
 
 def _env(instructions: list[tuple[str, str]]) -> dict[str, str]:
@@ -180,6 +226,55 @@ def test_no_run_can_download_a_model_while_the_image_builds():
     assert not [run for run in runs if BUILD_TIME_DOWNLOAD.search(run)]
 
 
+@pytest.mark.parametrize("snippet", [
+    "python -c \"load_model('legal-e5')\"",
+    "curl -fsSL https://huggingface.co/intfloat/multilingual-e5-base/resolve/main/model.safetensors -o /tmp/m",
+])
+def test_build_time_download_pattern_catches_load_model_calls_and_the_huggingface_domain(snippet):
+    assert BUILD_TIME_DOWNLOAD.search(snippet), snippet
+
+
+def test_hf_hub_offline_is_set_as_a_build_arg_so_a_run_step_cannot_reach_the_network_for_a_model():
+    args = _all(_instructions(_read("Dockerfile")), "ARG")
+
+    assert "HF_HUB_OFFLINE=1" in args, args
+
+
+def test_heredoc_syntax_in_a_run_is_refused():
+    with pytest.raises(ValueError, match="heredoc"):
+        _instructions("FROM x\nRUN <<EOF\necho hi\nEOF\n")
+    with pytest.raises(ValueError, match="heredoc"):
+        _instructions("FROM x\nRUN <<-EOF\n\techo hi\nEOF\n")
+
+
+def test_instructions_split_on_any_whitespace_not_just_a_single_space():
+    # A tab (or more than one space) between the keyword and its arguments must
+    # not fold the next word into the keyword and drop it from the arguments a
+    # check like _pip_installs scans.
+    tabbed = _instructions("FROM x\nRUN\tpip install -c constraints.txt -r requirements.txt\n")
+    spaced = _instructions("FROM x\nRUN   pip install -c constraints.txt -r requirements.txt\n")
+
+    assert tabbed[-1] == ("RUN", "pip install -c constraints.txt -r requirements.txt")
+    assert spaced[-1] == ("RUN", "pip install -c constraints.txt -r requirements.txt")
+
+
+def test_the_dockerfile_has_no_from_flag_referencing_outside_its_own_stages():
+    assert not _bad_from_flags(_instructions(_read("Dockerfile")))
+
+
+def test_a_from_flag_referencing_an_external_image_is_flagged():
+    instructions = _instructions(
+        "FROM python:3.14-slim AS base\nFROM base\nCOPY --from=base /x /y\nCOPY --from=attacker/evil:latest /a /b\n")
+
+    assert _bad_from_flags(instructions) == ["attacker/evil:latest"]
+
+
+def test_a_from_flag_referencing_a_stage_by_its_ordinal_index_is_accepted():
+    instructions = _instructions("FROM python:3.14-slim\nFROM debian\nCOPY --from=0 /x /y\n")
+
+    assert not _bad_from_flags(instructions)
+
+
 def test_the_app_runs_as_a_non_root_user_that_owns_what_it_writes():
     stage = _final_stage(_instructions(_read("Dockerfile")))
     users, created = _all(stage, "USER"), _created_users(stage)
@@ -197,15 +292,37 @@ def test_the_app_runs_as_a_non_root_user_that_owns_what_it_writes():
                    for owner, path in _chowned(stage)), f"{directory} is not handed to {user}"
 
 
+def _published_ports(service: dict) -> list[str]:
+    """A service's `ports:`, short or long syntax, as `host_ip:published:target`
+    strings. An explicit `/tcp` suffix (short syntax only; tcp is the default
+    protocol either way) is stripped, so it names the same port as the bare form."""
+    ports = []
+    for p in service.get("ports") or []:
+        text = f"{p.get('host_ip', '')}:{p.get('published', '')}:{p.get('target', '')}" if isinstance(p, dict) \
+            else str(p)
+        ports.append(re.sub(r"/tcp$", "", text, flags=re.IGNORECASE))
+    return ports
+
+
+def test_published_ports_treats_an_explicit_tcp_suffix_as_the_bare_port():
+    assert _published_ports({"ports": ["127.0.0.1:8000:8000/tcp"]}) == ["127.0.0.1:8000:8000"]
+    assert _published_ports({"ports": ["127.0.0.1:8000:8000"]}) == ["127.0.0.1:8000:8000"]
+
+
 def test_the_port_is_published_on_the_hosts_loopback_only():
     app = _compose()["services"]["app"]
-    ports = [f"{p.get('host_ip', '')}:{p.get('published', '')}:{p.get('target', '')}" if isinstance(p, dict)
-             else str(p) for p in app.get("ports") or []]
+    ports = _published_ports(app)
 
     assert "127.0.0.1:8000:8000" in ports, ports
     assert all(port.startswith("127.0.0.1:") for port in ports), ports
     # Any other network mode, the host's above all, would bypass what is published.
     assert "network_mode" not in app
+
+
+def test_expose_accepts_an_explicit_tcp_suffix():
+    stage = _instructions("FROM x\nEXPOSE 8000/tcp\n")
+
+    assert "8000" in {word.split("/")[0] for arguments in _all(stage, "EXPOSE") for word in arguments.split()}
 
 
 def test_the_build_context_leaves_out_the_data_directories():
@@ -257,11 +374,17 @@ def test_the_app_service_is_built_here_and_reaches_ollama_on_the_host():
 CPU_INDEX = "https://download.pytorch.org/whl/cpu"
 
 
+def _is_pip_install(command: list[str]) -> bool:
+    """True for `pip install`, `pip3 install`, `python -m pip install`, and the
+    same forms invoked through a full path (`/opt/venv/bin/pip`, `/usr/bin/python3 -m pip`)."""
+    program = posixpath.basename(command[0]) if command else ""
+    return (program in ("pip", "pip3") and command[1:2] == ["install"]) or command[1:4] == ["-m", "pip", "install"]
+
+
 def _pip_installs(stage: list[tuple[str, str]]) -> list[tuple[tuple[int, int], list[str]]]:
     """((instruction index, command index), words) for each pip install a RUN makes, in build order."""
     return [((i, j), command) for i, (keyword, arguments) in enumerate(stage) if keyword == "RUN"
-            for j, command in enumerate(_commands(arguments))
-            if command[:2] in (["pip", "install"], ["pip3", "install"]) or command[1:4] == ["-m", "pip", "install"]]
+            for j, command in enumerate(_commands(arguments)) if _is_pip_install(command)]
 
 
 def _constraint_files(command: list[str]) -> list[str]:
@@ -301,6 +424,23 @@ def test_the_image_installs_under_constraints_and_refuses_a_cuda_torch():
     assert any(check > installs[-1][0] for check in checks), "no torch.version.cuda check after the last install"
 
 
+def test_the_cpu_torch_install_takes_no_deps_from_an_index_that_is_not_the_cpu_wheel_index():
+    stage = _final_stage(_instructions(_read("Dockerfile")))
+    from_cpu_index = [command for _, command in _pip_installs(stage) if any(CPU_INDEX in word for word in command)]
+
+    assert from_cpu_index, "nothing installs torch from the CPU index"
+    for command in from_cpu_index:
+        assert "--no-deps" in command, f"torch's own resolver could still reach elsewhere: {' '.join(command)}"
+
+
+def test_pip_installs_recognizes_a_full_path_or_module_invocation():
+    stage = [("RUN", "/opt/venv/bin/pip install -c constraints.txt -r requirements.txt")]
+    assert _pip_installs(stage), "a full-path pip invocation is not recognized"
+
+    stage = [("RUN", "/usr/bin/python3.14 -m pip install -c constraints.txt -r requirements.txt")]
+    assert _pip_installs(stage), "python -m pip through a full python path is not recognized"
+
+
 def test_the_image_installs_no_test_tooling():
     names = {re.split(r"[\s<>=!~\[;@]", line, maxsplit=1)[0].lower() for line in _requirements("requirements.txt")}
 
@@ -332,3 +472,52 @@ def test_the_app_container_is_hardened():
     assert not app.get("cap_add"), "a capability is added back"
     assert security & {"no-new-privileges", "no-new-privileges:true"}, "a setuid binary could still gain privileges"
     assert not app.get("privileged"), "privileged undoes every restriction"
+
+
+UNCONFINED = {"seccomp:unconfined", "apparmor:unconfined"}
+
+
+def _hardening_violations(name: str, service: dict) -> list[str]:
+    """Every one of a compose service's worst options: privileged, the Docker
+    socket bind-mounted in, a shared host pid/ipc namespace, an unconfined
+    seccomp/apparmor profile, or an explicit override back to root."""
+    violations = []
+    if service.get("privileged"):
+        violations.append(f"{name}: privileged undoes every restriction")
+    if _mounts(service).get("/var/run/docker.sock", (None, None))[0] == "bind":
+        violations.append(f"{name}: /var/run/docker.sock is bind-mounted in")
+    if service.get("pid") == "host":
+        violations.append(f"{name}: pid: host shares the host's process namespace")
+    if service.get("ipc") == "host":
+        violations.append(f"{name}: ipc: host shares the host's IPC namespace")
+    security = {str(option).lower().replace("=", ":") for option in service.get("security_opt") or []}
+    if security & UNCONFINED:
+        violations.append(f"{name}: an unconfined seccomp/apparmor profile")
+    if str(service.get("user", "")).lower() in ("root", "0"):
+        violations.append(f"{name}: user: overrides back to root")
+    return violations
+
+
+@pytest.mark.parametrize("bad_service", [
+    {"privileged": True},
+    {"volumes": [{"type": "bind", "source": "/var/run/docker.sock", "target": "/var/run/docker.sock"}]},
+    {"volumes": ["/var/run/docker.sock:/var/run/docker.sock"]},
+    {"pid": "host"},
+    {"ipc": "host"},
+    {"security_opt": ["seccomp:unconfined"]},
+    {"security_opt": ["seccomp=unconfined"]},
+    {"security_opt": ["apparmor:unconfined"]},
+    {"user": "root"},
+    {"user": "0"},
+], ids=["privileged", "docker-sock-long", "docker-sock-short", "pid-host", "ipc-host",
+        "seccomp-colon", "seccomp-equals", "apparmor", "user-root", "user-0"])
+def test_each_dangerous_compose_option_is_caught(bad_service):
+    assert _hardening_violations("svc", bad_service)
+
+
+def test_no_compose_service_uses_a_dangerous_option():
+    services = _compose().get("services") or {}
+
+    assert services, "no service defined"
+    for name, service in services.items():
+        assert not _hardening_violations(name, service), _hardening_violations(name, service)

@@ -25,13 +25,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from packaging.markers import default_environment
-from packaging.requirements import Requirement
+from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
 from packaging.version import Version
 
 ROOT = Path(__file__).resolve().parents[1]
-ROOTS = ("requirements.txt", "requirements-ci.txt")
+ROOTS = ("requirements.txt", "requirements-ci.txt", "requirements-dev.txt")
 INCLUDE = re.compile(r"^(?:-r|--requirement)[\s=]+(\S+)$")
+EDITABLE = re.compile(r"^(?:-e|--editable)(?:[\s=]|$)")
 
 
 @dataclass
@@ -48,14 +49,30 @@ def linux_environment() -> dict[str, str]:
 
 
 def read_requirements(path: Path) -> list[str]:
-    """A requirements file's requirement strings, `-r` includes followed, options and comments dropped."""
+    """A requirements file's requirement strings, `-r` includes followed, options and comments dropped.
+
+    A line this generator cannot safely turn into a pin fails loudly instead of
+    silently vanishing or producing a wrong constraint: an editable/VCS install
+    (`-e`/`--editable`) looks like a droppable option to the check below but is
+    an actual requirement with nothing to pin; a direct URL reference
+    (`name @ https://...`) parses fine but names no version to pin either; and
+    anything else invalid PEP 508 syntax is rejected up front rather than left
+    to fail later, confusingly, inside closure()."""
     requirements: list[str] = []
     for raw in path.read_text(encoding="utf-8").splitlines():
         line = re.sub(r"(?:^|\s)#.*$", "", raw).strip()
         include = INCLUDE.match(line)
         if include:
             requirements += read_requirements(path.parent / include.group(1))
+        elif EDITABLE.match(line):
+            raise ValueError(f"{path.name}: editable/VCS requirements are not supported: {line!r}")
         elif line and not line.startswith("-"):
+            try:
+                parsed = Requirement(line)
+            except InvalidRequirement as exc:
+                raise ValueError(f"{path.name}: not a valid requirement: {line!r}") from exc
+            if parsed.url:
+                raise ValueError(f"{path.name}: URL requirements are not supported: {line!r}")
             requirements.append(line)
     return requirements
 

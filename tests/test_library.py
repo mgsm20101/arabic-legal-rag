@@ -190,6 +190,77 @@ def test_re_uploading_a_soft_deleted_document_restores_it(tmp_path):
     assert (on_disk["deleted"], on_disk["deleted_at"]) == (False, None)
 
 
+def _fail_writes_to(monkeypatch, target: Path) -> None:
+    """Every atomic replace onto `target` fails as a full disk would."""
+    real_replace = os.replace
+
+    def disk_full(src, dst):
+        if Path(dst) == target:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", disk_full)
+
+
+def test_a_failed_meta_write_during_soft_delete_changes_nothing_in_memory_or_on_disk(tmp_path, monkeypatch):
+    library = Library(tmp_path, encoder=KeywordEncoder(["الإنترنت"]))
+    meta = library.add(text_document("بدل الإنترنت الشهري"), "internet.txt")
+    library.search("الإنترنت", k=1)  # its index is cached now
+    meta_path = tmp_path / "docs" / meta.doc_id / "meta.json"
+    on_disk = meta_path.read_bytes()
+
+    _fail_writes_to(monkeypatch, meta_path)
+    with pytest.raises(OSError):
+        library.soft_delete(meta.doc_id)
+    monkeypatch.undo()
+
+    assert meta_path.read_bytes() == on_disk
+    assert library.get(meta.doc_id) == meta
+    assert library.documents() == [meta]
+    assert meta.doc_id in library._indexes
+    assert [h.chunk.doc_id for h in library.search("الإنترنت", k=1)] == [meta.doc_id]
+    assert not [p.name for p in meta_path.parent.iterdir() if p.name.endswith(".tmp")]
+
+
+def test_a_failed_meta_write_while_restoring_changes_nothing_in_memory_or_on_disk(tmp_path, monkeypatch):
+    internet = text_document("بدل الإنترنت الشهري")
+    library = Library(tmp_path, encoder=KeywordEncoder(["الإنترنت"]))
+    meta = library.add(internet, "internet.txt")
+    library.soft_delete(meta.doc_id)
+    meta_path = tmp_path / "docs" / meta.doc_id / "meta.json"
+    on_disk = meta_path.read_bytes()
+
+    _fail_writes_to(monkeypatch, meta_path)
+    with pytest.raises(OSError):
+        library.add(internet, "internet.txt")
+    monkeypatch.undo()
+
+    assert meta_path.read_bytes() == on_disk and json.loads(on_disk)["deleted"] is True
+    with pytest.raises(DocumentNotFound):
+        library.get(meta.doc_id)
+    assert library.documents() == []
+    assert library.add(internet, "internet.txt") == meta  # once the disk takes the write, it restores
+
+
+def test_a_document_deleted_while_its_index_loads_serves_that_search_and_caches_nothing(tmp_path, monkeypatch):
+    library = Library(tmp_path, encoder=KeywordEncoder(["الإنترنت"]))
+    meta = library.add(text_document("بدل الإنترنت الشهري"), "internet.txt")
+    real_load_index = library_mod.load_index
+
+    def load_then_delete(*args, **kwargs):
+        loaded = real_load_index(*args, **kwargs)
+        library.soft_delete(meta.doc_id)  # another request deletes it mid-load
+        return loaded
+
+    monkeypatch.setattr(library_mod, "load_index", load_then_delete)
+
+    hits = library.search("الإنترنت", k=1)
+
+    assert [h.chunk.doc_id for h in hits] == [meta.doc_id]  # the search already under way is served
+    assert meta.doc_id not in library._indexes               # a deleted document is never cached
+    assert library.search("الإنترنت", k=1) == []
+
+
 # ------------------------------------------------- refused before the disk --
 
 

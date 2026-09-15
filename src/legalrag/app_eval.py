@@ -27,6 +27,7 @@ import tempfile
 from pathlib import Path
 
 from .claims import build_generators
+from .docstore import write_json_atomic
 from .generate import parse_model_spec
 from .library import EncoderUnavailable, Library
 from .normalize import evaluation_normalize
@@ -157,15 +158,10 @@ def print_summary(summary: dict, one_page: bool) -> None:
 
 
 def _write_rows(path: Path, rows: list[dict]) -> None:
-    """Replace `path` with `rows` atomically: written beside it, then moved
-    over it, so a write that fails midway leaves the previous rows whole."""
+    """Replace `path` with `rows` atomically (written beside it, then moved over it),
+    so a write that fails midway leaves the previous rows whole."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    try:
-        tmp.write_text(json.dumps(rows, ensure_ascii=False, indent=1), encoding="utf-8")
-        os.replace(tmp, path)
-    finally:
-        tmp.unlink(missing_ok=True)  # already gone once the replace succeeded
+    write_json_atomic(path, rows)
 
 
 def _parser() -> argparse.ArgumentParser:

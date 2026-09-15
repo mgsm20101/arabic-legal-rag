@@ -84,7 +84,7 @@ def read_chunks(path: Path) -> list[Chunk]:
     return [Chunk(**json.loads(line)) for line in lines if line.strip()]
 
 
-def write_json_atomic(path: Path, data: dict) -> None:
+def write_json_atomic(path: Path, data: dict | list) -> None:
     """Write beside `path`, then os.replace over it: readers see old or new, never half."""
     tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:

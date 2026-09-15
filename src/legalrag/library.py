@@ -25,7 +25,6 @@ import shutil
 import threading
 import unicodedata
 import uuid
-import zipfile
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,7 +33,7 @@ from time import monotonic
 from . import dense, pdf_text
 from .chunking import Chunk, chunk_document
 from .dense import DenseIndex, Encoder
-from .docindex import DocumentIndex, EncoderUnavailable, LazyEncoder, index_docs, load_index
+from .docindex import DocumentIndex, EncoderUnavailable, IndexDamaged, LazyEncoder, index_docs, load_index
 from .docstore import CHUNKS, EMBEDDINGS, META, DocMeta, clear_stale, missing
 from .docstore import read_meta, write_chunks, write_meta
 
@@ -60,8 +59,6 @@ _BIDI_CONTROLS = frozenset(
     map(chr, (0x061C, 0x200E, 0x200F, *range(0x202A, 0x202F), *range(0x2066, 0x206A)))
 )
 _PATH_SEPARATORS = re.compile(r"[\\/]")
-# What loading a stored index raises when its files are not what the library wrote.
-_LOAD_ERRORS = (OSError, ValueError, TypeError, KeyError, zipfile.BadZipFile)
 
 
 class LibraryError(Exception):
@@ -122,6 +119,7 @@ class Library:
         self._metas: dict[str, DocMeta] = {}
         self._indexes: dict[str, DocumentIndex] = {}
         self._skipped: set[str] = set()  # document directories found unservable at open
+        self._damaged: set[str] = set()  # registered documents whose index would not load
 
         self._docs.mkdir(parents=True, exist_ok=True)
         self._tmp.mkdir(parents=True, exist_ok=True)
@@ -146,8 +144,12 @@ class Library:
         sha256 = hashlib.sha256(data).hexdigest()
         doc_id = sha256[:12]
         with self._lock:
-            if doc_id in self._metas:
-                return self._restore(doc_id, sha256)
+            known = self._metas.get(doc_id)
+        if known is not None:
+            _check_sha256(known, sha256)
+            if self._loads(known):
+                with self._lock:
+                    return self._restore(doc_id, sha256)
 
         title = _display_title(filename, suffix)
         staging = self._tmp / uuid.uuid4().hex
@@ -171,7 +173,7 @@ class Library:
                            chunks=len(chunks), chars=chars, created_at=_now())
             write_meta(staging / META, meta)
             with self._lock:
-                if doc_id in self._metas:  # an identical upload finished while this one embedded
+                if doc_id in self._metas and doc_id not in self._damaged:  # an identical upload finished meanwhile
                     return self._restore(doc_id, sha256)
                 self._install(staging, meta)
                 return meta
@@ -203,7 +205,7 @@ class Library:
         """The top `k` chunks for `query` across every live document, or exactly `doc_ids`
         (each a live document, or DocumentNotFound). Ranked by score, descending; a tie goes
         to the older document, then the lower chunk number. A document whose index will not
-        load is logged and skipped by an unscoped search, and DocumentNotFound to a scoped one."""
+        load is logged, then skipped by an unscoped search or raised (StorageError) by a scoped one."""
         if k < 1:
             raise ValueError(f"k must be at least 1, got {k}")
         with self._lock:
@@ -217,9 +219,9 @@ class Library:
             try:
                 index = self._index(meta)
             except StorageError as e:
+                logger.warning("document %s cannot be searched: %s", meta.doc_id, e)
                 if doc_ids is not None:
-                    raise DocumentNotFound("no such document") from e
-                logger.warning("search skipped document %s: %s", meta.doc_id, e)
+                    raise
                 continue
             for hit in index.dense.search(query, k):
                 chunk = index.chunks[hit.id]
@@ -229,15 +231,15 @@ class Library:
         return [hit for _, hit in ranked[:k]]
 
     def _install(self, staging: Path, meta: DocMeta) -> None:
-        """Install complete staging as docs/<doc_id>; the caller holds the lock. What is already there is
-        replaced only if skipped at open: moved aside, put back if the move fails, deleted after success."""
+        """Install complete staging as docs/<doc_id>; the caller holds the lock. What is already there is replaced
+        only if skipped at open or found damaged: moved aside, put back if the move fails, deleted after success."""
         lost = missing(staging, (f"source{meta.suffix}", CHUNKS, EMBEDDINGS, META))
         if lost:  # cleared mid-upload, and saving the embeddings recreated the directory
             raise StorageError(f"the staged upload of {meta.doc_id} lost {', '.join(lost)}")
         target = self._docs / meta.doc_id
         aside = None
         if os.path.lexists(target):
-            if meta.doc_id not in self._skipped:
+            if meta.doc_id not in self._skipped | self._damaged:
                 raise StorageError(f"docs/{meta.doc_id} appeared after the library opened; not replacing it")
             aside = self._tmp / uuid.uuid4().hex
             os.replace(target, aside)
@@ -245,11 +247,13 @@ class Library:
             os.replace(staging, target)
         except BaseException:
             if aside is not None:
-                os.replace(aside, target)  # the skipped directory goes back where it was
+                os.replace(aside, target)  # the directory being replaced goes back where it was
             raise
         if aside is not None:
             shutil.rmtree(aside, ignore_errors=True)
         self._skipped.discard(meta.doc_id)
+        self._damaged.discard(meta.doc_id)
+        self._indexes.pop(meta.doc_id, None)
         self._metas[meta.doc_id] = meta
 
     def _live(self, doc_id: object) -> DocMeta:
@@ -261,34 +265,49 @@ class Library:
         return meta
 
     def _restore(self, doc_id: str, sha256: str) -> DocMeta:
-        """The stored document these bytes are, undeleted if it was deleted; the caller holds
-        the lock. doc_id keeps 48 bits of the hash, so the full sha256 must agree first."""
+        """The stored document these bytes are, undeleted if it was deleted; the caller holds the lock."""
         meta = self._metas[doc_id]
-        if meta.sha256 != sha256:
-            raise StorageError(f"document {doc_id} is stored for other bytes: its sha256 differs")
+        _check_sha256(meta, sha256)
         if meta.deleted:
             meta = replace(meta, deleted=False, deleted_at=None)
             write_meta(self._docs / doc_id / META, meta)
             self._metas[doc_id] = meta
         return meta
 
+    def _loads(self, meta: DocMeta) -> bool:
+        """Whether `meta`'s index loads. A damaged one is marked, so the upload asking replaces it."""
+        try:
+            self._index(meta)
+        except StorageError as e:
+            logger.warning("document %s is damaged; re-uploading its bytes replaces it: %s", meta.doc_id, e)
+            with self._lock:
+                self._damaged.add(meta.doc_id)
+            return False
+        return True
+
     def _index(self, meta: DocMeta) -> DocumentIndex:
-        """`meta`'s dense index: cached, or loaded from its chunks and saved embeddings —
-        nothing is embedded when the fingerprint matches. StorageError if they will not load."""
+        """`meta`'s dense index: cached, or loaded from its chunks and saved embeddings, never
+        re-embedded. StorageError when those files are damaged."""
         with self._lock:
             cached = self._indexes.get(meta.doc_id)
         if cached is not None:
             return cached
 
         try:
-            loaded = load_index(self._docs / meta.doc_id, meta.title, self._encoder, self.model_name)
-        except _LOAD_ERRORS as e:
-            raise StorageError(f"the index of document {meta.doc_id} will not load: {e}") from e
+            loaded = load_index(self._docs / meta.doc_id, meta.title, meta.chunks, self._encoder, self.model_name)
+        except IndexDamaged as e:
+            raise StorageError(f"document {meta.doc_id} is damaged: {e}") from e
         with self._lock:
             current = self._metas.get(meta.doc_id)
             if current is None or current.deleted:
                 return loaded  # deleted while it loaded: serve this search, cache nothing
             return self._indexes.setdefault(meta.doc_id, loaded)
+
+
+def _check_sha256(meta: DocMeta, sha256: str) -> None:
+    """doc_id keeps 48 bits of the hash: a stored document is these bytes only if the full sha256 agrees."""
+    if meta.sha256 != sha256:
+        raise StorageError(f"document {meta.doc_id} is stored for other bytes: its sha256 differs")
 
 
 def _checked_suffix(data: bytes, filename: str | None) -> str:

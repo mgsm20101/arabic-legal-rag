@@ -9,6 +9,7 @@ anything is embedded.
 from __future__ import annotations
 
 import threading
+import zipfile
 from dataclasses import dataclass
 from importlib.util import find_spec
 from pathlib import Path
@@ -23,6 +24,10 @@ class EncoderUnavailable(RuntimeError):
     """The embedding model cannot be loaded: a server configuration problem, not a client error."""
 
 
+class IndexDamaged(Exception):
+    """A stored document's chunks.jsonl or embeddings.npz is not what the library wrote."""
+
+
 @dataclass(frozen=True)
 class DocumentIndex:
     dense: DenseIndex
@@ -34,12 +39,38 @@ def index_docs(chunks: list[Chunk], title: str) -> list[dict]:
     return [{"id": c.id, "number": c.number, "text": c.text, "law_name": title} for c in chunks]
 
 
-def load_index(doc_dir: Path, title: str, encoder: Encoder, model_name: str) -> DocumentIndex:
-    """A stored document's index, from its chunks.jsonl and its saved embeddings."""
-    chunks = read_chunks(doc_dir / CHUNKS)
-    index = DenseIndex(index_docs(chunks, title), encoder=encoder,
-                       cache_path=doc_dir / EMBEDDINGS, model_name=model_name)
+def load_index(doc_dir: Path, title: str, chunk_count: int, encoder: Encoder, model_name: str) -> DocumentIndex:
+    """A stored document's index, from its chunks.jsonl and saved embeddings, never by embedding a
+    passage. IndexDamaged when either file is not what the library wrote, a chunks file holding
+    other than `chunk_count` chunks included; any other error is a bug, and raised as itself."""
+    try:
+        chunks = read_chunks(doc_dir / CHUNKS)
+    except (OSError, ValueError, TypeError) as e:  # TypeError: a line of JSON that is not a chunk
+        raise IndexDamaged(f"chunks.jsonl will not load: {e}") from e
+    if len(chunks) != chunk_count:
+        raise IndexDamaged(f"chunks.jsonl holds {len(chunks)} chunks, not {chunk_count}")
+    try:
+        index = DenseIndex(index_docs(chunks, title), encoder=_QueriesOnly(encoder),
+                           cache_path=doc_dir / EMBEDDINGS, model_name=model_name)
+    except (EOFError, zipfile.BadZipFile) as e:  # what np.load raises past DenseIndex's own cache check
+        raise IndexDamaged(f"embeddings.npz will not load: {e}") from e
     return DocumentIndex(dense=index, chunks={c.id: c for c in chunks})
+
+
+class _QueriesOnly:
+    """The shared encoder as a stored index may use it: for queries only. A stored document's
+    passages were embedded when it was added; an index asking to embed them again found its
+    saved embeddings unusable, and re-embedding on every search, never saved, would pass that
+    damage off as a slow search."""
+
+    def __init__(self, encoder: Encoder):
+        self._encoder = encoder
+
+    def encode(self, texts, **kwargs):
+        texts = list(texts)
+        if any(text.startswith(dense.PASSAGE_PREFIX) for text in texts):
+            raise IndexDamaged("embeddings.npz did not load, so its passages would be embedded again")
+        return self._encoder.encode(texts, **kwargs)
 
 
 class LazyEncoder:

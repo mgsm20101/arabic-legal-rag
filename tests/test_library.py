@@ -618,7 +618,7 @@ def test_a_stored_document_missing_its_chunks_or_embeddings_is_skipped_with_a_wa
     assert list((tmp_path / "tmp").iterdir()) == []
 
 
-def test_an_index_that_fails_to_load_is_skipped_by_an_unscoped_search_and_not_found_by_a_scoped_one(
+def test_an_index_that_fails_to_load_is_skipped_unscoped_and_a_storage_error_scoped(
     tmp_path, caplog,
 ):
     library = Library(tmp_path, encoder=KeywordEncoder(["الإنترنت"]))
@@ -636,10 +636,102 @@ def test_an_index_that_fails_to_load_is_skipped_by_an_unscoped_search_and_not_fo
     warned = " ".join(r.getMessage() for r in caplog.records)
     assert missing.doc_id in warned and corrupt.doc_id in warned
     for broken in (missing, corrupt):
-        with pytest.raises(DocumentNotFound) as not_found:
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="legalrag.library"), pytest.raises(StorageError) as damaged:
             library.search("الإنترنت", doc_ids=[broken.doc_id])
-        assert isinstance(not_found.value.__cause__, StorageError)
+        assert damaged.value.code == "internal"
+        assert broken.doc_id in " ".join(r.getMessage() for r in caplog.records if r.levelno == logging.WARNING)
+        assert library.get(broken.doc_id) == broken  # the document still exists; its index is what is damaged
     assert [h.chunk.doc_id for h in library.search("الإنترنت", doc_ids=[good.doc_id])] == [good.doc_id]
+
+
+@pytest.mark.parametrize("damage", ["zero_bytes", "not_a_zip", "truncated_zip"])
+def test_damaged_embeddings_are_reported_as_damage_never_silently_re_embedded(tmp_path, caplog, damage):
+    encoder = KeywordEncoder(["الإنترنت"])
+    library = Library(tmp_path, encoder=encoder)
+    good = library.add(text_document("بدل الإنترنت الشهري"), "good.txt")
+    broken = library.add(text_document("الإنترنت في المنزل"), "broken.txt")
+    npz = tmp_path / "docs" / broken.doc_id / "embeddings.npz"
+    saved = npz.read_bytes()
+    npz.write_bytes({"zero_bytes": b"", "not_a_zip": b"these bytes are not an npz archive",
+                     "truncated_zip": saved[: len(saved) // 2]}[damage])
+    embedded = len(encoder.passages())
+
+    with caplog.at_level(logging.WARNING, logger="legalrag.library"):
+        hits = library.search("الإنترنت", k=5)
+        with pytest.raises(StorageError):
+            library.search("الإنترنت", doc_ids=[broken.doc_id])
+
+    assert [h.chunk.doc_id for h in hits] == [good.doc_id]
+    assert broken.doc_id in " ".join(r.getMessage() for r in caplog.records)
+    assert len(encoder.passages()) == embedded, "a damaged document's passages were embedded again"
+
+
+@pytest.mark.parametrize("kept_lines", [0, 1], ids=["zero_bytes", "short"])
+def test_a_chunks_file_that_lost_chunks_is_reported_never_served_as_fewer_chunks(tmp_path, kept_lines):
+    encoder = KeywordEncoder(["العمل"])
+    library = Library(tmp_path, encoder=encoder)
+    meta = library.add(text_document("العمل الأول", "العمل الثاني", "العمل الثالث"), "three.txt")
+    chunks_file = tmp_path / "docs" / meta.doc_id / "chunks.jsonl"
+    lines = chunks_file.read_text(encoding="utf-8").splitlines(keepends=True)
+    chunks_file.write_text("".join(lines[:kept_lines]), encoding="utf-8")
+    embedded = len(encoder.passages())
+
+    assert meta.chunks == 3
+    assert library.search("العمل", k=5) == []
+    with pytest.raises(StorageError):
+        library.search("العمل", doc_ids=[meta.doc_id])
+    assert len(encoder.passages()) == embedded
+
+
+def test_a_bug_while_building_an_index_surfaces_as_itself_never_as_a_skipped_document(tmp_path, monkeypatch, caplog):
+    library = Library(tmp_path, encoder=KeywordEncoder())
+    library.add(POLICY, "policy.txt")
+
+    def buggy(*args, **kwargs):
+        raise TypeError("DenseIndex() got an unexpected keyword argument 'cache'")
+
+    monkeypatch.setattr(docindex_mod, "DenseIndex", buggy)
+    with caplog.at_level(logging.WARNING, logger="legalrag.library"), pytest.raises(TypeError, match="unexpected"):
+        library.search("العمل")
+    assert not caplog.records
+
+
+class _BrokenQueryEncoder(KeywordEncoder):
+    """Embeds passages, then fails on every query the way a programming error would."""
+
+    def encode(self, texts, **kwargs):
+        texts = list(texts)
+        if any(t.startswith("query: ") for t in texts):
+            raise TypeError("encode() got an unexpected keyword argument 'batch'")
+        return super().encode(texts, **kwargs)
+
+
+def test_an_encoder_bug_on_a_query_surfaces_as_itself_never_as_a_skipped_document(tmp_path, caplog):
+    library = Library(tmp_path, encoder=_BrokenQueryEncoder())
+    library.add(POLICY, "policy.txt")
+
+    with caplog.at_level(logging.WARNING, logger="legalrag.library"), pytest.raises(TypeError, match="unexpected"):
+        library.search("العمل")
+    assert not caplog.records
+
+
+def test_re_uploading_a_damaged_documents_bytes_replaces_its_files(tmp_path):
+    internet = text_document("بدل الإنترنت الشهري")
+    library = Library(tmp_path, encoder=KeywordEncoder(["الإنترنت"]))
+    meta = library.add(internet, "internet.txt")
+    npz = tmp_path / "docs" / meta.doc_id / "embeddings.npz"
+    npz.write_bytes(b"")
+    with pytest.raises(StorageError):
+        library.search("الإنترنت", doc_ids=[meta.doc_id])
+
+    repaired = library.add(internet, "internet.txt")
+
+    assert repaired.doc_id == meta.doc_id
+    assert npz.stat().st_size > 0
+    assert [h.chunk.doc_id for h in library.search("الإنترنت", doc_ids=[meta.doc_id])] == [meta.doc_id]
+    assert library.documents() == [repaired]
+    assert list((tmp_path / "tmp").iterdir()) == []
 
 
 # ------------------------------------------------------ concurrency, model --

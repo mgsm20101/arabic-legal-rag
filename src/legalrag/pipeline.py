@@ -93,8 +93,9 @@ class Pipeline:
         library, parser or HTTP error:
         - QuestionRejected, before anything is retrieved, when the stripped
           question is outside MIN_QUESTION_CHARS..MAX_QUESTION_CHARS;
-        - `library.DocumentNotFound` for a malformed, unknown, deleted or
-          unreadable document in `doc_ids`, or another `library.LibraryError`;
+        - `library.DocumentNotFound` for a malformed, unknown or deleted
+          document in `doc_ids`, `library.StorageError` for a damaged one, or
+          another `library.LibraryError`;
         - `library.EncoderUnavailable` when the embedding model cannot load;
         - `ollama.GeneratorUnavailable` when the model server cannot be
           reached or refuses the request.

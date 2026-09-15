@@ -23,7 +23,7 @@ import legalrag.pipeline as pipeline_mod  # noqa: E402
 from legalrag.chunking import Chunk  # noqa: E402
 from legalrag.cite import citations, gate  # noqa: E402
 from legalrag.claims import ClaimsGenerator, final_abstain_reason  # noqa: E402
-from legalrag.library import DocumentNotFound, Library, LibraryHit  # noqa: E402
+from legalrag.library import Library, LibraryHit, StorageError  # noqa: E402
 from legalrag.pipeline import (  # noqa: E402
     MAX_QUESTION_CHARS,
     MIN_QUESTION_CHARS,
@@ -322,7 +322,7 @@ def test_a_damaged_document_reaches_the_caller_typed_never_as_a_raw_value_error(
     generator, relevance, claims = _gated([], [])
     pipeline = Pipeline(library, generator)
 
-    with pytest.raises(DocumentNotFound):
+    with pytest.raises(StorageError):
         pipeline.ask("كم مهلة رد المدير؟", [meta.doc_id])
     assert pipeline.ask("كم مهلة رد المدير؟").abstain_reason == "no_sources"
     assert relevance.seen == [] and claims.seen == []

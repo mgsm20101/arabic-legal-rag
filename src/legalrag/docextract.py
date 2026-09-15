@@ -17,7 +17,7 @@ from typing import NamedTuple
 
 from . import pdf_text
 from .chunking import Chunk, may_be_statute, page_chunks, statute_chunks
-from .docerrors import PdfTooLarge, UnsupportedFile
+from .docerrors import PdfTooLarge, StorageError, UnsupportedFile
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +32,9 @@ class PdfChunks(NamedTuple):
     pages: list[str]     # the first extraction's, Latin kept: what the document's pages and characters count
     kind: str            # "statute" | "generic"
     chunks: list[Chunk]
+    # True only when this looked like a statute but its Arabic-only pass hit the deadline or
+    # page limit and so was never checked: same bytes, a slower run, "generic" instead of "statute".
+    fell_back_to_pages: bool
 
 
 def extract_pdf(doc_id: str, source: Path, title: str) -> PdfChunks:
@@ -46,19 +49,23 @@ def extract_pdf(doc_id: str, source: Path, title: str) -> PdfChunks:
         raise PdfTooLarge(str(e)) from e
     except Exception as e:  # a damaged PDF raises whatever pdfminer hits first
         raise UnsupportedFile("the PDF could not be read") from e
+    fell_back_to_pages = False
     if may_be_statute(pages):
         try:
             arabic = _pages(doc_id, source, False, deadline)
         except pdf_text.ExtractionLimitExceeded as e:  # the deadline: these pages already passed the page cap
             logger.warning("document %s, %d pages: its Arabic-only extraction stopped (%s), so it is "
                            "chunked by page and not checked as a statute", doc_id, len(pages), e)
+            fell_back_to_pages = True
         except Exception as e:
-            raise UnsupportedFile("the PDF could not be read") from e
+            # The first pass already proved this exact file readable, so a failure here is never
+            # the client's fault (UnsupportedFile) — it is a fault on this side.
+            raise StorageError("the document's second extraction pass failed unexpectedly") from e
         else:
             statute = statute_chunks(doc_id, arabic, title)
             if statute is not None:
-                return PdfChunks(pages, "statute", statute)
-    return PdfChunks(pages, "generic", page_chunks(doc_id, pages))
+                return PdfChunks(pages, "statute", statute, False)
+    return PdfChunks(pages, "generic", page_chunks(doc_id, pages), fell_back_to_pages)
 
 
 def _pages(doc_id: str, path: Path, keep_latin: bool, deadline: float) -> list[str]:

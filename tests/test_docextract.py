@@ -9,14 +9,18 @@ import logging
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import legalrag.docextract as docextract  # noqa: E402
 from legalrag import pdf_text  # noqa: E402
+from legalrag.docerrors import StorageError  # noqa: E402
 
 DOC_ID = "0123456789ab"
 DOCUMENT_TEXT = "يلتزم المتحكم بالحصول على موافقة صريحة من الشخص المعني"
 REPORT_TEXT = "«مقتطف من السطر الذي حُسم عليه القرار»"
+STATUTE_LIKE_PAGE = "مادة 1\nنص المادة الأولى مصحوب بترجمة Article 1 مواكبة لها"
 
 
 def _extractor(pages: dict[bool, list[str]], report_items: dict, calls: list):
@@ -53,3 +57,26 @@ def test_each_extraction_logs_its_mirroring_counts_and_flags_but_no_string_and_n
     logged = caplog.text + " ".join(repr(r.args) for r in caplog.records)
     assert REPORT_TEXT not in logged and "evidence" not in logged
     assert DOCUMENT_TEXT not in logged and "Article" not in logged
+
+
+def test_a_non_deadline_failure_on_the_arabic_only_pass_is_a_storage_error_never_the_clients_fault(
+    tmp_path, monkeypatch,
+):
+    """F1: the first pass already proved the file readable, so a bug on the second, Arabic-only
+    pass is never the client's fault the way a damaged PDF (raised as UnsupportedFile) is —
+    only ExtractionLimitExceeded there means "ran out of time", everything else is a bug here."""
+    calls: list[bool] = []
+
+    def fake(path, keep_latin=False, line_tol=None, *, max_pages=None, deadline=None, report=None):
+        calls.append(keep_latin)
+        if not keep_latin:
+            raise RuntimeError("a pdfminer bug, not a bad file")
+        return [STATUTE_LIKE_PAGE]
+
+    monkeypatch.setattr(pdf_text, "extract_pages", fake)
+
+    with pytest.raises(StorageError) as failed:
+        docextract.extract_pdf(DOC_ID, tmp_path / "source.pdf", "law.pdf")
+
+    assert failed.value.code == "internal"
+    assert calls == [True, False]

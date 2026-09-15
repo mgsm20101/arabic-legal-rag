@@ -64,6 +64,32 @@ def test_a_file_that_is_not_pdf_or_txt_is_rejected_before_it_touches_disk(make):
     assert h.library.documents() == []
 
 
+def test_a_non_deadline_extraction_bug_on_the_second_pass_is_500_never_400(make, monkeypatch):
+    """F1 at the HTTP layer: the first extraction pass already proved the upload readable, so a
+    bug on the second (Arabic-only) pass is StorageError (`internal`), which _STATUS maps to
+    500 — never `unsupported_file`'s 400 — and the raw exception text never reaches the client."""
+    from legalrag import pdf_text
+
+    statute_like = "مادة 1\nنص المادة الأولى مصحوب بترجمة"
+    calls: list[bool] = []
+
+    def flaky(path, keep_latin=False, line_tol=None, *, max_pages=None, deadline=None, report=None):
+        calls.append(keep_latin)
+        if not keep_latin:
+            raise RuntimeError("a pdfminer bug on the second pass — must never reach the client")
+        return [statute_like]
+
+    monkeypatch.setattr(pdf_text, "extract_pages", flaky)
+    h = make()
+
+    response = h.upload(b"%PDF-1.7 bilingual statute", "law.pdf")
+
+    assert_error(response, 500, "internal")
+    assert "pdfminer" not in response.text and "RuntimeError" not in response.text
+    assert calls == [True, False]
+    assert h.library.documents() == []
+
+
 def test_a_pdf_extension_without_pdf_magic_bytes_is_rejected(make):
     h = make()
     before = tree(h.root)

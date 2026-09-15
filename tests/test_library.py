@@ -116,7 +116,24 @@ def test_an_upload_is_stored_as_its_source_meta_chunks_and_embeddings(tmp_path):
     assert meta.chars == len(re.sub(r"\s", "", POLICY.decode("utf-8")))
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00", meta.created_at)
     assert (meta.deleted, meta.deleted_at) == (False, None)
+    assert meta.fell_back_to_pages is False  # a .txt is never a PDF fallback
     assert list((tmp_path / "tmp").iterdir()) == []
+
+
+def test_a_meta_json_saved_before_fell_back_to_pages_existed_still_loads_as_false(tmp_path):
+    """An older meta.json on disk has no `fell_back_to_pages` key at all; reading it must not
+    fail, and must not read that silence as a fallback that never happened."""
+    library = Library(tmp_path, encoder=KeywordEncoder())
+    meta = library.add(POLICY, "policy.txt")
+    meta_path = tmp_path / "docs" / meta.doc_id / "meta.json"
+    on_disk = json.loads(meta_path.read_text(encoding="utf-8"))
+    del on_disk["fell_back_to_pages"]
+    meta_path.write_text(json.dumps(on_disk), encoding="utf-8")
+
+    reopened = Library(tmp_path, encoder=KeywordEncoder())
+
+    assert reopened.get(meta.doc_id).fell_back_to_pages is False
+    assert reopened.documents() == [meta]  # meta itself already has fell_back_to_pages=False
 
 
 def test_a_stored_document_whose_full_sha256_differs_is_never_returned_for_these_bytes(tmp_path):
@@ -244,6 +261,25 @@ def test_a_failed_meta_write_while_restoring_changes_nothing_in_memory_or_on_dis
         library.get(meta.doc_id)
     assert library.documents() == []
     assert library.add(internet, "internet.txt") == meta  # once the disk takes the write, it restores
+
+
+def test_a_documents_own_directory_vanishing_is_a_storage_error_not_a_raw_file_not_found(tmp_path):
+    """D4: unlike a write that merely failed just now (a full disk, the two tests above — left
+    to propagate as itself, since that says nothing about what is stored), a document's own
+    directory can vanish outright from under a running library: an operator's cleanup script, a
+    container volume reset. That is the library's own storage damage and must come back as its
+    StorageError, never an unhandled FileNotFoundError leaking out of a write that assumed the
+    directory was still there."""
+    library = Library(tmp_path, encoder=KeywordEncoder())
+    meta = library.add(POLICY, "policy.txt")
+    shutil.rmtree(tmp_path / "docs" / meta.doc_id)
+
+    with pytest.raises(StorageError) as failed:
+        library.soft_delete(meta.doc_id)
+
+    assert failed.value.code == "internal"
+    assert not isinstance(failed.value, FileNotFoundError)
+    assert library.get(meta.doc_id) == meta  # unchanged: the write never reached memory
 
 
 def test_a_document_deleted_while_its_index_loads_serves_that_search_and_caches_nothing(tmp_path, monkeypatch):
@@ -450,6 +486,7 @@ def test_a_statute_like_pdf_is_chunked_as_a_statute_from_a_second_arabic_only_ex
     assert calls[1][2] == calls[0][2], "the Arabic-only pass was given a budget of its own"
     assert calls == [(True, 250, 1300.0), (False, 250, 1300.0)]
     assert (meta.kind, meta.pages, meta.chunks) == ("statute", 3, 3)
+    assert meta.fell_back_to_pages is False
     chunks = _stored_chunks(tmp_path, meta)
     assert [c["label"] for c in chunks] == ["مادة 1", "مادة 2", "مادة 3"]
     assert not any(re.search("[A-Za-z]", c["text"]) for c in chunks)
@@ -472,6 +509,7 @@ def test_one_article_header_left_in_the_first_extraction_still_gets_the_arabic_o
 
     assert [keep_latin for keep_latin, _, _ in calls] == [True, False]
     assert (meta.kind, meta.chunks) == ("statute", 3)
+    assert meta.fell_back_to_pages is False
     assert [c["label"] for c in _stored_chunks(tmp_path, meta)] == ["مادة 1", "مادة 2", "مادة 3"]
 
 
@@ -487,6 +525,9 @@ def test_headers_whose_arabic_only_text_is_no_valid_statute_fall_back_to_the_fir
 
     assert [keep_latin for keep_latin, _, _ in calls] == [True, False]
     assert meta.kind == "generic"
+    # The second pass ran and simply did not validate as a statute: deterministic, and not a
+    # fallback — that word is reserved for a pass that never got to answer (ExtractionLimitExceeded).
+    assert meta.fell_back_to_pages is False
     chunks = _stored_chunks(tmp_path, meta)
     assert [c["label"] for c in chunks] == ["ص 1", "ص 2", "ص 3"]
     assert all("Article" in c["text"] for c in chunks)  # the pages kept their Latin terms
@@ -502,6 +543,7 @@ def test_a_pdf_without_article_headers_is_extracted_once(tmp_path, monkeypatch):
 
     assert [keep_latin for keep_latin, _, _ in calls] == [True]
     assert meta.kind == "generic"
+    assert meta.fell_back_to_pages is False
     assert "VPN" in _stored_chunks(tmp_path, meta)[0]["text"]
 
 
@@ -521,6 +563,8 @@ def test_a_deadline_hit_during_the_arabic_only_extraction_keeps_the_upload_as_th
 
     assert [keep_latin for keep_latin, _, _ in calls] == [True, False]
     assert (meta.kind, meta.pages, meta.chunks) == ("generic", 3, 3)
+    # Same bytes, a slower run: without this flag a client cannot tell "generic" from "gave up".
+    assert meta.fell_back_to_pages is True
     chunks = _stored_chunks(tmp_path, meta)
     assert [c["label"] for c in chunks] == ["ص 1", "ص 2", "ص 3"]
     assert all("Article" in c["text"] for c in chunks)  # the first extraction's pages, Latin kept
@@ -528,6 +572,28 @@ def test_a_deadline_hit_during_the_arabic_only_extraction_keeps_the_upload_as_th
     assert any(meta.doc_id in w and "3 pages" in w for w in warnings), warnings
     assert library.documents() == [meta]
     assert _names(tmp_path / "docs" / meta.doc_id) == STORED_PDF
+    assert list((tmp_path / "tmp").iterdir()) == []
+
+
+def test_a_non_deadline_failure_on_the_arabic_only_pass_is_a_storage_error_not_unsupported_file(
+    tmp_path, monkeypatch,
+):
+    """F1: the first pass already proved this exact file readable, so a bug on the second,
+    Arabic-only pass is a fault on this side (StorageError, 500), never the client's
+    (UnsupportedFile, 400) — and nothing is left on disk from the failed attempt."""
+    calls: list[tuple] = []
+    monkeypatch.setattr(pdf_text, "extract_pages",
+                        _two_pass_extractor(STATUTE_LATIN, STATUTE_ARABIC, calls,
+                                            second_pass_error=RuntimeError("a pdfminer bug, not a bad file")))
+    library = Library(tmp_path, encoder=KeywordEncoder())
+
+    with pytest.raises(StorageError) as failed:
+        library.add(b"%PDF-1.7 bilingual statute", "law.pdf")
+
+    assert failed.value.code == "internal"
+    assert [keep_latin for keep_latin, _, _ in calls] == [True, False]
+    assert library.documents() == []
+    assert list((tmp_path / "docs").iterdir()) == []
     assert list((tmp_path / "tmp").iterdir()) == []
 
 
@@ -677,6 +743,37 @@ def test_a_document_whose_meta_json_is_missing_or_unreadable_is_skipped_and_a_re
     assert restored.doc_id == unreadable.doc_id
     assert reopened.get(restored.doc_id) == restored
     assert _names(tmp_path / "docs" / restored.doc_id) == STORED_TXT
+    assert list((tmp_path / "tmp").iterdir()) == []
+
+
+def test_a_meta_json_unreadable_only_at_open_is_recovered_by_the_next_upload_not_duplicated(
+    tmp_path, monkeypatch,
+):
+    """Unlike a meta.json that stays bad, a read that failed just once (another process had
+    it open for a moment, say) does not say the document is gone: the next upload of its
+    bytes must find it readable again and restore it, not create a second, fresh document
+    under a new title and created_at."""
+    library = Library(tmp_path, encoder=KeywordEncoder())
+    readings = iter(["2026-01-01T09:00:00+00:00", "2026-09-15T18:00:00+00:00"])
+    monkeypatch.setattr(library_mod, "_now", lambda: next(readings))
+    original = library.add(POLICY, "policy.txt")
+    doc_dir = tmp_path / "docs" / original.doc_id
+
+    _unreadable(monkeypatch, doc_dir / "meta.json")
+    reopened = Library(tmp_path, encoder=KeywordEncoder())
+    monkeypatch.undo()
+    monkeypatch.setattr(library_mod, "_now", lambda: next(readings))  # only a fresh document would call this again
+
+    assert reopened.documents() == []
+    with pytest.raises(DocumentNotFound):
+        reopened.get(original.doc_id)
+
+    restored = reopened.add(POLICY, "policy.txt")
+
+    assert restored == original  # its own title and created_at: the same document, not a new one
+    assert reopened.documents() == [original]
+    assert reopened.get(original.doc_id) == original
+    assert _names(doc_dir) == STORED_TXT
     assert list((tmp_path / "tmp").iterdir()) == []
 
 

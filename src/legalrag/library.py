@@ -111,6 +111,16 @@ class Library:
         doc_id = sha256[:12]
         with self._lock:
             known = self._metas.get(doc_id)
+            if known is None and doc_id in self._skipped:
+                # A read that failed only once (another process had it open for a moment, say) is
+                # no sign the document is gone: try it again before treating doc_id as free to reuse.
+                recovered, problem = read_meta(self._docs / doc_id)
+                if recovered is not None and recovered.doc_id == doc_id:
+                    self._metas[doc_id] = recovered
+                    self._skipped.discard(doc_id)
+                    known = recovered
+                else:
+                    logger.info("document %s is still unreadable at upload time: %s", doc_id, problem)
         if known is not None:
             _check_sha256(known, sha256)
             if self._loads(known):
@@ -125,10 +135,11 @@ class Library:
             source = staging / f"source{suffix}"
             source.write_bytes(data)
             if text is None:
-                pages, kind, chunks = extract_pdf(doc_id, source, title)
+                pages, kind, chunks, fell_back_to_pages = extract_pdf(doc_id, source, title)
             else:
                 pages = text.split("\f")
                 kind, chunks = chunk_document(doc_id, pages, title)
+                fell_back_to_pages = False
             chars = sum(len(run) for page in pages for run in page.split())
             if chars < MIN_TEXT_CHARS:
                 raise NoTextLayer(f"only {chars} characters of text were found; at least "
@@ -141,7 +152,8 @@ class Library:
             created_at = known.created_at if known is not None else _now()
             meta = DocMeta(doc_id=doc_id, title=title, kind=kind, suffix=suffix,
                            size_bytes=len(data), sha256=sha256, pages=len(pages),
-                           chunks=len(chunks), chars=chars, created_at=created_at)
+                           chunks=len(chunks), chars=chars, created_at=created_at,
+                           fell_back_to_pages=fell_back_to_pages)
             write_meta(staging / META, meta)
             with self._lock:
                 if doc_id in self._metas and doc_id not in self._damaged:  # an identical upload finished meanwhile
@@ -167,7 +179,7 @@ class Library:
         deleted; uploading the same bytes again restores it."""
         with self._lock:
             meta = replace(self._live(doc_id), deleted=True, deleted_at=_now())
-            write_meta(self._docs / meta.doc_id / META, meta)
+            self._write_meta(meta)
             self._metas[meta.doc_id] = meta
             self._indexes.pop(meta.doc_id, None)
             return meta
@@ -241,9 +253,19 @@ class Library:
         _check_sha256(meta, sha256)
         if meta.deleted:
             meta = replace(meta, deleted=False, deleted_at=None)
-            write_meta(self._docs / doc_id / META, meta)
+            self._write_meta(meta)
             self._metas[doc_id] = meta
         return meta
+
+    def _write_meta(self, meta: DocMeta) -> None:
+        """write_meta over a live document's own directory; the caller holds the lock. A
+        directory that vanished from under a running library (an operator's cleanup, a volume
+        reset) is storage damage, never the client's fault; any other OSError — a full disk,
+        a file held open — says nothing about what is stored and is left to propagate as itself."""
+        try:
+            write_meta(self._docs / meta.doc_id / META, meta)
+        except (FileNotFoundError, NotADirectoryError) as e:
+            raise StorageError(f"document {meta.doc_id}'s own directory is gone: {e}") from e
 
     def _loads(self, meta: DocMeta) -> bool:
         """Whether `meta`'s index loads. A damaged one is marked, so the upload asking replaces it; a file

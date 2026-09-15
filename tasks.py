@@ -13,6 +13,8 @@
     python tasks.py app-eval [--retrieval-only] [--doc pdf|txt] [--model SPEC] [--overwrite]
                                           the upload pipeline on the app-dev split (ADR-023)
     python tasks.py serve [--port 8000]   local test page (retrieval + eval run)
+    python tasks.py app [--host 127.0.0.1] [--port 8000]
+                                          the local app: upload a document and ask it (ADR-023)
     python tasks.py test                  run the test suite
     python tasks.py setup                 install dependencies
     python tasks.py all --law "…"         ingest -> verify-refs -> eval
@@ -63,6 +65,9 @@ def _run_module(module: str, *args: str) -> int:
     if module == "legalrag.server":
         from legalrag.server import main
         return main(list(args))
+    if module == "legalrag.webapp":
+        from legalrag.webapp import main
+        return main(list(args))
     raise ValueError(module)
 
 
@@ -82,6 +87,7 @@ TASKS = {
     "app-eval": lambda a: _run_module("legalrag.app_eval", *a),
     "ingest": lambda a: _run_module("legalrag.ingest", *a),
     "serve": lambda a: _run_module("legalrag.server", *a),
+    "app": lambda a: _run_module("legalrag.webapp", *a),
     "verify-refs": lambda a: _run_module("legalrag.verify_refs", *a),
     "test": lambda a: _subprocess(sys.executable, "-m", "pytest", "-q"),
     "setup": lambda a: _subprocess(

@@ -27,7 +27,60 @@ import os
 
 import httpx
 
-OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
+DEFAULT_PORT = 11434
+DEFAULT_HOST = f"http://127.0.0.1:{DEFAULT_PORT}"
+
+# Bind-all addresses: right for a server to listen on, wrong for a client to
+# connect to (Windows refuses a connection to 0.0.0.0 outright).
+_BIND_ALL = {"0.0.0.0": "127.0.0.1", "::": "::1"}
+
+
+def normalize_host(value: str) -> str:
+    """The base URL a client should use for an Ollama host string.
+
+    `OLLAMA_HOST` is shared with the Ollama server itself, where it is a bind
+    address, so the same variable often holds `0.0.0.0`, or `host:port` with
+    no scheme. A missing scheme becomes `http://`, a bind-all address becomes
+    loopback, a missing or unusable port becomes 11434, and trailing slashes
+    go. An empty value is the local default. Never raises: this runs at import.
+    """
+    text = value.strip()
+    if not text:
+        return DEFAULT_HOST
+    scheme, sep, rest = text.partition("://")
+    if sep:
+        scheme = scheme.lower()
+    else:
+        scheme, rest = "http", text
+    authority, _, path = rest.partition("/")
+    userinfo, at, hostport = authority.rpartition("@")
+    host, port = _split_host_port(hostport)
+    host = _BIND_ALL.get(host, host) or "127.0.0.1"
+    if ":" in host:
+        host = f"[{host}]"
+    path = path.rstrip("/")
+    return f"{scheme}://{userinfo}{at}{host}:{port}" + (f"/{path}" if path else "")
+
+
+def _split_host_port(hostport: str) -> tuple[str, int]:
+    """`host[:port]`, `[ipv6][:port]` or a bare IPv6 address -> (host, port)."""
+    if hostport.startswith("["):
+        host, _, after = hostport[1:].partition("]")
+        port = after[1:] if after.startswith(":") else ""
+    elif hostport.count(":") == 1:
+        host, _, port = hostport.partition(":")
+    else:  # no port at all, or a bare IPv6 address, which leaves no room for one
+        host, port = hostport, ""
+    usable = port.isascii() and port.isdigit() and 0 < int(port) <= 65535
+    return host, int(port) if usable else DEFAULT_PORT
+
+
+OLLAMA_HOST = normalize_host(os.environ.get("OLLAMA_HOST", ""))
+
+# A generation may take minutes to answer; connecting to a local server may
+# not. Without its own connect timeout, an unreachable host held a request
+# open for the whole generation timeout instead of failing in seconds.
+CONNECT_TIMEOUT = 5.0
 
 # Greedy and reproducible, same reasoning as generate.TEMPERATURE: a sampled
 # answer would make the citation numbers vary between runs, and B1 is a claim
@@ -69,7 +122,7 @@ class OllamaChat:
         client: httpx.Client | None,
     ) -> None:
         self.model = model
-        self.host = host
+        self.host = normalize_host(host)
         self.num_predict = num_predict
         self.num_ctx = num_ctx
         self.fmt = fmt
@@ -85,7 +138,7 @@ class OllamaChat:
 
     def _ensure_client(self) -> httpx.Client:
         if self._client is None:
-            self._client = httpx.Client(timeout=self.timeout)
+            self._client = httpx.Client(timeout=httpx.Timeout(self.timeout, connect=CONNECT_TIMEOUT))
         return self._client
 
     def __call__(self, messages: list[dict]) -> str:
@@ -109,6 +162,14 @@ class OllamaChat:
         client = self._ensure_client()
         try:
             resp = client.post(f"{self.host}/api/chat", json=body)
+        except (httpx.ReadTimeout, httpx.WriteTimeout) as e:
+            # Connected, then no reply in time: the server is up but slow or
+            # stuck (a model still loading, a prompt too big for the machine),
+            # which "start the Ollama server" would not fix.
+            raise GeneratorUnavailable(
+                f"Ollama at {self.host} accepted the request but did not answer "
+                f"in time ({e!r})."
+            ) from e
         except httpx.TransportError as e:
             raise GeneratorUnavailable(
                 f"cannot reach Ollama at {self.host} ({e}). "
@@ -226,7 +287,7 @@ def health(host: str | None = None, client: httpx.Client | None = None) -> dict:
     "gemma3:4b" actually answered — Ollama updates a tag's bytes in place on
     a re-pull, so the name alone does not pin that down.
     """
-    h = host or OLLAMA_HOST
+    h = normalize_host(host) if host else OLLAMA_HOST
     owns_client = client is None
     c = client if client is not None else httpx.Client(timeout=HEALTH_TIMEOUT)
     try:

@@ -42,6 +42,17 @@ further assumptions the scanned/printed statute PDFs never exercised:
 7. **A single foreign word is not a second column.** ``arabic_column``
    used to split on any Latin glyph at all, dropping half the Arabic text
    on a page with just one English word. See ``arabic_column``.
+8. **Whether to mirror brackets, and whether to mirror «», is a property of
+   the WHOLE DOCUMENT, decided once — never of one line, and never assumed
+   from the file's origin.** A non-browser renderer (151/2020's statute
+   PDF) draws the mirror glyph for every bracket in RTL text; a
+   browser-rendered one (``policy_ar.pdf``) does not, and mirroring it a
+   second time is what turned "مادة (1)" into "مادة )1(". «» were never
+   mirrored at all, so a browser-rendered PDF whose «» genuinely ARE
+   mirror-drawn stayed reversed. A per-line rule cannot fix this safely
+   either: a legal parenthetical wraps across lines, so a line may
+   legitimately begin with ")" and end with "(" on its own. See
+   ``mirror_pages``.
 """
 
 from __future__ import annotations
@@ -58,14 +69,37 @@ from time import monotonic
 # مادة (٢٥) becomes مادة (٥٢). Silent, and fatal to a corpus keyed on numbers.
 DIGIT = re.compile(r"[0-9٠-٩۰-۹]")
 
-# In an RTL line the renderer paints the MIRROR of each bracket: "مادة (1)" is
-# drawn ")1(" left to right. Reading the glyphs back in logical order therefore
-# has to mirror them again. (This only became visible once the English column
-# was removed — its un-mirrored "(1)" was landing in the same line and made the
-# Arabic column's brackets look correct by accident.)
+# Swaps `()[]{}<>`. A non-browser renderer (151/2020's statute PDF) paints
+# the MIRROR of each bracket in an RTL line — "مادة (1)" is drawn ")1("
+# left to right — so reading the glyphs back in logical order has to
+# mirror them again. A browser-rendered PDF (`policy_ar.pdf`) does not: it
+# already stores the logical glyph, and mirroring it a second time is a
+# bug, not a fix. Applied conditionally, once per document, by
+# `mirror_pages` — `logical_line` itself no longer touches this table.
+# (The statute's own bug only became visible once the English column was
+# removed — its un-mirrored "(1)" used to land on the same line and made
+# the Arabic column's brackets look correct by accident.)
 MIRRORED = {ord(a): b for a, b in
             [("(", ")"), (")", "("), ("[", "]"), ("]", "["),
              ("{", "}"), ("}", "{"), ("<", ">"), (">", "<")]}
+
+# Swaps «»· never in `MIRRORED`, so a browser-rendered PDF whose «» arrive
+# mirror-drawn (`policy_ar.pdf` does; the statute PDF does not use «» at
+# all) had no way to be corrected. Same conditional, per-document
+# application as `MIRRORED`, via `mirror_pages`.
+MIRRORED_QUOTES = {ord("«"): "»", ord("»"): "«"}
+
+# Evidence for `mirror_pages`'s decision: a bracket or a «» pair that reads
+# in the wrong order means the glyph codes run the opposite way from what
+# a straight left-to-right reading implies. Bounded to a short run
+# (quotes) or a short number (brackets) so an unrelated pair elsewhere on
+# the page is never miscounted as the same broken one; `[^«»\n]` also
+# keeps a quote match inside a single line, the way a wrapped parenthetical
+# — legitimate, and NOT evidence either way — cannot be for brackets.
+_BRACKET_LOGICAL = re.compile(r"\(\s*[0-9٠-٩]+\s*\)")
+_BRACKET_MIRRORED = re.compile(r"\)\s*[0-9٠-٩]+\s*\(")
+_QUOTE_LOGICAL = re.compile(r"«[^«»\n]{1,200}»")
+_QUOTE_MIRRORED = re.compile(r"»[^«»\n]{1,200}«")
 
 # Arabic base blocks + presentation forms A/B — Edge encodes 572 of page
 # 1's 965 glyphs on evals/app/policy_ar.pdf this way. \u escapes, not
@@ -275,6 +309,13 @@ def logical_line(chars: list[dict], keep_latin: bool = False) -> str:
 
     ``chars`` are pdfplumber char dicts; only ``text``, ``x0`` and ``x1`` are
     read, so callers can synthesise them in tests.
+
+    Returns brackets and «» exactly as the glyph codes read — never
+    mirrored here. Whether a document's glyph codes need mirroring at all
+    is a whole-document question (``mirror_pages``), not a per-line one: a
+    legal parenthetical wraps across lines, so a line can legitimately
+    begin with ")" and end with "(" on its own, and deciding per line
+    would corrupt exactly that line.
     """
     if not keep_latin:
         chars = [c for c in chars if not _is_latin(c["text"])]
@@ -297,7 +338,7 @@ def logical_line(chars: list[dict], keep_latin: bool = False) -> str:
     for arabic, run in reversed(runs):
         glyphs = reversed(run) if arabic else run
         text = "".join(_fold_presentation_form(c["text"]) for c in glyphs)
-        parts.append(text if arabic else text.translate(MIRRORED))
+        parts.append(text)
 
     # A space glyph sitting on the boundary between two directions is emitted
     # on the far side of its run, so "مادة" and "(1)" arrive welded together.
@@ -328,6 +369,51 @@ class DeadlineExceeded(ExtractionLimitExceeded):
         self.pages = pages
 
 
+def mirror_pages(pages: list[str]) -> tuple[list[str], dict]:
+    """Decide, once for the whole document, whether brackets and «» need
+    mirroring, then apply that one decision to every page.
+
+    ``pages`` are raw, unmirrored page texts — the shape ``logical_line``
+    now always returns (see its docstring: it stops mirroring itself,
+    because that decision cannot be made safely one line at a time).
+
+    Counts ``_BRACKET_LOGICAL``/``_BRACKET_MIRRORED`` and
+    ``_QUOTE_LOGICAL``/``_QUOTE_MIRRORED`` across every page joined
+    together. ``{}``/``<>`` follow the bracket decision, exactly as
+    ``MIRRORED`` always bound them to it. Mirror only on a clear majority
+    in that direction; a tie or no evidence at all keeps each family's own
+    long-standing default — brackets mirror (unconditional ``MIRRORED``
+    was always right for a statute-style PDF), quotes stay as read (they
+    were never mirrored before this function existed).
+
+    Returns the mirrored pages and the decision itself — the four counts
+    and the two booleans — so a caller (a test, or ``extract_pages``'s
+    ``report``) can see the evidence, not just trust the result.
+    """
+    text = "\n".join(pages)
+    bracket_logical = len(_BRACKET_LOGICAL.findall(text))
+    bracket_mirrored = len(_BRACKET_MIRRORED.findall(text))
+    quote_logical = len(_QUOTE_LOGICAL.findall(text))
+    quote_mirrored = len(_QUOTE_MIRRORED.findall(text))
+
+    decision = {
+        "bracket_logical": bracket_logical,
+        "bracket_mirrored": bracket_mirrored,
+        "mirror_brackets": bracket_mirrored >= bracket_logical,
+        "quote_logical": quote_logical,
+        "quote_mirrored": quote_mirrored,
+        "mirror_quotes": quote_mirrored > quote_logical,
+    }
+
+    table: dict[int, str] = {}
+    if decision["mirror_brackets"]:
+        table.update(MIRRORED)
+    if decision["mirror_quotes"]:
+        table.update(MIRRORED_QUOTES)
+    mirrored_pages = [p.translate(table) if table else p for p in pages]
+    return mirrored_pages, decision
+
+
 def extract_pages(
     path: Path | str,
     keep_latin: bool = False,
@@ -335,6 +421,7 @@ def extract_pages(
     *,
     max_pages: int | None = None,
     deadline: float | None = None,
+    report: dict | None = None,
 ) -> list[str]:
     """One logical-order string per PDF page — its lines joined by ``\\n``,
     or ``""`` for a page with no text.
@@ -358,16 +445,23 @@ def extract_pages(
     ``time.monotonic()`` value, is checked between pages: once it has passed,
     the page in progress completes and DeadlineExceeded is raised instead of
     starting the next.
+
+    Every page is read once, in raw (unmirrored) form, before ``mirror_pages``
+    decides — once, for the document as a whole — whether brackets and «»
+    need mirroring; see its docstring. Passing a dict as ``report`` fills it
+    with that decision (the four counts and the two booleans), for a caller
+    that wants to log what was decided; ``report=None`` (the default) costs
+    nothing extra and changes no other caller's behaviour.
     """
     import pdfplumber  # imported lazily: only the PDF path needs it
 
     if max_pages is not None and _page_count(path, stop=max_pages + 1) > max_pages:
         raise TooManyPages(max_pages)
-    pages: list[str] = []
+    raw_pages: list[str] = []
     with pdfplumber.open(str(path)) as pdf:
         for page in pdf.pages:
-            if deadline is not None and pages and monotonic() > deadline:
-                raise DeadlineExceeded(len(pages), len(pdf.pages))
+            if deadline is not None and raw_pages and monotonic() > deadline:
+                raise DeadlineExceeded(len(raw_pages), len(pdf.pages))
             try:
                 chars = page.chars if keep_latin else arabic_column(page.chars)
                 lines: list[str] = []
@@ -375,13 +469,16 @@ def extract_pages(
                     text = logical_line(drop_marks(line), keep_latin=keep_latin).strip()
                     if text:
                         lines.append(text)
-                pages.append("\n".join(lines))
+                raw_pages.append("\n".join(lines))
             finally:
                 # pdfplumber keeps a page's parsed content in memory until
                 # closed — 293 MB at 150 pages, 1.03 GB at 600 (measured),
                 # on an app machine with ~3 GB free. `finally` closes it
                 # even when this page's own extraction raised.
                 page.close()
+    pages, decision = mirror_pages(raw_pages)
+    if report is not None:
+        report.update(decision)
     return pages
 
 

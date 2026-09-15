@@ -22,6 +22,7 @@ from legalrag.pdf_text import (  # noqa: E402
     extract_pages,
     group_lines,
     logical_line,
+    mirror_pages,
 )
 
 
@@ -57,10 +58,15 @@ def test_digits_keep_left_to_right_order_inside_an_rtl_line():
     assert logical_line(glyphs) == "خلال 72 ساعة"
 
 
-def test_brackets_are_mirrored_back_to_logical_order():
-    """An RTL renderer paints "مادة (1)" as ")1(" — reading back must mirror."""
+def test_logical_line_no_longer_mirrors_brackets_itself():
+    """A non-browser RTL renderer paints "مادة (1)" as ")1(" — but whether
+    that needs mirroring back is a whole-document decision now
+    (`mirror_pages`), never one `logical_line` makes for a single line: a
+    browser-rendered PDF draws the same glyphs the other way round, and a
+    per-line rule cannot tell the two apart. `logical_line` returns
+    brackets exactly as the glyph codes read."""
     glyphs = visual(")1(", 0) + visual("ةدام", 30)
-    assert logical_line(glyphs) == "مادة (1)"
+    assert logical_line(glyphs) == "مادة )1("
 
 
 def test_glyphs_are_ordered_by_centre_not_by_x0():
@@ -140,7 +146,9 @@ def test_arabic_column_drops_the_english_columns_digits():
     arabic = visual(")1( ةدام", 300)              # centres 305..375
     kept = arabic_column(english + arabic)
     assert all(c["x0"] >= 300 for c in kept)
-    assert logical_line(group_lines(kept)[0]) == "مادة (1)"
+    # Unmirrored: logical_line no longer mirrors brackets on its own (see
+    # mirror_pages for the whole-document decision that would fix this).
+    assert logical_line(group_lines(kept)[0]) == "مادة )1("
 
 
 def test_arabic_column_is_a_no_op_without_latin():
@@ -365,6 +373,144 @@ def test_arabic_glyphs_crossing_the_divider_alone_block_the_split():
     arabic = visual("ا" * 10, 0) + [g("ا", 500)]     # centres 5..95, then 505
     latin = [g("V", 200), g("P", 210), g("N", 220)]  # centres 205, 215, 225
     assert arabic_column(arabic + latin) == arabic + latin
+
+
+# --------------------------------------- mirror_pages (per document, ADR-013)
+#
+# Whether a document's brackets need mirroring, and separately whether its
+# «» do, is decided ONCE from the whole document's raw (unmirrored) text —
+# see the module docstring (point 8) and `mirror_pages` for why a per-line
+# rule is unsafe: a legal parenthetical wraps across lines, so a line can
+# legitimately begin with ")" and end with "(" on its own.
+
+def test_a_majority_mirrored_bracket_document_gets_mirrored():
+    pages = ["نص فيه )1( وكمان )12( في نفس الوثيقة."]
+    mirrored, decision = mirror_pages(pages)
+    assert decision["bracket_mirrored"] == 2 and decision["bracket_logical"] == 0
+    assert decision["mirror_brackets"] is True
+    assert mirrored == ["نص فيه (1) وكمان (12) في نفس الوثيقة."]
+
+
+def test_a_majority_logical_bracket_document_is_left_alone():
+    pages = ["نص فيه (1) وكمان (12) في نفس الوثيقة."]
+    mirrored, decision = mirror_pages(pages)
+    assert decision["mirror_brackets"] is False
+    assert mirrored == pages
+
+
+def test_a_wrapped_parenthetical_does_not_flip_a_majority_logical_document():
+    """The wrapped line legitimately begins with ')' and ends with '(' —
+    counted as evidence for NEITHER pattern, since neither regex matches
+    without a bare number immediately inside the brackets, the way a real
+    citation has. The majority-logical '(3)' line elsewhere decides it."""
+    pages = [
+        "كذا) وفي حالة (كذا أخرى ينطبق حكم مختلف تماماً.",
+        "تنص المادة على ذلك في الفقرة (3) من هذا الباب.",
+    ]
+    mirrored, decision = mirror_pages(pages)
+    assert decision["bracket_logical"] == 1 and decision["bracket_mirrored"] == 0
+    assert decision["mirror_brackets"] is False
+    assert mirrored == pages
+
+
+def test_a_majority_mirrored_quote_document_gets_swapped():
+    """Two separate pages, not one page with both pairs: `_QUOTE_LOGICAL`'s
+    middle class excludes «»`\\n` but not plain words, so two mirrored
+    pairs sharing ONE line would also, harmlessly, match a spurious
+    logical pair bridging the gap between them (the first pair's closing
+    mark to the second's opening mark) — real evidence either way, since
+    the majority (2 vs 1) still decides the same way, but avoided here so
+    the counts pin exactly what this test is about."""
+    pages = ["نص فيه »اقتباس أول«.", "ونص آخر فيه »اقتباس ثانٍ«."]
+    mirrored, decision = mirror_pages(pages)
+    assert decision["quote_mirrored"] == 2 and decision["quote_logical"] == 0
+    assert decision["mirror_quotes"] is True
+    assert mirrored == ["نص فيه «اقتباس أول».", "ونص آخر فيه «اقتباس ثانٍ»."]
+
+
+def test_a_majority_logical_quote_document_is_kept():
+    pages = ["نص فيه «اقتباس صحيح» لا يحتاج أي تعديل."]
+    mirrored, decision = mirror_pages(pages)
+    assert decision["mirror_quotes"] is False
+    assert mirrored == pages
+
+
+def test_a_single_unpaired_guillemet_is_untouched():
+    """Zero evidence either way — unlike brackets, quotes default to
+    UNCHANGED on a tie or no evidence: «» was never mirrored before
+    `mirror_pages` existed."""
+    pages = ["نص فيه « بدون إغلاق على الإطلاق."]
+    mirrored, decision = mirror_pages(pages)
+    assert decision["quote_logical"] == 0 and decision["quote_mirrored"] == 0
+    assert decision["mirror_quotes"] is False
+    assert mirrored == pages
+
+
+def test_brackets_and_quotes_are_decided_independently():
+    """A document majority-mirrored on brackets but majority-logical on
+    quotes must not have one decision leak into the other."""
+    pages = ["فيه )1( وفيه أيضاً «اقتباس صحيح» في نفس السطر."]
+    mirrored, decision = mirror_pages(pages)
+    assert decision["mirror_brackets"] is True
+    assert decision["mirror_quotes"] is False
+    assert mirrored == ["فيه (1) وفيه أيضاً «اقتباس صحيح» في نفس السطر."]
+
+
+def test_curly_and_angle_brackets_follow_the_bracket_decision():
+    """`{}`/`<>` are bound to the SAME decision as `()`/`[]` — `MIRRORED`
+    has always treated all four pairs as one family."""
+    pages = ["فيه )1( في مكان ما، وفيه أيضاً }غير مرتبط{ في مكان آخر."]
+    mirrored, decision = mirror_pages(pages)
+    assert decision["mirror_brackets"] is True
+    assert mirrored == ["فيه (1) في مكان ما، وفيه أيضاً {غير مرتبط} في مكان آخر."]
+
+
+def test_the_real_fixtures_guillemets_match_its_plain_text_sources_orientation(policy_ar_pages):
+    """policy_ar.pdf's only «» pair (policy_ar.txt line 53) arrives
+    mirror-drawn on this browser-rendered PDF — measured directly, not
+    assumed: the same rendering pipeline that leaves `()` alone (there are
+    none in this document) apparently does not do the same for «»."""
+    text = "\n".join(p for p in policy_ar_pages if p)
+    assert "« يحتاج إلى تحسين »" in text
+    assert "» يحتاج إلى تحسين «" not in text
+
+
+@pytest.fixture(scope="module")
+def brackets_ar_pages():
+    """tests/fixtures/brackets_ar.pdf, rendered from brackets_ar.html with
+    Edge headless (evals/app/README.md's method) — a second, small,
+    browser-rendered PDF, committed so this fixture never depends on a
+    render happening again."""
+    pytest.importorskip("pdfplumber")
+    root = Path(__file__).resolve().parents[1]
+    return extract_pages(root / "tests" / "fixtures" / "brackets_ar.pdf")
+
+
+def test_the_brackets_fixture_yields_plain_numbered_brackets(brackets_ar_pages):
+    """A quality reviewer rendered test pages and got «مادة )1(» — brackets
+    mirrored a second time, because a browser-rendered PDF already stores
+    the logical glyph. This fixture pins the fix directly: extraction must
+    yield "(1)" and "(12)", never their mirrored form, and its «» (a
+    separate family, decided independently) must still come out correctly
+    oriented too."""
+    text = "\n".join(brackets_ar_pages)
+    assert "(1)" in text
+    assert "(12)" in text
+    assert ")1(" not in text
+    assert ")12(" not in text
+    assert "« مادة التعريفات »" in text
+    assert "« بند الإخطار »" in text
+
+
+def test_the_brackets_fixtures_decision_is_observable_via_report():
+    """`report` fills with the decision `extract_pages` made, so a caller
+    (or this test) can see the evidence without re-deriving it."""
+    pytest.importorskip("pdfplumber")
+    root = Path(__file__).resolve().parents[1]
+    report: dict = {}
+    extract_pages(root / "tests" / "fixtures" / "brackets_ar.pdf", report=report)
+    assert report["mirror_brackets"] is False
+    assert report["mirror_quotes"] is True
 
 
 # ------------------------------------------------------- extract_pages/text

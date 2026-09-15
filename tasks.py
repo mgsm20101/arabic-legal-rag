@@ -15,8 +15,8 @@
     python tasks.py serve [--port 8000]   local test page (retrieval + eval run)
     python tasks.py app [--host 127.0.0.1] [--port 8000]
                                           the local app: upload a document and ask it (ADR-023)
-    python tasks.py test                  run the test suite
-    python tasks.py setup                 install dependencies
+    python tasks.py test                  run the test suite (after setup)
+    python tasks.py setup                 install the app and test dependencies at the pinned versions
     python tasks.py all --law "…"         ingest -> verify-refs -> eval
 
 `make <target>` does the same thing on Linux/CI; this file is what runs on
@@ -91,7 +91,7 @@ TASKS = {
     "verify-refs": lambda a: _run_module("legalrag.verify_refs", *a),
     "test": lambda a: _subprocess(sys.executable, "-m", "pytest", "-q"),
     "setup": lambda a: _subprocess(
-        sys.executable, "-m", "pip", "install", "-r", "requirements.txt"
+        sys.executable, "-m", "pip", "install", "-c", "constraints.txt", "-r", "requirements-dev.txt"
     ),
 }
 

@@ -2,8 +2,9 @@
 
 The generator is tested on fake installed distributions, so these tests read
 nothing from the machine they run on; CI's environment is not the one the
-file was generated in. The last test reads the committed files: every CI pin
-must be the constraint's version, or pip refuses the pair.
+file was generated in. The last test reads the committed files: every
+requirement in every requirements file must admit its constraint's version, or
+pip refuses the install, which only a Docker build or a CI run would show.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 
 ROOT = Path(__file__).resolve().parents[1]
+REQUIREMENT_FILES = ("requirements.txt", "requirements-ci.txt", "requirements-dev.txt")
 _spec = importlib.util.spec_from_file_location("make_constraints", ROOT / "scripts" / "make_constraints.py")
 make_constraints = importlib.util.module_from_spec(_spec)
 sys.modules.setdefault("make_constraints", make_constraints)
@@ -117,14 +119,15 @@ def _pins(path: Path) -> dict[str, str]:
     return {canonicalize_name(name): version for name, version in pairs}
 
 
-def test_the_committed_constraints_agree_with_every_ci_pin_and_cover_the_images_requirements():
+def test_the_committed_constraints_satisfy_every_requirement_in_every_requirements_file():
     pins = _pins(ROOT / "constraints.txt")
 
-    for line in make_constraints.read_requirements(ROOT / "requirements-ci.txt"):
-        requirement = Requirement(line)
-        (version,) = [spec.version for spec in requirement.specifier if spec.operator == "=="]
-        assert pins.get(canonicalize_name(requirement.name)) == version, line
-    for line in make_constraints.read_requirements(ROOT / "requirements.txt"):
-        assert canonicalize_name(Requirement(line).name) in pins, line
+    for file in REQUIREMENT_FILES:
+        for line in make_constraints.read_requirements(ROOT / file):
+            requirement = Requirement(line)
+            name = canonicalize_name(requirement.name)
+            # A constraint outside the requirement's range makes pip refuse the install,
+            # which only a Docker build or a CI run would show.
+            assert name in pins and requirement.specifier.contains(pins[name], prereleases=True), f"{file}: {line}"
     assert not [version for version in pins.values() if "+" in version], "a local label would never match a PyPI wheel"
     assert pins["torch"] == "2.14.0"

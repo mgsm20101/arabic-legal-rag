@@ -3,9 +3,9 @@ export PYTHONPATH := src
 
 .PHONY: setup ingest eval verify-refs verify-refs-write test all
 
-## install python dependencies
+## install the app and test dependencies at the pinned versions
 setup:
-	$(PY) -m pip install -r requirements.txt
+	$(PY) -m pip install -c constraints.txt -r requirements-dev.txt
 
 ## data/raw/*.pdf|txt -> data/processed/articles.jsonl (article-level chunks)
 ## LAW is mandatory:  make ingest LAW="قانون حماية البيانات الشخصية"

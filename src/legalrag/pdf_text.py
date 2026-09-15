@@ -42,17 +42,23 @@ further assumptions the scanned/printed statute PDFs never exercised:
 7. **A single foreign word is not a second column.** ``arabic_column``
    used to split on any Latin glyph at all, dropping half the Arabic text
    on a page with just one English word. See ``arabic_column``.
-8. **Whether to mirror brackets, and whether to mirror «», is a property of
-   the WHOLE DOCUMENT, decided once — never of one line, and never assumed
-   from the file's origin.** A non-browser renderer (151/2020's statute
-   PDF) draws the mirror glyph for every bracket in RTL text; a
-   browser-rendered one (``policy_ar.pdf``) does not, and mirroring it a
-   second time is what turned "مادة (1)" into "مادة )1(". «» were never
-   mirrored at all, so a browser-rendered PDF whose «» genuinely ARE
-   mirror-drawn stayed reversed. A per-line rule cannot fix this safely
-   either: a legal parenthetical wraps across lines, so a line may
-   legitimately begin with ")" and end with "(" on its own. See
-   ``mirror_pages``.
+8. **Whether to mirror «» is a property of the WHOLE DOCUMENT, decided
+   once — never of one line, and never assumed from the file's origin.**
+   A non-browser renderer (151/2020's statute PDF) draws the mirror glyph
+   for every bracket in RTL text; a browser-rendered one
+   (``policy_ar.pdf``) does not, and mirroring it a second time is what
+   turned "مادة (1)" into "مادة )1(". «» were never mirrored at all, so a
+   browser-rendered PDF whose «» genuinely ARE mirror-drawn stayed
+   reversed. A per-line rule cannot fix this safely either: a legal
+   parenthetical wraps across lines, so a line may legitimately begin
+   with ")" and end with "(" on its own. Brackets started out the same
+   way, but a whole-document decision cannot get both a numbered citation
+   AND an Arabic-word parenthetical right at once, since which way they
+   read depends on what each bracket wraps, not on the document as a
+   whole — so brackets are now decided per class (digit/Latin-letter
+   "attached", or "free"), falling back to the old whole-document rule
+   only when attached brackets are an overwhelming mirrored majority (the
+   statute's case). See ``mirror_pages``.
 """
 
 from __future__ import annotations
@@ -74,8 +80,9 @@ DIGIT = re.compile(r"[0-9٠-٩۰-۹]")
 # left to right — so reading the glyphs back in logical order has to
 # mirror them again. A browser-rendered PDF (`policy_ar.pdf`) does not: it
 # already stores the logical glyph, and mirroring it a second time is a
-# bug, not a fix. Applied conditionally, once per document, by
-# `mirror_pages` — `logical_line` itself no longer touches this table.
+# bug, not a fix. Applied conditionally by `mirror_pages` — once for the
+# whole document in "legacy mode", or per occurrence otherwise (see its
+# docstring) — `logical_line` itself no longer touches this table.
 # (The statute's own bug only became visible once the English column was
 # removed — its un-mirrored "(1)" used to land on the same line and made
 # the Arabic column's brackets look correct by accident.)
@@ -100,6 +107,108 @@ _BRACKET_LOGICAL = re.compile(r"\(\s*[0-9٠-٩]+\s*\)")
 _BRACKET_MIRRORED = re.compile(r"\)\s*[0-9٠-٩]+\s*\(")
 _QUOTE_LOGICAL = re.compile(r"«[^«»\n]{1,200}»")
 _QUOTE_MIRRORED = re.compile(r"»[^«»\n]{1,200}«")
+
+# Rule (c): a bracket's mirror direction depends on what it wraps, not on
+# the whole document — `مادة (1)` reads correctly either way a renderer
+# draws it, but `(الموظف)` only reads correctly if ITS OWN evidence
+# decides. `_ATTACHED_CHAR` is the generalization of `_BRACKET_LOGICAL`/
+# `_BRACKET_MIRRORED`'s digit class to also cover Latin letters (an
+# acronym like `(VPN)`), used ONLY for this broader attached/free split —
+# never for the legacy-mode gate, which stays on the narrow digit-only
+# regexes above so the statute's gate computation is provably unchanged.
+_ATTACHED_CHAR = re.compile(r"[0-9A-Za-z٠-٩۰-۹]")
+
+# All four families `mirror_pages` has always treated as one: `()[]{}<>`.
+_BRACKET_FAMILIES: tuple[tuple[str, str], ...] = (("(", ")"), ("[", "]"), ("{", "}"), ("<", ">"))
+
+
+def _bracket_pair_pattern(first: str, second: str, open_c: str, close_c: str) -> re.Pattern[str]:
+    """One `first ... second` bracket-pair pattern for a single family.
+
+    Bounded to a single line (no `\\n` in the match) and to content that
+    excludes both bracket characters of THIS family — same spirit as
+    `_QUOTE_LOGICAL`/`_QUOTE_MIRRORED` — so a match never straddles a
+    second, nested pair of the same kind. Content may include a bracket
+    character from a DIFFERENT family (`(note [ref])`) since only the two
+    outermost characters of a match are ever mutated, never its middle.
+    """
+    excluded = re.escape(open_c) + re.escape(close_c)
+    return re.compile(f"{re.escape(first)}[^{excluded}\\n]{{1,200}}{re.escape(second)}")
+
+
+def _iter_bracket_pairs(text: str):
+    """Yield ``(match, attached, mirrored_orientation)`` for every bracket
+    pair in ``text``, across all four families and both orientations.
+
+    A candidate pair must touch non-whitespace content on BOTH inner
+    edges to be counted at all — a genuine bracket (attached or free)
+    never has a space immediately inside it, but two unrelated, each
+    individually unpaired, brackets sitting near each other in ordinary
+    prose (a legal parenthetical closing one clause: "...كذا) وفي حالة
+    (كذا...") routinely do, and must never be miscounted as a matched
+    pair — that is exactly the same false-evidence risk `_BRACKET_LOGICAL`
+    avoided by requiring a bare digit, generalized here to any content.
+
+    ``attached`` follows ``_ATTACHED_CHAR`` on both inner edges (the
+    "inner side" is the same relative position regardless of orientation,
+    per the spec: for a mirrored pair like ``)1(`` it is still the side
+    facing the number). ``mirrored_orientation`` is True for a
+    close-then-open match (``)...(``), False for open-then-close.
+    """
+    for open_c, close_c in _BRACKET_FAMILIES:
+        for mirrored_orientation, first, second in (
+            (False, open_c, close_c),
+            (True, close_c, open_c),
+        ):
+            pattern = _bracket_pair_pattern(first, second, open_c, close_c)
+            for m in pattern.finditer(text):
+                inner = m.group()[1:-1]
+                if inner[0].isspace() or inner[-1].isspace():
+                    continue
+                attached = bool(_ATTACHED_CHAR.fullmatch(inner[0])) and bool(
+                    _ATTACHED_CHAR.fullmatch(inner[-1])
+                )
+                yield m, attached, mirrored_orientation
+
+
+def _attached_free_counts(text: str) -> tuple[int, int, int, int]:
+    """``(attached_logical, attached_mirrored, free_logical, free_mirrored)``
+    evidence counts, over the whole document text — the per-class analogue
+    of ``bracket_logical``/``bracket_mirrored`` above."""
+    attached_logical = attached_mirrored = free_logical = free_mirrored = 0
+    for _, attached, mirrored_orientation in _iter_bracket_pairs(text):
+        if attached and not mirrored_orientation:
+            attached_logical += 1
+        elif attached and mirrored_orientation:
+            attached_mirrored += 1
+        elif not attached and not mirrored_orientation:
+            free_logical += 1
+        else:
+            free_mirrored += 1
+    return attached_logical, attached_mirrored, free_logical, free_mirrored
+
+
+def _mirror_bracket_occurrences(page: str, mirror_attached: bool, mirror_free: bool) -> str:
+    """Apply the per-class decision to one page, occurrence by occurrence.
+
+    Unlike legacy mode's single ``str.translate()`` table, attached and
+    free brackets may get different treatment, so each matched pair's own
+    two characters are swapped (or left alone) according to whichever
+    class it belongs to. A bracket that never forms a matched pair (an
+    unpaired one, or one touching whitespace — see `_iter_bracket_pairs`)
+    is never visited here and so is always left alone, exactly as the
+    spec requires for anything not clearly logical or clearly mirrored.
+    """
+    edits: dict[int, str] = {}
+    for m, attached, _ in _iter_bracket_pairs(page):
+        if not (mirror_attached if attached else mirror_free):
+            continue
+        start, end = m.start(), m.end() - 1
+        edits[start] = MIRRORED[ord(page[start])]
+        edits[end] = MIRRORED[ord(page[end])]
+    if not edits:
+        return page
+    return "".join(edits.get(i, ch) for i, ch in enumerate(page))
 
 # Arabic base blocks + presentation forms A/B — Edge encodes 572 of page
 # 1's 965 glyphs on evals/app/policy_ar.pdf this way. \u escapes, not
@@ -370,24 +479,50 @@ class DeadlineExceeded(ExtractionLimitExceeded):
 
 
 def mirror_pages(pages: list[str]) -> tuple[list[str], dict]:
-    """Decide, once for the whole document, whether brackets and «» need
-    mirroring, then apply that one decision to every page.
+    """Decide whether brackets and «» need mirroring, then apply that
+    decision to every page.
 
     ``pages`` are raw, unmirrored page texts — the shape ``logical_line``
     now always returns (see its docstring: it stops mirroring itself,
     because that decision cannot be made safely one line at a time).
 
-    Counts ``_BRACKET_LOGICAL``/``_BRACKET_MIRRORED`` and
-    ``_QUOTE_LOGICAL``/``_QUOTE_MIRRORED`` across every page joined
-    together. ``{}``/``<>`` follow the bracket decision, exactly as
-    ``MIRRORED`` always bound them to it. Mirror only on a clear majority
-    in that direction; a tie or no evidence at all keeps each family's own
-    long-standing default — brackets mirror (unconditional ``MIRRORED``
-    was always right for a statute-style PDF), quotes stay as read (they
-    were never mirrored before this function existed).
+    «» are still decided ONCE for the whole document, exactly as before:
+    ``_QUOTE_LOGICAL``/``_QUOTE_MIRRORED`` counted across every page
+    joined together, mirrored only on a strict majority
+    (``quote_mirrored > quote_logical``), left as read on a tie or no
+    evidence (they were never mirrored before this function existed).
 
-    Returns the mirrored pages and the decision itself — the four counts
-    and the two booleans — so a caller (a test, or ``extract_pages``'s
+    Brackets are no longer one whole-document decision — a bracket
+    touching a digit or a Latin letter (``(1)``, ``(VPN)``) reads
+    correctly regardless of how a renderer drew it, but a bracket around
+    an Arabic word (``(الموظف)``) only reads correctly if ITS OWN evidence
+    decides, and a single document-wide rule cannot get both right at
+    once. So:
+
+    1. **Legacy-mode gate.** Counts ``_BRACKET_LOGICAL``/
+       ``_BRACKET_MIRRORED`` (digit-only, unmodified) across the whole
+       document. When ``bracket_mirrored > bracket_logical`` — a CLEAR
+       mirrored majority, strict ``>`` so 0-vs-0 evidence never fires it —
+       "legacy mode" applies: behave EXACTLY as this function always did,
+       mirroring every bracket (``{}``/``<>`` included, exactly as
+       ``MIRRORED`` has always bound them to ``()``/``[]``) via one
+       ``str.translate()`` table. This is what keeps the statute's output
+       byte-identical: its citations are all digit-attached and
+       overwhelmingly mirrored (65 vs 0), a clear majority either way.
+    2. **Otherwise, attached and free brackets each decide on their own
+       evidence.** ``_attached_free_counts`` classifies every bracket
+       pair in the document (any content, not just digits — see
+       ``_iter_bracket_pairs``) as attached (touching a digit or Latin
+       letter with no whitespace between) or free (anything else).
+       Attached mirrors only on ``attached_mirrored > attached_logical``
+       (strict, like the gate); free mirrors on
+       ``free_mirrored >= free_logical`` (the old single rule's own
+       default). Each page is then mirrored occurrence by occurrence
+       (``_mirror_bracket_occurrences``), since a single translate table
+       can no longer represent two different decisions.
+
+    Returns the mirrored pages and the decision itself — every count and
+    boolean along the way — so a caller (a test, or ``extract_pages``'s
     ``report``) can see the evidence, not just trust the result.
     """
     text = "\n".join(pages)
@@ -395,22 +530,46 @@ def mirror_pages(pages: list[str]) -> tuple[list[str], dict]:
     bracket_mirrored = len(_BRACKET_MIRRORED.findall(text))
     quote_logical = len(_QUOTE_LOGICAL.findall(text))
     quote_mirrored = len(_QUOTE_MIRRORED.findall(text))
+    legacy_mode = bracket_mirrored > bracket_logical
+    mirror_quotes = quote_mirrored > quote_logical
 
     decision = {
         "bracket_logical": bracket_logical,
         "bracket_mirrored": bracket_mirrored,
-        "mirror_brackets": bracket_mirrored >= bracket_logical,
         "quote_logical": quote_logical,
         "quote_mirrored": quote_mirrored,
-        "mirror_quotes": quote_mirrored > quote_logical,
+        "mirror_quotes": mirror_quotes,
+        "legacy_mode": legacy_mode,
     }
 
-    table: dict[int, str] = {}
-    if decision["mirror_brackets"]:
-        table.update(MIRRORED)
-    if decision["mirror_quotes"]:
-        table.update(MIRRORED_QUOTES)
-    mirrored_pages = [p.translate(table) if table else p for p in pages]
+    if legacy_mode:
+        table: dict[int, str] = dict(MIRRORED)
+        if mirror_quotes:
+            table.update(MIRRORED_QUOTES)
+        decision["mirror_brackets"] = True
+        mirrored_pages = [p.translate(table) for p in pages]
+        return mirrored_pages, decision
+
+    attached_logical, attached_mirrored, free_logical, free_mirrored = _attached_free_counts(text)
+    mirror_attached = attached_mirrored > attached_logical
+    mirror_free = free_mirrored >= free_logical
+    decision.update(
+        {
+            "mirror_brackets": False,
+            "attached_logical": attached_logical,
+            "attached_mirrored": attached_mirrored,
+            "mirror_attached": mirror_attached,
+            "free_logical": free_logical,
+            "free_mirrored": free_mirrored,
+            "mirror_free": mirror_free,
+        }
+    )
+
+    quote_table = MIRRORED_QUOTES if mirror_quotes else {}
+    mirrored_pages = []
+    for p in pages:
+        p = _mirror_bracket_occurrences(p, mirror_attached, mirror_free)
+        mirrored_pages.append(p.translate(quote_table) if quote_table else p)
     return mirrored_pages, decision
 
 
@@ -447,11 +606,13 @@ def extract_pages(
     starting the next.
 
     Every page is read once, in raw (unmirrored) form, before ``mirror_pages``
-    decides — once, for the document as a whole — whether brackets and «»
-    need mirroring; see its docstring. Passing a dict as ``report`` fills it
-    with that decision (the four counts and the two booleans), for a caller
-    that wants to log what was decided; ``report=None`` (the default) costs
-    nothing extra and changes no other caller's behaviour.
+    decides whether «» need mirroring (once, for the document as a whole)
+    and whether brackets do (once for the whole document in "legacy mode",
+    or per attached/free class otherwise); see its docstring. Passing a
+    dict as ``report`` fills it with that decision (every count and
+    boolean along the way), for a caller that wants to log what was
+    decided; ``report=None`` (the default) costs nothing extra and changes
+    no other caller's behaviour.
     """
     import pdfplumber  # imported lazily: only the PDF path needs it
 

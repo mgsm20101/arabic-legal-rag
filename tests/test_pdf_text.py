@@ -465,6 +465,111 @@ def test_curly_and_angle_brackets_follow_the_bracket_decision():
     assert mirrored == ["فيه (1) في مكان ما، وفيه أيضاً {غير مرتبط} في مكان آخر."]
 
 
+# ---------------------------- mirror_pages, rule (c): attached vs free -----
+#
+# A bracket's mirror direction depends on what it wraps, not on the whole
+# document: a bracket touching a digit or a Latin letter (a citation number,
+# an acronym) reads correctly regardless of how a renderer drew it, but a
+# bracket around an Arabic word only reads correctly if its OWN evidence
+# decides. "Legacy mode" is the escape hatch that keeps the statute's
+# output byte-identical: when digit/letter-attached brackets are a clear
+# mirrored majority, behave exactly as `mirror_pages` always did — mirror
+# every bracket in the document via the single `MIRRORED` table. Otherwise,
+# attached and free brackets each decide from their own evidence. «» are
+# never split this way — see the tests below confirming that.
+
+
+def test_legacy_mode_still_mirrors_every_bracket_including_a_free_one():
+    """Attached brackets are almost all `)N(` — a clear mirrored majority —
+    so legacy mode applies and EVERY bracket is mirrored via the single
+    `MIRRORED` table, exactly as before this rule existed, including a
+    free Arabic-word bracket that would decide the OPPOSITE way on its
+    own evidence."""
+    pages = [
+        "نص فيه )1( وفيه أيضاً )2( وفيه )3( وأيضاً )4(، ثم فيه بند حر )الموظف(."
+    ]
+    mirrored, decision = mirror_pages(pages)
+    assert decision["mirror_brackets"] is True
+    assert mirrored == [
+        "نص فيه (1) وفيه أيضاً (2) وفيه (3) وأيضاً (4)، ثم فيه بند حر (الموظف)."
+    ]
+
+
+def test_mixed_document_decides_attached_and_free_independently():
+    """The scenario the whole fix exists for: attached brackets read
+    logically (a clear majority, not mirrored) while free brackets read
+    mirrored (also a clear majority), in the SAME document. Each class
+    must decide on its own evidence: the numbered citations stay exactly
+    as read, and the two free Arabic-word brackets get mirrored back to
+    logical order."""
+    pages = [
+        "المادة الأولى (1) والمادة الثانية (2) والمادة الثالثة (3)، "
+        "وفيها أيضاً )الموظف( و)موظف آخر(."
+    ]
+    mirrored, decision = mirror_pages(pages)
+    assert decision["mirror_brackets"] is False
+    assert decision["mirror_attached"] is False
+    assert decision["mirror_free"] is True
+    assert mirrored == [
+        "المادة الأولى (1) والمادة الثانية (2) والمادة الثالثة (3)، "
+        "وفيها أيضاً (الموظف) و(موظف آخر)."
+    ]
+
+
+def test_zero_evidence_document_does_not_trigger_legacy_mode():
+    """A single free mirrored bracket, no attached brackets anywhere: the
+    legacy gate must NOT fire on 0-vs-0 attached evidence — that was the
+    old `>=` bug (see the module's `MIRRORED` docstring). The free class
+    decides on its OWN 1-mirrored/0-logical evidence instead, and mirrors
+    it — nothing forces "mirror everything" here, unlike the old rule."""
+    pages = ["نص فيه بند حر )الموظف( لا غير."]
+    mirrored, decision = mirror_pages(pages)
+    assert decision["mirror_brackets"] is False
+    assert decision["free_mirrored"] == 1 and decision["free_logical"] == 0
+    assert decision["mirror_free"] is True
+    assert mirrored == ["نص فيه بند حر (الموظف) لا غير."]
+
+
+def test_attached_tie_leaves_both_readings_alone():
+    """Equal attached-mirrored and attached-logical counts: the strict `>`
+    rule (unlike the old `>=`) means a tie changes NOTHING, in either
+    direction — both stay exactly as read."""
+    pages = ["نص فيه (1) وفيه أيضاً )2(."]
+    mirrored, decision = mirror_pages(pages)
+    assert decision["mirror_brackets"] is False
+    assert decision["attached_logical"] == 1 and decision["attached_mirrored"] == 1
+    assert decision["mirror_attached"] is False
+    assert mirrored == pages
+
+
+def test_latin_attached_brackets_count_as_attached_not_free():
+    """`(VPN)`/`(Wi-Fi)` are Latin-attached — not free — so they must stay
+    exactly as read even though a free Arabic bracket elsewhere in the
+    same document independently decides to mirror."""
+    pages = [
+        "يمكن استخدام (VPN) أو (Wi-Fi) للاتصال، وفيها أيضاً بند حر )الموظف(."
+    ]
+    mirrored, decision = mirror_pages(pages)
+    assert decision["mirror_attached"] is False
+    assert decision["mirror_free"] is True
+    assert mirrored == [
+        "يمكن استخدام (VPN) أو (Wi-Fi) للاتصال، وفيها أيضاً بند حر (الموظف)."
+    ]
+
+
+def test_quotes_remain_one_whole_document_decision_independent_of_bracket_class():
+    """«» keep exactly the same single, whole-document decision as before,
+    with no attached/free split — confirmed here on a document that goes
+    through the LEGACY bracket branch (attached brackets are a clear
+    mirrored majority) while its quotes are majority LOGICAL and so stay
+    untouched: the two decisions never leak into each other."""
+    pages = ["نص فيه )1( وفيه أيضاً )2(، وفيه أيضاً «اقتباس صحيح»."]
+    mirrored, decision = mirror_pages(pages)
+    assert decision["mirror_brackets"] is True
+    assert decision["mirror_quotes"] is False
+    assert mirrored == ["نص فيه (1) وفيه أيضاً (2)، وفيه أيضاً «اقتباس صحيح»."]
+
+
 def test_the_real_fixtures_guillemets_match_its_plain_text_sources_orientation(policy_ar_pages):
     """policy_ar.pdf's only «» pair (policy_ar.txt line 53) arrives
     mirror-drawn on this browser-rendered PDF — measured directly, not

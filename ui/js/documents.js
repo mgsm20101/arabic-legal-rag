@@ -283,11 +283,16 @@ function clearPendingRow(state) {
   state.stopPendingClock = null;
 }
 
-/** A file dropped anywhere but the picker would open in the tab and wipe the conversation. */
+/**
+ * A file dropped anywhere but an idle picker would open in the tab and wipe the conversation.
+ * Only file drags are touched: text dragged into the question box is the browser's to handle.
+ */
 export function guardStrayDrop({ ui }, event) {
-  if (event.target instanceof Node && ui.filePicker.contains(event.target)) return;
+  if (!event.dataTransfer?.types.includes("Files")) return;
+  // mid-upload the input is disabled, Chromium refuses a drop on it, and the file would open instead
+  if (!ui.fileInput.disabled && ui.filePicker.contains(event.target)) return;
   event.preventDefault();
-  if (event.type === "dragover" && event.dataTransfer !== null) event.dataTransfer.dropEffect = "none";
+  if (event.type === "dragover") event.dataTransfer.dropEffect = "none";
 }
 
 // --- delete ------------------------------------------------------------------
@@ -317,8 +322,11 @@ async function deleteDocument(ctx, doc, button) {
     return;
   }
   ctx.announce(TEXT.deleted(doc.title), { tone: "success" });
-  await refreshDocuments(ctx);
+  // The row and its busy state go now: a refresh that fails below must not leave them behind.
+  state.documents = state.documents.filter((item) => item.id !== doc.id);
   state.deleting = withoutId(state.deleting, doc.id);
+  renderDocuments(ctx);
+  await refreshDocuments(ctx);
   focusDocumentAt(ctx.ui, position);
   refreshHealth(ctx);
 }

@@ -158,6 +158,34 @@ def test_a_page_sources_position_page_or_ordinal_never_becomes_an_article_number
     assert result.dropped == {"uncited": 0, "fabricated": 0, "ungrounded": 1}
 
 
+def test_an_article_respelled_with_tashkeel_tatweel_or_a_colon_is_checked_against_its_sources_all_the_same():
+    """The gate reads each claim after evaluation_normalize, so a shadda, a
+    fatha or a tatweel inside «مادة» hides nothing, and «المادة: 30» names
+    article 30 too. None may rest on a page whose text names no article 30;
+    the plain spelling, citing a page that does name it, is kept."""
+    silent = "يلتزم الموظف بإبلاغ فريق أمن المعلومات خلال 24 ساعة من فقدان الجهاز."
+    naming = "وتحدد المادة 30 من لائحة الجزاءات عقوبة التأخير في الإبلاغ عن فقدان الجهاز."
+    pages = [Chunk(id=f"{POLICY_ID}:{n}", doc_id=POLICY_ID, number=n, article=None,
+                   label=f"ص {n}", page=n, text=text) for n, text in enumerate((silent, naming), start=1)]
+    library = _FakeLibrary(*(LibraryHit(chunk, "سياسة العمل", 0.9) for chunk in pages))
+    penalty = "يعاقب الموظف على التأخير في الإبلاغ"
+    respelled = [
+        f"{penalty} وفقاً للمادّة 30.",   # shadda on the dal: للمادّة
+        f"{penalty} وفقاً للمَادة 30.",   # fatha on the meem: للمَادة
+        f"{penalty} وفقاً للمـادة 30.",   # tatweel: للمـادة
+        f"{penalty} بحسب المادة: 30.",
+    ]
+    grounded = f"{penalty} وفقاً للمادة 30."
+    generator, _, _ = _gated([ANSWERS_YES], [claims_json(*((text, [1]) for text in respelled), (grounded, [2]))])
+
+    result = Pipeline(library, generator).ask("ما عقوبة التأخير في الإبلاغ عن فقدان الجهاز؟")
+
+    assert citations(silent) == [] and citations(naming) == [30]
+    assert result.claims == [{"text": grounded, "sources": [2]}]
+    assert result.dropped == {"uncited": 0, "fabricated": 0, "ungrounded": 4}
+    assert result.status == "partial"
+
+
 def test_the_result_never_carries_raw_model_output_or_dropped_claim_text():
     copied_claim = POLICY_TEXT  # verbatim, so the gate marks it copied
     dropped_claim = "جملة محذوفة لا يجوز أن تصل إلى المستخدم أبدا."

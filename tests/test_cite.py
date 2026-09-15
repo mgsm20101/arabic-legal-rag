@@ -728,3 +728,100 @@ def test_a_sources_self_citation_is_still_recognised_across_an_invisible_format_
 
     assert result["ungrounded"] == 0
     assert result["kept"] == [{"text": claim_text, "sources": [1], "copied": False}]
+
+
+# --- Further follow-ups: digit-adjacent format characters, every Cf -------
+# --- character (not just five), and the colon before رقم -----------------
+#
+# A reviewer found one more escape and two more gaps in the fix above.
+#
+# 1. Stripping a format character can JOIN two digits it used to sit
+#    between. "المادة 1<RLM>2" (RLM between "1" and "2") reads, after
+#    stripping, as article 12 -- but UAX#9 says a bidi-aware renderer
+#    DISPLAYS that same text as "21": the mark changes which digit a
+#    reader sees first. Neither "12" nor "21" is a number the claim
+#    unambiguously named, so a claim with this anywhere is dropped
+#    outright, before any number is read from it -- never joined, never
+#    split. Between a letter and a digit, or between two letters, nothing
+#    changes: the character is stripped as before.
+# 2. The five characters from the previous fix are all Unicode category
+#    Cf ("format") -- the fix now strips every Cf character, tested
+#    against `unicodedata.category` directly rather than a fixed list, so
+#    it also covers ZWSP (U+200B), word joiner (U+2060), the BOM
+#    (U+FEFF), soft hyphen (U+00AD), the bidi embeddings/overrides
+#    (U+202A-202E) and isolates (U+2066-2069) -- and anything added to
+#    the category later. `evaluation_normalize` itself is untouched.
+# 3. "المادة: رقم 30" -- the colon BEFORE رقم -- was still missed; only
+#    the colon AFTER رقم ("المادة رقم: 30") was recognised.
+
+_FORMAT_CHARS_BETWEEN_DIGITS = {
+    "rlm": "\u200f",
+    "alm": "\u061c",
+}
+
+
+@pytest.mark.parametrize("mark", _FORMAT_CHARS_BETWEEN_DIGITS.values(),
+                          ids=_FORMAT_CHARS_BETWEEN_DIGITS.keys())
+def test_a_format_character_between_two_digits_drops_the_claim(mark):
+    """The exact scenario the reviewer found: the claim's article number
+    is only readable as "12" because stripping joined "1" and "2" across
+    an RLM (or ALM) -- a bidi-aware renderer would show "21" for the same
+    text. The source DOES name article 12, so before this fix the claim
+    was wrongly kept; now it is dropped regardless of what its sources
+    name, because the number itself is never safely readable."""
+    claim_text = f"يلزم الحفظ بموجب المادة 1{mark}2 لمدة سنة كاملة."
+    parsed = {"abstain": False, "claims": [{"text": claim_text, "sources": [1]}]}
+
+    result = gate(parsed, [12], ["نص يذكر المادة 12 بوضوح تام."])
+
+    assert result["ungrounded"] == 1
+    assert result["dropped"][0]["reason"] == "ungrounded"
+    assert result["dropped"][0]["text"] == claim_text
+    assert result["kept"] == []
+
+
+_FORMAT_CHARS_BETWEEN_WORD_AND_NUMBER = {
+    "lrm": "\u200e",
+    "zwsp": "\u200b",
+}
+
+
+@pytest.mark.parametrize("mark", _FORMAT_CHARS_BETWEEN_WORD_AND_NUMBER.values(),
+                          ids=_FORMAT_CHARS_BETWEEN_WORD_AND_NUMBER.keys())
+def test_a_claim_naming_an_uncited_article_is_ungrounded_across_any_cf_character(mark):
+    """Between a word and a number, not between two digits -- the claim is
+    still read and correctly dropped as ungrounded, exactly like the five
+    originally-named characters. LRM was already one of the five; ZWSP
+    (U+200B) was not, and pins that the general Cf-category strip covers
+    it too, not just the characters named when the fix first shipped."""
+    claim_text = f"يلزم الحفظ لمدة سنة كاملة المادة {mark}30."
+    parsed = {"abstain": False, "claims": [{"text": claim_text, "sources": [1]}]}
+
+    result = gate(parsed, SOURCE_NUMBERS, SOURCE_TEXTS)
+
+    assert result["ungrounded"] == 1
+    assert result["dropped"][0]["reason"] == "ungrounded"
+    assert result["kept"] == []
+
+
+def test_a_colon_before_raqm_is_recognised_too():
+    """"المادة: رقم 30" -- colon BEFORE رقم. Round 6 recognised the colon
+    AFTER رقم ("المادة رقم: 30"); this position was still missed."""
+    assert citations("المادة: رقم 30") == [30]
+
+
+def test_a_colon_before_raqm_following_a_plural_head_word_is_still_not_a_citation():
+    """The narrowing to the singular head word holds at this colon
+    position too."""
+    assert citations("عدد المواد: رقم 12") == []
+
+
+def test_a_claim_naming_an_uncited_article_by_colon_before_raqm_is_ungrounded():
+    claim_text = "يلزم الحفظ لمدة سنة كاملة المادة: رقم 30."
+    parsed = {"abstain": False, "claims": [{"text": claim_text, "sources": [1]}]}
+
+    result = gate(parsed, SOURCE_NUMBERS, SOURCE_TEXTS)
+
+    assert result["ungrounded"] == 1
+    assert result["dropped"][0]["reason"] == "ungrounded"
+    assert result["kept"] == []

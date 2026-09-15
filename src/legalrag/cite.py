@@ -32,6 +32,7 @@ than an impression.
 from __future__ import annotations
 
 import re
+import unicodedata
 
 from .normalize import evaluation_normalize, normalize_digits
 
@@ -49,13 +50,14 @@ _NUMBER_GROUP = r"((?:[\(\[]?[ \t]*[0-9٠-٩۰-۹]{1,3}[ \t]*[\)\]]?[ \t]*[،,و
 LOOSE_CITATION = re.compile(
     r"(?:"
     # A colon reads the same as a space to anyone fluent — «المادة: 30»،
-    # «المادة :30» and «المادة رقم: 30» are unambiguously citations — but
-    # ONLY after the SINGULAR head word. After a dual or plural one
-    # ("المواد: 12", "عدد المواد رقم: 12") a colon is far more likely to
-    # introduce a count or a list than to cite that number as an article;
-    # unnarrowed, this once misread «عدد المواد: 12» ("number of subjects:
-    # 12") as citing article 12.
-    + _SINGULAR_HEAD + r"[ \t]*(?:رقم[ \t]*)?:?[ \t]*"
+    # «المادة :30»، «المادة رقم: 30» and «المادة: رقم 30» (colon before OR
+    # after رقم) are unambiguously citations — but ONLY after the SINGULAR
+    # head word. After a dual or plural one ("المواد: 12", "عدد المواد
+    # رقم: 12") a colon is far more likely to introduce a count or a list
+    # than to cite that number as an article; unnarrowed, this once
+    # misread «عدد المواد: 12» ("number of subjects: 12") as citing
+    # article 12.
+    + _SINGULAR_HEAD + r"[ \t]*:?[ \t]*(?:رقم[ \t]*:?[ \t]*)?"
     r"|" + _DUAL_OR_PLURAL_HEAD + r"[ \t]*(?:رقم)?[ \t]*"
     r")" + _NUMBER_GROUP
 )
@@ -217,19 +219,59 @@ def audit(
     }
 
 
-# RLM, LRM, ZWNJ, ZWJ and ALM (Unicode "format" characters, category Cf)
-# have no visible glyph and are not whitespace by Python's `\s` either, so
-# one sitting between a head word and its number is invisible on screen and
-# untouched by `evaluation_normalize`'s NFKC/tashkeel/tatweel/whitespace
-# steps. `evaluation_normalize` is not the place to fix that: it is the
-# benchmark's scoring normaliser, shared with every comparison of a
-# candidate answer to a reference, and is left alone here on purpose.
-# Stripped instead in the gate's own comparison step below, on both sides.
-_INVISIBLE_FORMAT_CHARS = str.maketrans("", "", "\u200e\u200f\u200c\u200d\u061c")
+# Every Unicode category Cf ("format") character \u2014 RLM, LRM, ZWNJ, ZWJ,
+# ALM, ZWSP (U+200B), word joiner (U+2060), the BOM (U+FEFF), soft hyphen
+# (U+00AD), the bidi embeddings/overrides (U+202A-202E) and isolates
+# (U+2066-2069), and any future addition to the category \u2014 has no visible
+# glyph and is not whitespace by Python's `\s` either, so one sitting
+# between a head word and its number, or between two digits, is invisible
+# on screen and untouched by `evaluation_normalize`'s NFKC/tashkeel/
+# tatweel/whitespace steps. `evaluation_normalize` is not the place to fix
+# that: it is the benchmark's scoring normaliser, shared with every
+# comparison of a candidate answer to a reference, and is left alone here
+# on purpose. Handled instead in the gate's own comparison step below, on
+# both sides \u2014 tested against `unicodedata.category` directly rather than
+# a fixed list, so a Cf character no one has hit yet is still covered.
+def _is_format_char(ch: str) -> bool:
+    return unicodedata.category(ch) == "Cf"
 
 
 def _strip_invisible_format_chars(text: str) -> str:
-    return text.translate(_INVISIBLE_FORMAT_CHARS)
+    return "".join(ch for ch in text if not _is_format_char(ch))
+
+
+_DIGITS = "0123456789\u0660\u0661\u0662\u0663\u0664\u0665\u0666\u0667\u0668\u0669\u06f0\u06f1\u06f2\u06f3\u06f4\u06f5\u06f6\u06f7\u06f8\u06f9"
+
+
+def _has_format_char_between_digits(text: str) -> bool:
+    """True if a Cf character sits directly between two digits, with
+    nothing else between them.
+
+    RLM between "1" and "2" makes `_strip_invisible_format_chars` read
+    "12" \u2014 but a bidi-aware renderer displays that same text as "21"
+    (UAX#9): the mark changes which digit a reader sees first. Joining the
+    two digits guesses at a number the claim never unambiguously named,
+    and splitting them (treating each as its own number) is not obviously
+    safer either. Neither is attempted: a claim whose text has this
+    anywhere is dropped outright, before any number is read from it.
+
+    Between a letter and a digit, or between two letters, a Cf character
+    is stripped as before \u2014 this check fires only on digit-Cf(+)-digit.
+    """
+    seen_digit = False
+    format_chars_since_digit = 0
+    for ch in text:
+        if ch in _DIGITS:
+            if seen_digit and format_chars_since_digit > 0:
+                return True
+            seen_digit = True
+            format_chars_since_digit = 0
+        elif _is_format_char(ch):
+            format_chars_since_digit += 1
+        else:
+            seen_digit = False
+            format_chars_since_digit = 0
+    return False
 
 
 def _gate_one_claim(
@@ -278,7 +320,17 @@ def _gate_one_claim(
     # format characters as above closes the gap `evaluation_normalize`
     # itself does not cover. `text` itself stays raw below, since
     # normalising is for comparison, not display.
-    normalised_text = _strip_invisible_format_chars(evaluation_normalize(text))
+    normalised_for_digits = evaluation_normalize(text)
+
+    # Checked BEFORE stripping: once the format characters are gone, "1"
+    # and "2" with an RLM between them are indistinguishable from a plain
+    # "12" — see `_has_format_char_between_digits` for why neither joining
+    # nor splitting them is safe. A claim with this anywhere is dropped
+    # outright, never mind what number `citations` might otherwise read.
+    if _has_format_char_between_digits(normalised_for_digits):
+        return None, {"text": text, "sources": sources, "reason": "ungrounded"}
+
+    normalised_text = _strip_invisible_format_chars(normalised_for_digits)
 
     # `copied` is still computed and still reported (`report_claims`'s own
     # rate) — it just no longer decides what is allowed. See `gate`'s

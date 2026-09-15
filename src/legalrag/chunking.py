@@ -72,14 +72,16 @@ def chunk_document(doc_id: str, pages: list[str], title: str = "") -> tuple[str,
     is stamped onto the parsed articles as their law name. For both kinds,
     `number` runs 1..N over the whole document.
     """
-    # Universal newlines, as a text-mode read would give: ingest's header
-    # patterns end a header line at "\n", so a Windows-saved statute
-    # ("مادة 1\r\n") would otherwise never be recognised as one.
-    pages = [p.replace("\r\n", "\n").replace("\r", "\n") for p in pages]
-    articles = _article_chunks(doc_id, pages, title)
+    articles = statute_chunks(doc_id, pages, title)
     if articles is not None:
         return "statute", articles
-    return "generic", _page_chunks(doc_id, pages)
+    return "generic", page_chunks(doc_id, pages)
+
+
+def may_be_statute(pages: list[str]) -> bool:
+    """Whether `pages` carry at least MIN_STATUTE_ARTICLES article headers — enough to be
+    worth a statute check, which for a PDF means a second, Arabic-only extraction."""
+    return len(ingest.article_headers("\n".join(_universal_newlines(pages)))) >= MIN_STATUTE_ARTICLES
 
 
 def tidy(text: str) -> str:
@@ -101,8 +103,10 @@ def tidy(text: str) -> str:
 # ------------------------------------------------------------------ statute
 
 
-def _article_chunks(doc_id: str, pages: list[str], title: str) -> list[Chunk] | None:
-    """One chunk per article, or None when the document is not a statute."""
+def statute_chunks(doc_id: str, pages: list[str], title: str = "") -> list[Chunk] | None:
+    """One chunk per article, or None when `pages` are not a statute: fewer than
+    MIN_STATUTE_ARTICLES articles, or any problem `ingest.validate` finds."""
+    pages = _universal_newlines(pages)
     text = "\n".join(pages)
     articles = ingest.parse(text, source_file=doc_id, law_name=title)
     if len(articles) < MIN_STATUTE_ARTICLES or ingest.validate(articles):
@@ -122,6 +126,12 @@ def _article_chunks(doc_id: str, pages: list[str], title: str) -> list[Chunk] | 
             text=tidy(article.text),
         ))
     return chunks
+
+
+def _universal_newlines(pages: list[str]) -> list[str]:
+    """As a text-mode read would give them: ingest's header patterns end a header line at
+    "\\n", so a Windows-saved statute ("مادة 1\\r\\n") would never be recognised as one."""
+    return [p.replace("\r\n", "\n").replace("\r", "\n") for p in pages]
 
 
 def _header_pages(text: str, pages: list[str]) -> list[int]:
@@ -155,7 +165,8 @@ def _header_pages(text: str, pages: list[str]) -> list[int]:
 # ------------------------------------------------------------------ generic
 
 
-def _page_chunks(doc_id: str, pages: list[str]) -> list[Chunk]:
+def page_chunks(doc_id: str, pages: list[str]) -> list[Chunk]:
+    """Chunks built from each page's own lines, never crossing a page — whatever headers they hold."""
     chunks: list[Chunk] = []
     for page_number, page in enumerate(pages, start=1):
         for piece in _page_pieces(page):
@@ -176,12 +187,13 @@ def _page_chunks(doc_id: str, pages: list[str]) -> list[Chunk]:
 
 
 def _page_pieces(page: str) -> list[str]:
-    """One page's non-empty stripped lines, packed into pieces of at most
-    MAX_CHUNK_CHARS; a last piece under MIN_CHUNK_CHARS joins the one
-    before it, which puts that piece at most MIN_CHUNK_CHARS past the cap."""
+    """One page's non-empty lines, packed into pieces of at most MAX_CHUNK_CHARS;
+    a last piece under MIN_CHUNK_CHARS joins the one before it, which puts that
+    piece at most MIN_CHUNK_CHARS past the cap. Lines are measured normalized,
+    as the chunk text will be: NFKC can turn one character into a phrase."""
     units: list[str] = []
     for line in page.splitlines():
-        line = line.strip()
+        line = evaluation_normalize(line)
         if line:
             units.extend(_split_long_line(line) if len(line) > MAX_CHUNK_CHARS else [line])
 

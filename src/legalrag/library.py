@@ -31,7 +31,7 @@ from pathlib import Path
 from time import monotonic
 
 from . import dense, pdf_text
-from .chunking import Chunk, chunk_document
+from .chunking import Chunk, chunk_document, may_be_statute, page_chunks, statute_chunks
 from .dense import DenseIndex, Encoder
 from .docindex import DocumentIndex, EncoderUnavailable, IndexDamaged, LazyEncoder, index_docs, load_index
 from .docstore import CHUNKS, EMBEDDINGS, META, DocMeta, clear_stale, missing
@@ -157,12 +157,16 @@ class Library:
             staging.mkdir(parents=True)
             source = staging / f"source{suffix}"
             source.write_bytes(data)
-            pages = _pdf_pages(source) if text is None else text.split("\f")
+            deadline = monotonic() + EXTRACTION_BUDGET_SECONDS  # one budget for every extraction of this upload
+            pages = _pdf_pages(source, True, deadline) if text is None else text.split("\f")
             chars = sum(len(run) for page in pages for run in page.split())
             if chars < MIN_TEXT_CHARS:
                 raise NoTextLayer(f"only {chars} characters of text were found; at least "
                                   f"{MIN_TEXT_CHARS} are needed (a scanned PDF needs OCR first)")
-            kind, chunks = chunk_document(doc_id, pages, title)
+            if text is None:
+                kind, chunks = _pdf_chunks(doc_id, source, pages, title, deadline)
+            else:
+                kind, chunks = chunk_document(doc_id, pages, title)
             if not chunks:
                 raise NoTextLayer("no readable text was found in the document")
             write_chunks(staging / CHUNKS, chunks)
@@ -337,13 +341,24 @@ def _decode_text(data: bytes) -> str:
     raise UnsupportedFile("the text is not in an accepted encoding")
 
 
-def _pdf_pages(path: Path) -> list[str]:
+def _pdf_chunks(doc_id: str, source: Path, pages: list[str], title: str, deadline: float) -> tuple[str, list[Chunk]]:
+    """A PDF's chunks. `pages` kept their Latin, which suits any document but a bilingual statute,
+    whose translation column welds into the Arabic lines: Law 151/2020 shows 4 articles that way
+    and 56 without. Pages showing enough headers are extracted again Arabic-only, under the same
+    deadline, and chunked as a statute if that validates; otherwise they stay page chunks."""
+    if may_be_statute(pages):
+        statute = statute_chunks(doc_id, _pdf_pages(source, False, deadline), title)
+        if statute is not None:
+            return "statute", statute
+    return "generic", page_chunks(doc_id, pages)
+
+
+def _pdf_pages(path: Path, keep_latin: bool, deadline: float) -> list[str]:
+    """A PDF's pages within MAX_PDF_PAGES and `deadline`. keep_latin=True keeps an uploaded Arabic
+    document's inline terms (VPN, Wi-Fi, Microsoft Teams), which the default drops; its known limit,
+    a side-by-side bilingual page left unsplit, is why a statute gets a second, Arabic-only pass."""
     try:
-        # keep_latin=True: the default drops EVERY Latin glyph, right for the bilingual statute
-        # corpus but losing an uploaded Arabic document's inline terms (VPN, Wi-Fi, Microsoft
-        # Teams). Known limit of this mode: a side-by-side bilingual page is not split.
-        return pdf_text.extract_pages(path, keep_latin=True, max_pages=MAX_PDF_PAGES,
-                                      deadline=monotonic() + EXTRACTION_BUDGET_SECONDS)
+        return pdf_text.extract_pages(path, keep_latin=keep_latin, max_pages=MAX_PDF_PAGES, deadline=deadline)
     except pdf_text.ExtractionLimitExceeded as e:
         raise PdfTooLarge(str(e)) from e
     except Exception as e:  # a damaged PDF raises whatever pdfminer hits first

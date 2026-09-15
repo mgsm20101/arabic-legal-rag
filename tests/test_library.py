@@ -331,6 +331,113 @@ def test_both_pdf_limits_reach_extract_pages_from_add(tmp_path, monkeypatch):
     assert [(s["keep_latin"], s["max_pages"], s["deadline"]) for s in seen] == [(True, 500, 1180.0)]
 
 
+_BODIES = [
+    "يلتزم المتحكم بالحصول على موافقة صريحة من الشخص المعني قبل جمع بياناته الشخصية",
+    "يجب إخطار المركز بأي خرق للبيانات الشخصية خلال اثنتين وسبعين ساعة من العلم به",
+    "يحق للشخص المعني طلب تصحيح بياناته الشخصية أو محوها متى كانت غير صحيحة",
+]
+# The same statute as extracted with Latin kept and without: a bilingual page
+# welds the translation into the Arabic text (and here a stray fourth header),
+# so only the Arabic-only extraction validates as a statute.
+STATUTE_ARABIC = [f"مادة {n}\n{body}" for n, body in enumerate(_BODIES, start=1)]
+STATUTE_LATIN = [
+    f"مادة {n}\nArticle {n} of the translation, set beside the Arabic text\n{body}"
+    for n, body in enumerate(_BODIES, start=1)
+]
+STATUTE_LATIN[-1] += "\nمادة 7\nArticle 7 continues in English only"
+RAW_STATUTE = Path(__file__).resolve().parents[1] / "data" / "raw" / "law-151-2020-personal-data-protection.pdf"
+
+
+def _two_pass_extractor(latin: list[str], arabic: list[str], calls: list, second_pass_error=None):
+    def fake(path, keep_latin=False, line_tol=None, *, max_pages=None, deadline=None):
+        calls.append((keep_latin, max_pages, deadline))
+        if not keep_latin and second_pass_error is not None:
+            raise second_pass_error
+        return list(latin if keep_latin else arabic)
+
+    return fake
+
+
+def _stored_chunks(root: Path, meta) -> list[dict]:
+    lines = (root / "docs" / meta.doc_id / "chunks.jsonl").read_text(encoding="utf-8").splitlines()
+    return [json.loads(line) for line in lines]
+
+
+def test_a_statute_like_pdf_is_chunked_as_a_statute_from_a_second_arabic_only_extraction(tmp_path, monkeypatch):
+    calls: list[tuple] = []
+    monkeypatch.setattr(pdf_text, "extract_pages", _two_pass_extractor(STATUTE_LATIN, STATUTE_ARABIC, calls))
+    monkeypatch.setattr(library_mod, "monotonic", lambda: 1000.0)
+    library = Library(tmp_path, encoder=KeywordEncoder())
+
+    meta = library.add(b"%PDF-1.7 bilingual statute", "law.pdf")
+
+    assert calls == [(True, 500, 1180.0), (False, 500, 1180.0)]  # one budget for both passes
+    assert (meta.kind, meta.pages, meta.chunks) == ("statute", 3, 3)
+    chunks = _stored_chunks(tmp_path, meta)
+    assert [c["label"] for c in chunks] == ["مادة 1", "مادة 2", "مادة 3"]
+    assert not any(re.search("[A-Za-z]", c["text"]) for c in chunks)
+
+
+def test_headers_whose_arabic_only_text_is_no_valid_statute_fall_back_to_the_first_extractions_pages(
+    tmp_path, monkeypatch,
+):
+    calls: list[tuple] = []
+    not_a_statute = [*STATUTE_ARABIC[:2], STATUTE_ARABIC[2].replace("مادة 3", "مادة 5")]  # 3 and 4 missing
+    monkeypatch.setattr(pdf_text, "extract_pages", _two_pass_extractor(STATUTE_LATIN, not_a_statute, calls))
+    library = Library(tmp_path, encoder=KeywordEncoder())
+
+    meta = library.add(b"%PDF-1.7 almost a statute", "almost.pdf")
+
+    assert [keep_latin for keep_latin, _, _ in calls] == [True, False]
+    assert meta.kind == "generic"
+    chunks = _stored_chunks(tmp_path, meta)
+    assert [c["label"] for c in chunks] == ["ص 1", "ص 2", "ص 3"]
+    assert all("Article" in c["text"] for c in chunks)  # the pages kept their Latin terms
+
+
+def test_a_pdf_without_article_headers_is_extracted_once(tmp_path, monkeypatch):
+    calls: list[tuple] = []
+    policy = ["سياسة العمل عن بعد تسري على الموظفين الدائمين عبر شبكة VPN الخاصة " * 5]
+    monkeypatch.setattr(pdf_text, "extract_pages", _two_pass_extractor(policy, ["must never be read"], calls))
+    library = Library(tmp_path, encoder=KeywordEncoder())
+
+    meta = library.add(b"%PDF-1.7 policy", "policy.pdf")
+
+    assert [keep_latin for keep_latin, _, _ in calls] == [True]
+    assert meta.kind == "generic"
+    assert "VPN" in _stored_chunks(tmp_path, meta)[0]["text"]
+
+
+def test_a_deadline_hit_during_the_second_extraction_is_pdf_too_large_and_leaves_nothing_behind(tmp_path, monkeypatch):
+    calls: list[tuple] = []
+    passed = pdf_text.DeadlineExceeded(1, len(STATUTE_ARABIC))
+    monkeypatch.setattr(pdf_text, "extract_pages",
+                        _two_pass_extractor(STATUTE_LATIN, STATUTE_ARABIC, calls, second_pass_error=passed))
+    library = Library(tmp_path, encoder=KeywordEncoder())
+    before = _tree(tmp_path)
+
+    with pytest.raises(library_mod.PdfTooLarge) as refused:
+        library.add(b"%PDF-1.7 slow statute", "slow.pdf")
+
+    assert refused.value.__cause__ is passed
+    assert [keep_latin for keep_latin, _, _ in calls] == [True, False]
+    assert _tree(tmp_path) == before
+    assert library.documents() == []
+
+
+@pytest.mark.skipif(not RAW_STATUTE.exists(), reason="the statute PDF is gitignored third-party text")
+def test_the_real_statute_uploads_as_a_statute_of_its_56_articles(tmp_path):
+    pytest.importorskip("pdfplumber")
+    library = Library(tmp_path, encoder=KeywordEncoder())
+
+    meta = library.add(RAW_STATUTE.read_bytes(), RAW_STATUTE.name)
+
+    chunks = _stored_chunks(tmp_path, meta)
+    assert (meta.kind, meta.pages, meta.chunks) == ("statute", 33, 56)
+    assert sum(c["article"] is not None for c in chunks) == 49  # the law; the other 7 are the issuance law
+    assert not any(re.search("[A-Za-z]", c["text"]) for c in chunks)
+
+
 def test_a_text_file_in_cp1256_or_with_a_utf8_bom_is_decoded(tmp_path):
     text = "تسري هذه السياسة على الموظفين الدائمين، ويلتزم المدير بالرد خلال خمسة أيام عمل. " * 4
     library = Library(tmp_path, encoder=KeywordEncoder())

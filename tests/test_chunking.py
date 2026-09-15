@@ -124,6 +124,19 @@ def test_a_statute_saved_with_windows_line_endings_is_still_a_statute():
     assert [c.page for c in chunks] == [1, 1, 2, 3]
 
 
+def test_statute_and_page_chunks_can_each_be_asked_for_on_their_own():
+    """The library decides which extraction of a PDF each kind is chunked
+    from, so both halves of chunk_document are public."""
+    import legalrag.chunking as chunking_mod
+
+    statute = _statute_pages()
+    assert [c.label for c in chunking_mod.statute_chunks(DOC, statute)] == ["مادة 1", "مادة 2", "مادة 3", "مادة 4"]
+    assert chunking_mod.statute_chunks(DOC, ["نص عادي بلا أي مادة مرقمة فيه على الإطلاق"]) is None
+    assert [c.label for c in chunking_mod.page_chunks(DOC, statute)] == ["ص 1", "ص 2", "ص 3"]
+    assert chunking_mod.may_be_statute(statute) is True
+    assert chunking_mod.may_be_statute(["مادة 1\nنص", "مادة 2\nنص"]) is False  # two headers are a quotation
+
+
 # ---------------------------------------------------------- generic pages --
 
 
@@ -297,6 +310,23 @@ def test_a_last_piece_of_exactly_min_chunk_chars_stands_alone_and_one_character_
     carried, rest = "ب" * 700, "ج" * 150
     _, chunks = chunk_document(DOC, ["\n".join([ends, carried, rest])])
     assert [c.text for c in chunks] == [ends, f"{carried} {rest}"]
+
+
+def test_no_page_chunk_exceeds_the_cap_once_normalization_has_expanded_it():
+    """NFKC turns one ligature into a whole phrase (U+FDFA comes out as 18
+    characters), so a piece measured before normalizing can end up many times
+    the cap."""
+    ligature = "\ufdfa"
+    assert len(evaluation_normalize(ligature)) > 10
+    line = " ".join([ligature] * 45)          # 89 characters as extracted
+    page = "\n".join([line] * 11)             # 989: one piece, measured before normalizing
+
+    _, chunks = chunk_document(DOC, [page])
+
+    assert len(chunks) > 1
+    assert all(len(c.text) <= MAX_CHUNK_CHARS for c in chunks[:-1])
+    assert len(chunks[-1].text) <= MAX_CHUNK_CHARS + MIN_CHUNK_CHARS
+    assert " ".join(c.text for c in chunks) == tidy(evaluation_normalize(page))
 
 
 # ------------------------------------------------------------------ tidy --

@@ -79,9 +79,11 @@ def chunk_document(doc_id: str, pages: list[str], title: str = "") -> tuple[str,
 
 
 def may_be_statute(pages: list[str]) -> bool:
-    """Whether `pages` carry at least MIN_STATUTE_ARTICLES article headers — enough to be
-    worth a statute check, which for a PDF means a second, Arabic-only extraction."""
-    return len(ingest.article_headers("\n".join(_universal_newlines(pages)))) >= MIN_STATUTE_ARTICLES
+    """Whether `pages` carry any article header: reason enough for a statute check, which for a
+    PDF means a second, Arabic-only extraction. One is enough to look, because an extraction that
+    welds a translation into the Arabic lines hides headers (Law 151/2020 shows 4 of its 56);
+    being a statute still takes MIN_STATUTE_ARTICLES valid articles (`statute_chunks`)."""
+    return bool(ingest.article_headers("\n".join(_universal_newlines(pages))))
 
 
 def tidy(text: str) -> str:

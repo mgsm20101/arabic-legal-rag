@@ -452,6 +452,26 @@ def test_a_statute_like_pdf_is_chunked_as_a_statute_from_a_second_arabic_only_ex
     assert not any(re.search("[A-Za-z]", c["text"]) for c in chunks)
 
 
+def test_one_article_header_left_in_the_first_extraction_still_gets_the_arabic_only_extraction(
+    tmp_path, monkeypatch,
+):
+    """Law 151/2020 shows 4 of its 56 headers with Latin kept, and a small shift in that
+    extraction would show fewer: finding the statute must not hang on how many survive."""
+    calls: list[tuple] = []
+    one_header_left = [STATUTE_LATIN[0], *(
+        f"مادة {n} Article {n} of the translation, welded onto the header line\n{body}"
+        for n, body in enumerate(_BODIES[1:], start=2)
+    )]
+    monkeypatch.setattr(pdf_text, "extract_pages", _two_pass_extractor(one_header_left, STATUTE_ARABIC, calls))
+    library = Library(tmp_path, encoder=KeywordEncoder())
+
+    meta = library.add(b"%PDF-1.7 statute with one header left", "law.pdf")
+
+    assert [keep_latin for keep_latin, _, _ in calls] == [True, False]
+    assert (meta.kind, meta.chunks) == ("statute", 3)
+    assert [c["label"] for c in _stored_chunks(tmp_path, meta)] == ["مادة 1", "مادة 2", "مادة 3"]
+
+
 def test_headers_whose_arabic_only_text_is_no_valid_statute_fall_back_to_the_first_extractions_pages(
     tmp_path, monkeypatch,
 ):

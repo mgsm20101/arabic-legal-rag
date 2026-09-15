@@ -134,7 +134,19 @@ def test_statute_and_page_chunks_can_each_be_asked_for_on_their_own():
     assert chunking_mod.statute_chunks(DOC, ["نص عادي بلا أي مادة مرقمة فيه على الإطلاق"]) is None
     assert [c.label for c in chunking_mod.page_chunks(DOC, statute)] == ["ص 1", "ص 2", "ص 3"]
     assert chunking_mod.may_be_statute(statute) is True
-    assert chunking_mod.may_be_statute(["مادة 1\nنص", "مادة 2\nنص"]) is False  # two headers are a quotation
+
+
+def test_one_article_header_is_reason_enough_to_check_for_a_statute_but_never_makes_one():
+    """For a PDF a statute check costs a second extraction. One header earns it, because a
+    bilingual extraction hides headers (Law 151/2020 shows 4 of its 56); being a statute
+    still takes MIN_STATUTE_ARTICLES valid articles."""
+    import legalrag.chunking as chunking_mod
+
+    one_header = ["مقدمة بلا أي عنوان", "مادة 7\nنص المادة"]
+    assert chunking_mod.may_be_statute(one_header) is True
+    assert chunking_mod.statute_chunks(DOC, one_header) is None
+    assert chunking_mod.chunk_document(DOC, one_header)[0] == "generic"
+    assert chunking_mod.may_be_statute(["نص يذكر المادة 7 في سطره ولا يبدأ بها", "   "]) is False
 
 
 # ---------------------------------------------------------- generic pages --

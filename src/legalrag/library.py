@@ -346,7 +346,7 @@ def _decode_text(data: bytes) -> str:
 def _pdf_chunks(doc_id: str, source: Path, pages: list[str], title: str, deadline: float) -> tuple[str, list[Chunk]]:
     """A PDF's chunks. `pages` kept their Latin, which suits any document but a bilingual statute,
     whose translation column welds into the Arabic lines: Law 151/2020 shows 4 articles that way
-    and 56 without. Pages showing enough headers are extracted again Arabic-only, under the same
+    and 56 without. Pages showing any article header are extracted again Arabic-only, under the same
     deadline, and chunked as a statute if that validates. Otherwise they stay page chunks, and so
     they do when that second pass runs out of time: they are a usable document already."""
     if may_be_statute(pages):

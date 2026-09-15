@@ -17,3 +17,5 @@ runs/
 data/app/
 # local model weights live in the project but are never committed
 models/
+# a Hugging Face cache written into the working directory by an empty HF_HUB_CACHE
+models--*/

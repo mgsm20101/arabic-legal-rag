@@ -19,6 +19,8 @@ venv/
 evals/**/*.pdf
 !evals/app/policy_ar.pdf
 
-# Embeddings and secrets, wherever they are
+# Embeddings, stray Hugging Face caches (an empty HF_HUB_CACHE writes
+# models--*/ into the working directory) and secrets, wherever they are
 **/*.npz
+**/models--*
 **/.env

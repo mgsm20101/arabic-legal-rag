@@ -8,12 +8,16 @@ embeddings instead of running the model again. A keyword-count encoder
 stands in for e5 throughout: no model, no network.
 """
 
+import errno
 import hashlib
 import json
+import logging
 import os
 import re
+import shutil
 import sys
 import threading
+import time
 from dataclasses import asdict
 from pathlib import Path
 
@@ -25,9 +29,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 pytest.importorskip("numpy")
 
 import legalrag.library as library_mod  # noqa: E402
-from legalrag import pdf_text  # noqa: E402
+from legalrag import dense, pdf_text  # noqa: E402
 from legalrag.library import (  # noqa: E402
     MAX_UPLOAD_BYTES,
+    STALE_STAGING_SECONDS,
     DocumentNotFound,
     EncoderUnavailable,
     FileTooLarge,
@@ -35,6 +40,7 @@ from legalrag.library import (  # noqa: E402
     LibraryError,
     LibraryHit,
     NoTextLayer,
+    StorageError,
     UnsupportedFile,
 )
 from legalrag.normalize import evaluation_normalize  # noqa: E402
@@ -105,6 +111,25 @@ def test_an_upload_is_stored_as_its_source_meta_chunks_and_embeddings(tmp_path):
     assert meta.chars == len(re.sub(r"\s", "", POLICY.decode("utf-8")))
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00", meta.created_at)
     assert (meta.deleted, meta.deleted_at) == (False, None)
+    assert list((tmp_path / "tmp").iterdir()) == []
+
+
+def test_a_stored_document_whose_full_sha256_differs_is_never_returned_for_these_bytes(tmp_path):
+    """doc_id keeps 48 bits of the sha256: the stored document is these bytes
+    only if the FULL hash agrees."""
+    library = Library(tmp_path, encoder=KeywordEncoder())
+    meta = library.add(POLICY, "policy.txt")
+    meta_path = tmp_path / "docs" / meta.doc_id / "meta.json"
+    forged = {**json.loads(meta_path.read_text(encoding="utf-8")), "sha256": meta.doc_id + "0" * 52}
+    assert forged["sha256"] != meta.sha256  # the same 12-hex id, other bytes
+    meta_path.write_text(json.dumps(forged), encoding="utf-8")
+    reopened = Library(tmp_path, encoder=KeywordEncoder())
+
+    with pytest.raises(StorageError) as mismatch:
+        reopened.add(POLICY, "policy.txt")
+
+    assert mismatch.value.code == "internal"
+    assert json.loads(meta_path.read_text(encoding="utf-8")) == forged
     assert list((tmp_path / "tmp").iterdir()) == []
 
 
@@ -280,6 +305,23 @@ def test_a_text_file_in_cp1256_or_with_a_utf8_bom_is_decoded(tmp_path):
         library.add(text.encode("utf-8") + b"\x00", "binary.txt")
 
 
+def test_a_text_file_that_fails_decoding_is_rejected_before_anything_is_written(tmp_path, monkeypatch):
+    library = Library(tmp_path, encoder=KeywordEncoder())
+    before = _tree(tmp_path)
+    _refuse_new_directories(monkeypatch)
+    arabic = "تسري هذه السياسة على جميع الموظفين الدائمين. " * 10
+
+    with pytest.raises(UnsupportedFile):
+        library.add(arabic.encode("utf-8") + b"\x00", "nul.txt")
+    # cp1256 maps every byte value, so text is undecodable only under a stricter list.
+    monkeypatch.setattr(library_mod, "TEXT_ENCODINGS", ("utf-8-sig",))
+    with pytest.raises(UnsupportedFile):
+        library.add(arabic.encode("cp1256"), "legacy.txt")
+
+    assert _tree(tmp_path) == before
+    assert library.documents() == []
+
+
 # ------------------------------------------------------------------ lookup --
 
 
@@ -348,6 +390,9 @@ def test_a_library_reopened_on_the_same_root_sees_its_documents_without_re_embed
     crashed_upload = tmp_path / "tmp" / "0123abcd" / "source.pdf"
     crashed_upload.parent.mkdir(parents=True)
     crashed_upload.write_bytes(b"%PDF-1.7")
+    long_ago = time.time() - STALE_STAGING_SECONDS - 60
+    for entry in (crashed_upload, crashed_upload.parent):
+        os.utime(entry, (long_ago, long_ago))
 
     encoder = KeywordEncoder(keywords)
     reopened = Library(tmp_path, encoder=encoder)
@@ -357,7 +402,7 @@ def test_a_library_reopened_on_the_same_root_sees_its_documents_without_re_embed
         reopened.get(gone.doc_id)
     assert reopened.search("الإنترنت", k=2) == before
     assert encoder.passages() == [], "a document with saved embeddings was embedded again"
-    assert list((tmp_path / "tmp").iterdir()) == [], "leftover staging survived a restart"
+    assert list((tmp_path / "tmp").iterdir()) == [], "stale staging survived a restart"
 
 
 def test_a_document_whose_meta_json_is_missing_or_unreadable_is_skipped_and_a_re_upload_replaces_it(tmp_path):
@@ -380,6 +425,181 @@ def test_a_document_whose_meta_json_is_missing_or_unreadable_is_skipped_and_a_re
     assert list((tmp_path / "tmp").iterdir()) == []
 
 
+# ------------------------------------------------------------ damaged disk --
+
+
+def test_replacing_a_skipped_directory_puts_it_back_when_the_final_move_fails(tmp_path, monkeypatch):
+    library = Library(tmp_path, encoder=KeywordEncoder())
+    meta = library.add(POLICY, "policy.txt")
+    doc_dir = tmp_path / "docs" / meta.doc_id
+    (doc_dir / "meta.json").write_text("{not json", encoding="utf-8")
+    skipped_files = {p.name: p.read_bytes() for p in doc_dir.iterdir()}
+    reopened = Library(tmp_path, encoder=KeywordEncoder())
+    real_replace = os.replace
+    failed: list[Path] = []
+
+    def fail_the_install(src, dst):
+        if Path(dst) == doc_dir and not failed:
+            failed.append(Path(src))
+            raise OSError(errno.EIO, "simulated failure moving the upload into place")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", fail_the_install)
+    with pytest.raises(OSError, match="simulated failure"):
+        reopened.add(POLICY, "policy.txt")
+    monkeypatch.undo()
+
+    assert failed and failed[0].parent == tmp_path / "tmp"
+    assert {p.name: p.read_bytes() for p in doc_dir.iterdir()} == skipped_files
+    assert list((tmp_path / "tmp").iterdir()) == []
+    assert reopened.documents() == []
+    # Nothing was lost: the next upload of these bytes replaces the directory.
+    assert reopened.add(POLICY, "policy.txt") == reopened.get(meta.doc_id)
+    assert _names(doc_dir) == STORED_TXT
+
+
+def test_a_directory_that_appeared_after_the_library_opened_is_never_replaced(tmp_path):
+    library = Library(tmp_path, encoder=KeywordEncoder())
+    stranger = tmp_path / "docs" / hashlib.sha256(POLICY).hexdigest()[:12]
+    stranger.mkdir()
+    (stranger / "meta.json").write_text("written by something else", encoding="utf-8")
+
+    with pytest.raises(StorageError) as refused:
+        library.add(POLICY, "policy.txt")
+
+    assert refused.value.code == "internal"
+    assert _names(stranger) == ["meta.json"]
+    assert (stranger / "meta.json").read_text(encoding="utf-8") == "written by something else"
+    assert list((tmp_path / "tmp").iterdir()) == []
+    assert library.documents() == []
+
+
+class _StagingWiper(KeywordEncoder):
+    """Wipes every staging directory while passages are being embedded."""
+
+    def __init__(self, tmp: Path):
+        super().__init__()
+        self.tmp = tmp
+
+    def encode(self, texts, **kwargs):
+        texts = list(texts)
+        if any(t.startswith("passage: ") for t in texts):
+            for staging in self.tmp.iterdir():
+                shutil.rmtree(staging)
+        return super().encode(texts, **kwargs)
+
+
+def test_an_upload_whose_staging_lost_files_is_refused_not_registered(tmp_path):
+    """Saving the embeddings recreates a wiped staging directory, so without
+    a check the upload "succeeded" holding only embeddings.npz and meta.json."""
+    library = Library(tmp_path, encoder=_StagingWiper(tmp_path / "tmp"))
+
+    with pytest.raises(StorageError) as refused:
+        library.add(POLICY, "policy.txt")
+
+    assert refused.value.code == "internal"
+    assert library.documents() == []
+    assert list((tmp_path / "docs").iterdir()) == []
+    assert list((tmp_path / "tmp").iterdir()) == []
+
+
+class _OpensAnotherLibrary(KeywordEncoder):
+    """Opens a second Library on the same root while passages are being embedded."""
+
+    def __init__(self, root: Path):
+        super().__init__()
+        self.root = root
+        self.opened = 0
+
+    def encode(self, texts, **kwargs):
+        texts = list(texts)
+        if any(t.startswith("passage: ") for t in texts) and not self.opened:
+            self.opened += 1
+            Library(self.root, encoder=KeywordEncoder())
+        return super().encode(texts, **kwargs)
+
+
+def test_a_library_opened_during_an_upload_leaves_that_upload_alone(tmp_path):
+    encoder = _OpensAnotherLibrary(tmp_path)
+    library = Library(tmp_path, encoder=encoder)
+
+    meta = library.add(POLICY, "policy.txt")
+
+    assert encoder.opened == 1
+    assert library.documents() == [meta]
+    assert _names(tmp_path / "docs" / meta.doc_id) == STORED_TXT
+
+
+def test_opening_a_library_clears_only_staging_older_than_the_stale_limit(tmp_path):
+    tmp = tmp_path / "tmp"
+    stale, fresh = tmp / ("a" * 32), tmp / ("b" * 32)
+    for staging in (stale, fresh):
+        staging.mkdir(parents=True)
+        (staging / "source.pdf").write_bytes(b"%PDF-1.7")
+    stray_file = tmp / ".meta.json.tmp"
+    stray_file.write_bytes(b"{")
+    long_ago = time.time() - STALE_STAGING_SECONDS - 60
+    for entry in (stale / "source.pdf", stale, stray_file):
+        os.utime(entry, (long_ago, long_ago))
+
+    Library(tmp_path, encoder=KeywordEncoder())
+
+    assert [p.name for p in tmp.iterdir()] == [fresh.name]
+    assert _names(fresh) == ["source.pdf"]
+
+
+def test_a_stored_document_missing_its_chunks_or_embeddings_is_skipped_with_a_warning_and_a_re_upload_replaces_it(
+    tmp_path, caplog,
+):
+    vectors_doc = text_document("مستند بلا متجهات")
+    library = Library(tmp_path, encoder=KeywordEncoder())
+    good = library.add(text_document("مستند سليم"), "good.txt")
+    no_chunks = library.add(POLICY, "policy.txt")
+    no_embeddings = library.add(vectors_doc, "vectors.txt")
+    (tmp_path / "docs" / no_chunks.doc_id / "chunks.jsonl").unlink()
+    (tmp_path / "docs" / no_embeddings.doc_id / "embeddings.npz").unlink()
+
+    with caplog.at_level(logging.WARNING, logger="legalrag.library"):
+        reopened = Library(tmp_path, encoder=KeywordEncoder())
+
+    assert reopened.documents() == [good]
+    warned = " ".join(r.getMessage() for r in caplog.records)
+    assert no_chunks.doc_id in warned and "chunks.jsonl" in warned
+    assert no_embeddings.doc_id in warned and "embeddings.npz" in warned
+    assert _names(tmp_path / "docs" / no_chunks.doc_id) == ["embeddings.npz", "meta.json", "source.txt"]
+    assert [h.chunk.doc_id for h in reopened.search("مستند", k=5)] == [good.doc_id]
+
+    for data, filename, broken in ((POLICY, "policy.txt", no_chunks), (vectors_doc, "vectors.txt", no_embeddings)):
+        assert reopened.add(data, filename).doc_id == broken.doc_id
+        assert _names(tmp_path / "docs" / broken.doc_id) == STORED_TXT
+    assert len(reopened.documents()) == 3
+    assert list((tmp_path / "tmp").iterdir()) == []
+
+
+def test_an_index_that_fails_to_load_is_skipped_by_an_unscoped_search_and_not_found_by_a_scoped_one(
+    tmp_path, caplog,
+):
+    library = Library(tmp_path, encoder=KeywordEncoder(["الإنترنت"]))
+    good = library.add(text_document("بدل الإنترنت الشهري"), "good.txt")
+    missing = library.add(text_document("بدل الإنترنت للموظف"), "missing.txt")
+    corrupt = library.add(text_document("الإنترنت في المنزل"), "corrupt.txt")
+    # Damaged after the library opened, before any search loaded their indexes.
+    (tmp_path / "docs" / missing.doc_id / "chunks.jsonl").unlink()
+    (tmp_path / "docs" / corrupt.doc_id / "chunks.jsonl").write_text("{not json\n", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="legalrag.library"):
+        hits = library.search("الإنترنت", k=5)
+
+    assert [h.chunk.doc_id for h in hits] == [good.doc_id]
+    warned = " ".join(r.getMessage() for r in caplog.records)
+    assert missing.doc_id in warned and corrupt.doc_id in warned
+    for broken in (missing, corrupt):
+        with pytest.raises(DocumentNotFound) as not_found:
+            library.search("الإنترنت", doc_ids=[broken.doc_id])
+        assert isinstance(not_found.value.__cause__, StorageError)
+    assert [h.chunk.doc_id for h in library.search("الإنترنت", doc_ids=[good.doc_id])] == [good.doc_id]
+
+
 # ------------------------------------------------------ concurrency, model --
 
 
@@ -399,8 +619,17 @@ class _MeetingEncoder(KeywordEncoder):
         return super().encode(texts, **kwargs)
 
 
-def test_two_concurrent_identical_uploads_end_with_one_document_and_no_staging_left(tmp_path):
+def test_two_concurrent_identical_uploads_end_with_one_document_and_no_staging_left(tmp_path, monkeypatch):
     library = Library(tmp_path, encoder=_MeetingEncoder(parties=2))
+    docs = tmp_path / "docs"
+    moves: list[tuple[Path, Path]] = []
+    real_replace = os.replace
+
+    def spy(src, dst):
+        moves.append((Path(src), Path(dst)))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", spy)
     results, errors = [], []
 
     def upload():
@@ -418,8 +647,11 @@ def test_two_concurrent_identical_uploads_end_with_one_document_and_no_staging_l
     assert errors == []
     assert len(results) == 2 and results[0] == results[1]
     assert library.documents() == [results[0]]
-    assert _names(tmp_path / "docs") == [results[0].doc_id]
+    assert _names(docs) == [results[0].doc_id]
     assert list((tmp_path / "tmp").iterdir()) == []
+    installs = [src for src, dst in moves if dst.parent == docs]
+    assert len(installs) == 1 and installs[0].parent == tmp_path / "tmp", "the upload was installed twice"
+    assert all(src != docs / results[0].doc_id for src, _ in moves), "the first upload's directory was replaced"
 
 
 def test_a_missing_sentence_transformers_raises_encoder_unavailable_not_system_exit(tmp_path, monkeypatch):
@@ -434,6 +666,30 @@ def test_a_missing_sentence_transformers_raises_encoder_unavailable_not_system_e
         library.add(POLICY, "policy.txt")
 
     assert not issubclass(EncoderUnavailable, LibraryError)
+    assert library.documents() == []
+    assert list((tmp_path / "tmp").iterdir()) == []
+    assert list((tmp_path / "docs").iterdir()) == []
+
+
+@pytest.mark.parametrize("failure", [
+    SystemExit("sentence-transformers is not installed"),   # dense.load_model's answer to a failed import
+    ImportError("No module named 'torch'"),
+    OSError("intfloat/multilingual-e5-base is not in the local cache"),
+], ids=["system_exit", "import_error", "os_error"])
+def test_every_way_the_model_fails_to_load_is_encoder_unavailable_and_never_ends_the_process(
+    tmp_path, monkeypatch, failure,
+):
+    def load_model(name=dense.DEFAULT_MODEL):
+        raise failure
+
+    monkeypatch.setattr(library_mod, "find_spec", lambda name: object())  # the package looks installed
+    monkeypatch.setattr(dense, "load_model", load_model)
+    library = Library(tmp_path)
+
+    with pytest.raises(EncoderUnavailable) as unavailable:
+        library.add(POLICY, "policy.txt")
+
+    assert unavailable.value.__cause__ is failure
     assert library.documents() == []
     assert list((tmp_path / "tmp").iterdir()) == []
     assert list((tmp_path / "docs").iterdir()) == []

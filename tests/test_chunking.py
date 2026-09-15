@@ -268,6 +268,37 @@ def test_no_piece_exceeds_the_cap_when_sentence_end_cuts_are_in_play():
     assert " ".join(c.text for c in chunks) == evaluation_normalize(page)
 
 
+def test_a_piece_of_exactly_the_cap_stays_whole_and_one_character_more_is_cut():
+    a, b = "أ" * 500, "ب" * 499
+    _, chunks = chunk_document(DOC, [f"{a}\n{b}"])          # joined: exactly MAX_CHUNK_CHARS
+    assert [c.text for c in chunks] == [f"{a} {b}"]
+    assert len(chunks[0].text) == MAX_CHUNK_CHARS
+    _, chunks = chunk_document(DOC, [f"{a}\n{b}ب"])         # one more: two pieces, both long enough to stand
+    assert [c.text for c in chunks] == [a, b + "ب"]
+
+    # A single line of exactly the cap is never split; a longer one is split
+    # on whitespace, and a part may fill to exactly the cap.
+    line = "ت" * 750 + " " + "ث" * 249
+    _, chunks = chunk_document(DOC, [line])
+    assert [c.text for c in chunks] == [line]
+    _, chunks = chunk_document(DOC, [line + " " + "ج" * 300])
+    assert [c.text for c in chunks] == [line, "ج" * 300]
+
+
+def test_a_last_piece_of_exactly_min_chunk_chars_stands_alone_and_one_character_less_merges():
+    full = "\n".join(["س" * 98] * 10)                         # 989 chars: no further line fits
+    _, chunks = chunk_document(DOC, [f"{full}\n{'ق' * MIN_CHUNK_CHARS}"])
+    assert [len(c.text) for c in chunks] == [989, MIN_CHUNK_CHARS]
+    _, chunks = chunk_document(DOC, [f"{full}\n{'ق' * (MIN_CHUNK_CHARS - 1)}"])
+    assert [len(c.text) for c in chunks] == [989 + 1 + MIN_CHUNK_CHARS - 1]
+
+    # The sentence-end cut needs exactly MIN_CHUNK_CHARS left behind, no more.
+    ends = "أ" * (MIN_CHUNK_CHARS - 1) + "."
+    carried, rest = "ب" * 700, "ج" * 150
+    _, chunks = chunk_document(DOC, ["\n".join([ends, carried, rest])])
+    assert [c.text for c in chunks] == [ends, f"{carried} {rest}"]
+
+
 # ------------------------------------------------------------------ tidy --
 
 
@@ -301,6 +332,20 @@ def test_tidy_never_removes_the_space_before_a_mark_glued_to_the_next_token():
     assert tidy("في مارس .2023") == "في مارس .2023"
     # The same guard mirrored: an opening mark glued to the previous token.
     assert tidy("مادة( 1") == "مادة( 1"
+
+
+def test_tidy_looks_past_a_whole_run_of_marks_before_removing_a_space():
+    """A run of marks is one token edge: it loses the space before it only
+    when the whole run ends at whitespace or at the end of the text."""
+    assert tidy("يناير ..2026 وثيقة") == "يناير ..2026 وثيقة"
+    assert tidy("هل يجوز ذلك ؟!نعم") == "هل يجوز ذلك ؟!نعم"
+    assert tidy("يناير .2026 وثيقة") == "يناير .2026 وثيقة"   # the single mark, as before
+    # A run that does end its token still closes up.
+    assert tidy("هل يجوز ذلك ؟! نعم") == "هل يجوز ذلك؟! نعم"
+    assert tidy("انتهى البند ..") == "انتهى البند.."
+    # The mirror: a run of opening marks glued to the previous token opens nothing.
+    assert tidy("مادة(( 1") == "مادة(( 1"
+    assert tidy("البند (( أ") == "البند ((أ"
 
 
 # ------------------------------------------------- the app eval fixture --

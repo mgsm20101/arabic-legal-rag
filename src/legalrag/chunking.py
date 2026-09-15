@@ -44,10 +44,11 @@ _AFTER_SENTENCE_END = ")]»\"'"
 
 _CLOSING = r".,،؛:؟!)\]»"
 _OPENING = r"(\[«"
-# Only a mark that ENDS its token loses the space before it, and only one
-# that STARTS its token loses the space after it (see `tidy`).
-_SPACE_BEFORE_CLOSING = re.compile(rf"\s+(?=[{_CLOSING}](?![^\s{_CLOSING}]))")
-_SPACE_AFTER_OPENING = re.compile(rf"(?<![^\s{_OPENING}])([{_OPENING}])\s+")
+# Only a run of marks that ENDS its token (whitespace or the end of the text
+# follows the whole run) loses the space before it, and only a run that
+# STARTS its token loses the space after it (see `tidy`).
+_SPACE_BEFORE_CLOSING = re.compile(rf"\s+(?=[{_CLOSING}]+(?:\s|$))")
+_SPACE_AFTER_OPENING = re.compile(rf"(?<!\S)([{_OPENING}]+)\s+")
 _WRAPPED_LATIN_HYPHEN = re.compile(r"(?<=[A-Za-z])-\s+(?=[A-Za-z])")
 _VISIBLE = re.compile(r"\S")
 
@@ -85,10 +86,11 @@ def tidy(text: str) -> str:
     """Punctuation spacing only, never a letter: no space before . , ، ؛ : ؟ ! ) ] », none after ( [ «,
     and a Latin word hyphen-wrapped across a line ("Wi- Fi") rejoined ("Wi-Fi").
 
-    A mark loses the space before it only when it ENDS its token, and the
-    space after it only when it STARTS one. A mark glued to the neighbouring
-    token closes (or opens) nothing, and taking that space away would weld
-    two words into one. Whitespace is all this ever removes.
+    A run of marks loses the space before it only when the whole run ENDS
+    its token, and the space after it only when it STARTS one. A run glued
+    to the neighbouring token («يناير ..2026») closes or opens nothing, and
+    taking that space away would weld two words into one. Whitespace is all
+    this ever removes.
     """
     # «يناير .2026» keeps its space: that period comes from pdf_text's bidi ordering, not the source.
     text = _SPACE_BEFORE_CLOSING.sub("", text)

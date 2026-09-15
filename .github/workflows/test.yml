@@ -1,0 +1,26 @@
+# The model-free test suite. No test loads a model or imports torch,
+# sentence-transformers or transformers, so CI installs requirements-ci.txt
+# only: no weights, no Ollama, no data/. The tests that read the gitignored
+# statute corpus skip here by design.
+name: tests
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install the test dependencies
+        run: pip install -r requirements-ci.txt
+      - name: Run the tests
+        run: python -m pytest -q

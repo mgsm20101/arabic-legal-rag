@@ -1,0 +1,15 @@
+# The model-free test suite on CI (.github/workflows/test.yml). No torch,
+# sentence-transformers or transformers: no test loads a model, and the
+# encoder is a stub in every test. Pinned to the versions the suite passes
+# with locally. requirements.txt stays the full install for the app and evals.
+pytest==9.1.1
+numpy==2.5.1
+pdfplumber==0.11.10
+pdfminer.six==20260107
+rank-bm25==0.2.2
+fastapi==0.141.1
+starlette==1.6.0
+uvicorn==0.52.4
+python-multipart==0.0.32
+httpx==0.28.1
+pydantic==2.13.4

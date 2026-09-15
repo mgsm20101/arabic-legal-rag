@@ -557,6 +557,57 @@ def test_latin_attached_brackets_count_as_attached_not_free():
     ]
 
 
+def test_adjacent_attached_brackets_form_no_phantom_free_pair():
+    """"(1)-(2)": scanning both orientations as two INDEPENDENT passes used
+    to let a genuine pair's closing bracket and the next pair's opening
+    bracket form a PHANTOM pair of the opposite orientation whenever a
+    single non-space character sat between them (here, "-") — counted as
+    free-mirrored evidence, and (with enough of it) applied on top of the
+    two real pairs, corrupting both: "(1)-(2)" became "(1(-)2)". One
+    combined pattern per family (`_bracket_pair_pattern`) must never
+    propose ")-(" at all, since finditer has already consumed "(1)"'s
+    closing paren as part of that match by the time it would try."""
+    pages = ["الفقرتان (1)-(2) من نفس المادة، وأيضاً المادة الثالثة (3)."]
+    mirrored, decision = mirror_pages(pages)
+    assert decision["mirror_brackets"] is False
+    assert decision["free_logical"] == 0 and decision["free_mirrored"] == 0
+    assert decision["attached_logical"] == 3 and decision["attached_mirrored"] == 0
+    assert mirrored == pages
+
+
+def test_a_free_tie_leaves_both_readings_alone():
+    """Equal free-mirrored and free-logical counts must leave BOTH alone,
+    exactly like the attached tie above — mirroring on a tie would flip
+    whichever half was already correctly oriented. This is why `mirror_free`
+    uses a strict `>`, not the old whole-document rule's `>=`."""
+    pages = ["بند حر (الموظف) وبند آخر )المدير( هنا."]
+    mirrored, decision = mirror_pages(pages)
+    assert decision["mirror_brackets"] is False
+    assert decision["free_logical"] == 1 and decision["free_mirrored"] == 1
+    assert decision["mirror_free"] is False
+    assert mirrored == pages
+
+
+def test_a_pair_attached_on_only_one_inner_edge_is_free_not_attached():
+    """A pair touching a digit on only ONE inner edge, and an Arabic letter
+    (not attached-class) on the other, is free — classification requires
+    BOTH edges to be attached-class (the conservative reading). Four
+    pairs here each have exactly one attached edge, in every combination
+    of which edge and which orientation, so a mutant checking only one
+    edge (either one), or using OR instead of AND, disagrees with the
+    correct free/free/free/free classification on at least one of them."""
+    pages = [
+        "بند (1الموظف) غريب، وبند آخر (الشخص1) غريب أيضاً، "
+        "وبند حر )1شخص( غريب، وأخيراً بند )شخص1( غريب تماماً."
+    ]
+    mirrored, decision = mirror_pages(pages)
+    assert decision["mirror_brackets"] is False
+    assert decision["attached_logical"] == 0 and decision["attached_mirrored"] == 0
+    assert decision["free_logical"] == 2 and decision["free_mirrored"] == 2
+    assert decision["mirror_free"] is False  # a tie: both stay exactly as read
+    assert mirrored == pages
+
+
 def test_quotes_remain_one_whole_document_decision_independent_of_bracket_class():
     """«» keep exactly the same single, whole-document decision as before,
     with no attached/free split — confirmed here on a document that goes

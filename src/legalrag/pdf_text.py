@@ -122,8 +122,8 @@ _ATTACHED_CHAR = re.compile(r"[0-9A-Za-z٠-٩۰-۹]")
 _BRACKET_FAMILIES: tuple[tuple[str, str], ...] = (("(", ")"), ("[", "]"), ("{", "}"), ("<", ">"))
 
 
-def _bracket_pair_pattern(first: str, second: str, open_c: str, close_c: str) -> re.Pattern[str]:
-    """One `first ... second` bracket-pair pattern for a single family.
+def _bracket_pair_pattern(open_c: str, close_c: str) -> re.Pattern[str]:
+    """One pattern matching EITHER orientation of a single bracket family, as one alternation.
 
     Bounded to a single line (no `\\n` in the match) and to content that
     excludes both bracket characters of THIS family — same spirit as
@@ -131,14 +131,30 @@ def _bracket_pair_pattern(first: str, second: str, open_c: str, close_c: str) ->
     second, nested pair of the same kind. Content may include a bracket
     character from a DIFFERENT family (`(note [ref])`) since only the two
     outermost characters of a match are ever mutated, never its middle.
+
+    Both orientations are ONE pattern, not two independent ones scanned
+    separately, because `re.finditer`'s matches never overlap WITHIN one
+    pattern (the leftmost match wins and scanning resumes only after it).
+    Two independent passes do not share that guarantee: given
+    "المادتان (1)-(2) هنا.", a logical-only pass matches "(1)" and "(2)"
+    while a mirrored-only pass — unaware of either — also matches the
+    ")-(" straddling both of them, a PHANTOM pair sharing characters with
+    two real ones. Counted as free-mirrored evidence, it used to corrupt
+    both correct citations if that swayed the free-class decision. One
+    combined pattern never proposes ")-(" at all: by the time the scan
+    reaches position 2 (the "(1)"'s closing paren), finditer has already
+    consumed it as part of the "(1)" match and moved past it.
     """
     excluded = re.escape(open_c) + re.escape(close_c)
-    return re.compile(f"{re.escape(first)}[^{excluded}\\n]{{1,200}}{re.escape(second)}")
+    logical = f"{re.escape(open_c)}[^{excluded}\\n]{{1,200}}{re.escape(close_c)}"
+    mirrored = f"{re.escape(close_c)}[^{excluded}\\n]{{1,200}}{re.escape(open_c)}"
+    return re.compile(f"(?:{logical})|(?:{mirrored})")
 
 
 def _iter_bracket_pairs(text: str):
     """Yield ``(match, attached, mirrored_orientation)`` for every bracket
-    pair in ``text``, across all four families and both orientations.
+    pair in ``text``, across all four families, non-overlapping (see
+    ``_bracket_pair_pattern``).
 
     A candidate pair must touch non-whitespace content on BOTH inner
     edges to be counted at all — a genuine bracket (attached or free)
@@ -149,26 +165,24 @@ def _iter_bracket_pairs(text: str):
     pair — that is exactly the same false-evidence risk `_BRACKET_LOGICAL`
     avoided by requiring a bare digit, generalized here to any content.
 
-    ``attached`` follows ``_ATTACHED_CHAR`` on both inner edges (the
+    ``attached`` requires ``_ATTACHED_CHAR`` on BOTH inner edges (the
     "inner side" is the same relative position regardless of orientation,
     per the spec: for a mirrored pair like ``)1(`` it is still the side
-    facing the number). ``mirrored_orientation`` is True for a
-    close-then-open match (``)...(``), False for open-then-close.
+    facing the number) — a pair with only one attached-class edge (e.g.
+    ``(1الموظف)``) is free, the conservative reading. ``mirrored_orientation``
+    is True for a close-then-open match (``)...(``), False for open-then-close.
     """
     for open_c, close_c in _BRACKET_FAMILIES:
-        for mirrored_orientation, first, second in (
-            (False, open_c, close_c),
-            (True, close_c, open_c),
-        ):
-            pattern = _bracket_pair_pattern(first, second, open_c, close_c)
-            for m in pattern.finditer(text):
-                inner = m.group()[1:-1]
-                if inner[0].isspace() or inner[-1].isspace():
-                    continue
-                attached = bool(_ATTACHED_CHAR.fullmatch(inner[0])) and bool(
-                    _ATTACHED_CHAR.fullmatch(inner[-1])
-                )
-                yield m, attached, mirrored_orientation
+        pattern = _bracket_pair_pattern(open_c, close_c)
+        for m in pattern.finditer(text):
+            mirrored_orientation = m.group()[0] == close_c
+            inner = m.group()[1:-1]
+            if inner[0].isspace() or inner[-1].isspace():
+                continue
+            attached = bool(_ATTACHED_CHAR.fullmatch(inner[0])) and bool(
+                _ATTACHED_CHAR.fullmatch(inner[-1])
+            )
+            yield m, attached, mirrored_orientation
 
 
 def _attached_free_counts(text: str) -> tuple[int, int, int, int]:
@@ -514,10 +528,14 @@ def mirror_pages(pages: list[str]) -> tuple[list[str], dict]:
        pair in the document (any content, not just digits — see
        ``_iter_bracket_pairs``) as attached (touching a digit or Latin
        letter with no whitespace between) or free (anything else).
-       Attached mirrors only on ``attached_mirrored > attached_logical``
-       (strict, like the gate); free mirrors on
-       ``free_mirrored >= free_logical`` (the old single rule's own
-       default). Each page is then mirrored occurrence by occurrence
+       Attached mirrors only on ``attached_mirrored > attached_logical``,
+       and free mirrors only on ``free_mirrored > free_logical`` — both
+       strict, unlike the old single whole-document rule's ``>=``: that
+       default made sense when one decision covered every bracket (a tie
+       had to lean one way), but here a free-class tie means the evidence
+       is genuinely split, and mirroring on a tie would flip whichever
+       half was already correct instead of leaving both alone. Each page
+       is then mirrored occurrence by occurrence
        (``_mirror_bracket_occurrences``), since a single translate table
        can no longer represent two different decisions.
 
@@ -552,7 +570,7 @@ def mirror_pages(pages: list[str]) -> tuple[list[str], dict]:
 
     attached_logical, attached_mirrored, free_logical, free_mirrored = _attached_free_counts(text)
     mirror_attached = attached_mirrored > attached_logical
-    mirror_free = free_mirrored >= free_logical
+    mirror_free = free_mirrored > free_logical
     decision.update(
         {
             "mirror_brackets": False,

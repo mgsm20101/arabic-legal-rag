@@ -7,6 +7,7 @@ nothing here runs one: the library gets a keyword encoder, the generator is
 scripted, and --retrieval-only is shown never to build a generator at all.
 """
 
+import errno
 import json
 import re
 import sys
@@ -68,6 +69,13 @@ def test_a_retrieval_hit_needs_every_expected_keyword_after_normalization():
     assert not app_eval.retrieval_hit(["أي نص"], [])  # no keyword is no evidence
 
 
+def test_a_keyword_is_normalized_too_not_only_the_chunk():
+    # A02's real shape: the keyword in Arabic-Indic digits, the chunk in Western ones.
+    assert app_eval.retrieval_hit(["تصرف الشركة بدل إنترنت شهريا قدره 400 جنيه."], ["٤٠٠ جنيه"])
+    # Tatweel and diacritics on the keyword side hide nothing either.
+    assert app_eval.retrieval_hit(["خلال خمسة أيام عمل"], ["خمـسة أيّام عمل"])
+
+
 def test_retrieval_only_never_builds_a_generator(offline, monkeypatch, capsys):
     def refuse(*args, **kwargs):
         raise AssertionError("--retrieval-only built a generator")
@@ -121,6 +129,26 @@ def test_rows_are_saved_after_every_question(offline, monkeypatch, capsys):
     assert (rows[0]["status"], rows[0]["claims"]) == ("answered", [{"text": CLAIM, "sources": [1]}])
     assert len(rows[0]["source_chunk_ids"]) == len(rows[0]["source_pages"]) == 5
     assert [p.name for p in offline.iterdir()] == ["app_eval-ollama-gemma3-4b-txt.json"]
+
+
+def test_a_rows_write_that_fails_midway_leaves_the_previous_rows_whole_and_no_temp_file(tmp_path, monkeypatch):
+    path = tmp_path / "runs" / "app_eval-ollama-gemma3-4b-pdf.json"
+    path.parent.mkdir()
+    previous = '[{"id": "A01", "status": "answered"}]'
+    path.write_text(previous, encoding="utf-8")
+    real_write_text = Path.write_text
+
+    def disk_full(self, data, *args, **kwargs):
+        real_write_text(self, data[: len(data) // 2], *args, **kwargs)
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(Path, "write_text", disk_full)
+    with pytest.raises(OSError):
+        app_eval._write_rows(path, [{"id": "A01", "status": "partial"}, {"id": "A02", "status": "answered"}])
+    monkeypatch.undo()
+
+    assert path.read_text(encoding="utf-8") == previous
+    assert [p.name for p in path.parent.iterdir()] == [path.name]
 
 
 def test_the_model_defaults_to_legalrag_model(offline, monkeypatch):

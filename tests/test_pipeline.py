@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import legalrag.pipeline as pipeline_mod  # noqa: E402
 from legalrag.chunking import Chunk  # noqa: E402
-from legalrag.cite import gate  # noqa: E402
+from legalrag.cite import citations, gate  # noqa: E402
 from legalrag.claims import ClaimsGenerator, final_abstain_reason  # noqa: E402
 from legalrag.library import Library, LibraryHit  # noqa: E402
 from legalrag.pipeline import (  # noqa: E402
@@ -132,6 +132,30 @@ def test_a_page_source_never_grounds_a_claim_that_names_an_article_its_text_does
     assert result.claims == [{"text": named_by_the_page, "sources": [1]}]
     assert result.dropped == {"uncited": 0, "fabricated": 0, "ungrounded": 1}
     assert result.status == "partial"
+
+
+def test_a_page_sources_position_page_or_ordinal_never_becomes_an_article_number():
+    """A page chunk has no article number. Gating with its position in the
+    prompt, its page or its ordinal instead would let «وفقاً للمادة 3» ground
+    itself on source [3] of a document that has no article 3 at all."""
+    texts = [
+        "تسري هذه السياسة على الموظفين الدائمين الذين أتموا فترة الاختبار.",
+        "يحق للموظف طلب العمل عن بعد بعد مرور ستة أشهر على تعيينه.",
+        "يلتزم الموظف بإبلاغ فريق أمن المعلومات خلال 24 ساعة من فقدان الجهاز.",
+    ]
+    pages = [Chunk(id=f"{POLICY_ID}:{n}", doc_id=POLICY_ID, number=n, article=None,
+                   label=f"ص {n}", page=n, text=text) for n, text in enumerate(texts, start=1)]
+    library = _FakeLibrary(*(LibraryHit(chunk, "سياسة العمل", 0.9) for chunk in pages))
+    invented = "وفقاً للمادة 3 يبلغ الموظف فريق أمن المعلومات خلال 24 ساعة."
+    plain = "يبلغ الموظف فريق أمن المعلومات خلال 24 ساعة من فقدان الجهاز."
+    generator, _, _ = _gated([ANSWERS_YES], [claims_json((invented, [3]), (plain, [3]))])
+
+    result = Pipeline(library, generator).ask("متى يجب الإبلاغ عن فقدان الجهاز؟")
+
+    assert citations(invented) == [3] and citations(texts[2]) == []
+    assert [(s.n, s.page, s.article) for s in result.sources][2] == (3, 3, None)
+    assert result.claims == [{"text": plain, "sources": [3]}]
+    assert result.dropped == {"uncited": 0, "fabricated": 0, "ungrounded": 1}
 
 
 def test_the_result_never_carries_raw_model_output_or_dropped_claim_text():

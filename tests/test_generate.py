@@ -277,10 +277,11 @@ def test_a_missing_transformers_dependency_raises_generator_unavailable(monkeypa
     # `load_model` does `import torch` before `from transformers import ...`.
     # `sys.modules["transformers"] = None` makes that second import fail
     # without ever touching disk, but the first one is a real import unless
-    # something is already registered under "torch" — and paying for that
+    # a module is already registered under "torch" — and paying for that
     # (measured: ~3.4s, most of this file's own runtime) buys nothing here,
-    # since what this test checks is the *transformers* import failing.
-    if "torch" not in sys.modules:
+    # since what this test checks is the *transformers* import failing. A None
+    # entry (torch blocked on purpose) gets the stand-in too, or torch fails first.
+    if sys.modules.get("torch") is None:
         monkeypatch.setitem(sys.modules, "torch", types.ModuleType("torch"))
 
     with pytest.raises(GeneratorUnavailable):
@@ -306,7 +307,7 @@ def test_a_bad_checkpoint_raises_generator_unavailable_not_a_raw_exception(monke
     fake_transformers.AutoModelForCausalLM = _FailingAutoClass
     fake_transformers.AutoTokenizer = _FailingAutoClass
     monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
-    if "torch" not in sys.modules:
+    if sys.modules.get("torch") is None:
         monkeypatch.setitem(sys.modules, "torch", types.ModuleType("torch"))
 
     with pytest.raises(GeneratorUnavailable) as exc_info:

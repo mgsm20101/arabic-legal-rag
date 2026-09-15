@@ -1,0 +1,38 @@
+# The local app in a container (ADR-023): the web app and the e5 encoder run
+# here, on CPU; generation stays on the host's Ollama.
+#
+#   docker compose up --build        then open http://127.0.0.1:8000
+#
+# First run: the container downloads the e5 encoder
+# (intfloat/multilingual-e5-base, about 1.1 GB) into the hf-cache volume, so
+# the first upload waits for it. Later runs reuse the volume.
+
+services:
+  app:
+    build: .
+    ports:
+      # Published on the host's loopback only. The app has no authentication
+      # (one user, this machine) and listens on 0.0.0.0 inside the container,
+      # so a bare "8000:8000" would offer it on every network the host is on.
+      - "127.0.0.1:8000:8000"
+    volumes:
+      # Uploaded documents, their chunks and embeddings stay on the host, in
+      # the gitignored place a native run uses. On a Linux host, create
+      # ./data/app first: a directory Docker creates for a bind mount belongs
+      # to root, and the app runs as uid 1000.
+      - ./data/app:/data/app
+      - hf-cache:/home/app/.cache/huggingface
+    environment:
+      # Ollama runs on the host, reached through host.docker.internal. It
+      # listens on 127.0.0.1 by default, which a container may not reach;
+      # README.md explains the options. The app logs that this OLLAMA_HOST is
+      # not a loopback address: expected, since it names this same machine.
+      - OLLAMA_HOST=http://host.docker.internal:11434
+      - LEGALRAG_MODEL=ollama:gemma3:4b
+    extra_hosts:
+      # Docker Desktop defines host.docker.internal itself; Docker Engine on
+      # Linux needs it mapped to the host's gateway.
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  hf-cache:

@@ -1,0 +1,24 @@
+# The build context. The Dockerfile copies only src/, ui/, tasks.py,
+# requirements.txt and evals/app/; this keeps everything else out of the
+# context, third-party text and model weights above all. Patterns are anchored
+# at the context root, hence **/ for what can sit at any depth.
+
+# The statute corpus, uploaded documents, eval runs and local model weights
+data/
+runs/
+models/
+
+# Version control, caches and local environments
+.git
+**/__pycache__
+**/.pytest_cache
+.venv/
+venv/
+
+# PDFs under evals/, except the synthetic demo document the image ships with
+evals/**/*.pdf
+!evals/app/policy_ar.pdf
+
+# Embeddings and secrets, wherever they are
+**/*.npz
+**/.env

@@ -8,8 +8,10 @@ embeddings instead of running the model again. A keyword-count encoder
 stands in for e5 throughout: no model, no network.
 """
 
+import builtins
 import errno
 import hashlib
+import io
 import itertools
 import json
 import logging
@@ -942,6 +944,91 @@ def test_re_uploading_a_damaged_documents_bytes_replaces_its_files(tmp_path):
     assert [h.chunk.doc_id for h in library.search("الإنترنت", doc_ids=[meta.doc_id])] == [meta.doc_id]
     assert library.documents() == [repaired]
     assert list((tmp_path / "tmp").iterdir()) == []
+
+
+@pytest.mark.parametrize("deleted", [False, True], ids=["live", "soft_deleted"])
+def test_replacing_a_damaged_document_keeps_its_title_and_created_at(tmp_path, monkeypatch, deleted):
+    internet = text_document("بدل الإنترنت الشهري")
+    library = Library(tmp_path, encoder=KeywordEncoder(["الإنترنت"]))
+    readings = iter(["2026-01-01T09:00:00+00:00", "2026-09-15T18:00:00+00:00", "2026-09-15T18:30:00+00:00"])
+    monkeypatch.setattr(library_mod, "_now", lambda: next(readings))
+    meta = library.add(internet, "internet.txt")
+    if deleted:
+        library.soft_delete(meta.doc_id)
+    doc_dir = tmp_path / "docs" / meta.doc_id
+    (doc_dir / "embeddings.npz").write_bytes(b"")
+
+    repaired = library.add(internet, "a new name.txt")
+
+    assert repaired == meta  # its own title and created_at, and live again
+    assert json.loads((doc_dir / "meta.json").read_text(encoding="utf-8")) == asdict(meta)
+    assert (doc_dir / "embeddings.npz").stat().st_size > 0
+    assert library.documents() == [meta]
+
+
+def _unreadable(monkeypatch, path: Path) -> None:
+    """Every open of `path` fails as a file another process holds open fails on Windows:
+    through io.open, which pathlib reads with, and the builtin open, which np.load uses."""
+    real_open = io.open
+
+    def refuse(file, *args, **kwargs):
+        if isinstance(file, (str, os.PathLike)) and Path(file) == path:
+            raise PermissionError(errno.EACCES, "Permission denied", str(path))
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(io, "open", refuse)
+    monkeypatch.setattr(builtins, "open", refuse)
+
+
+@pytest.mark.parametrize("name", ["chunks.jsonl", "embeddings.npz"])
+def test_a_file_that_cannot_be_read_just_now_is_not_damage_and_a_re_upload_replaces_nothing(
+    tmp_path, monkeypatch, name,
+):
+    """A PermissionError says nothing about what a file holds. Taken for damage, it had a
+    re-upload replace a healthy document, under a new title and created_at."""
+    internet = text_document("بدل الإنترنت الشهري")
+    encoder = KeywordEncoder(["الإنترنت"])
+    library = Library(tmp_path, encoder=encoder)
+    meta = library.add(internet, "internet.txt")
+    doc_dir = tmp_path / "docs" / meta.doc_id
+    stored = {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in doc_dir.iterdir()}
+    embedded = len(encoder.passages())
+
+    _unreadable(monkeypatch, doc_dir / name)
+    with pytest.raises(StorageError) as unreadable:
+        library.add(internet, "a new name.txt")
+    with pytest.raises(StorageError):
+        library.search("الإنترنت", doc_ids=[meta.doc_id])
+    monkeypatch.undo()
+
+    assert unreadable.value.code == "internal"
+    assert {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in doc_dir.iterdir()} == stored
+    assert list((tmp_path / "tmp").iterdir()) == []
+    assert len(encoder.passages()) == embedded
+    assert library.add(internet, "a new name.txt") == meta  # readable again: the same document
+    assert [h.chunk.doc_id for h in library.search("الإنترنت", doc_ids=[meta.doc_id])] == [meta.doc_id]
+
+
+def test_a_damaged_document_stored_for_other_bytes_is_never_replaced_by_these(tmp_path):
+    """doc_id keeps 48 bits of the sha256, and only a damaged document's own bytes may replace
+    it: the full hash is checked before its index is loaded, not only on the way to a restore."""
+    library = Library(tmp_path, encoder=KeywordEncoder())
+    meta = library.add(POLICY, "policy.txt")
+    doc_dir = tmp_path / "docs" / meta.doc_id
+    meta_path = doc_dir / "meta.json"
+    other_bytes = {**json.loads(meta_path.read_text(encoding="utf-8")), "sha256": meta.doc_id + "0" * 52}
+    meta_path.write_text(json.dumps(other_bytes), encoding="utf-8")
+    (doc_dir / "embeddings.npz").write_bytes(b"")  # damaged, so ITS bytes would replace it
+    reopened = Library(tmp_path, encoder=KeywordEncoder())
+    stored = {p.name: p.read_bytes() for p in doc_dir.iterdir()}
+
+    with pytest.raises(StorageError) as refused:
+        reopened.add(POLICY, "policy.txt")
+
+    assert refused.value.code == "internal"
+    assert {p.name: p.read_bytes() for p in doc_dir.iterdir()} == stored
+    assert list((tmp_path / "tmp").iterdir()) == []
+    assert [m.sha256 for m in reopened.documents()] == [other_bytes["sha256"]]
 
 
 # ------------------------------------------------------ concurrency, model --

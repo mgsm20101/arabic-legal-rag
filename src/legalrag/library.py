@@ -33,7 +33,8 @@ from time import monotonic
 from . import dense, pdf_text
 from .chunking import Chunk, chunk_document, may_be_statute, page_chunks, statute_chunks
 from .dense import DenseIndex, Encoder
-from .docindex import DocumentIndex, EncoderUnavailable, IndexDamaged, LazyEncoder, index_docs, load_index
+from .docindex import DocumentIndex, EncoderUnavailable, IndexDamaged, IndexUnreadable, LazyEncoder, index_docs
+from .docindex import load_index
 from .docstore import CHUNKS, EMBEDDINGS, META, DocMeta, clear_stale, missing
 from .docstore import read_meta, write_chunks, write_meta
 
@@ -93,9 +94,13 @@ class DocumentNotFound(LibraryError):
 
 
 class StorageError(LibraryError):
-    """The library's own files are not what it wrote: staging that lost a file, an index that
-    will not load, a directory not skipped at open, a full sha256 that differs. Never the client's fault."""
+    """The library's own files could not be read, or are not what it wrote: staging that lost a file, an
+    index that will not load, a directory not skipped at open, a full sha256 that differs. Never the client's fault."""
     code = "internal"
+
+
+class DocumentDamaged(StorageError):
+    """Index files that are not what the library wrote: uploading the document's bytes again replaces them."""
 
 
 @dataclass(frozen=True)
@@ -153,7 +158,8 @@ class Library:
                 with self._lock:
                     return self._restore(doc_id, sha256)
 
-        title = _display_title(filename, suffix)
+        # A damaged document being replaced keeps its title and created_at, as a restored one does.
+        title = known.title if known is not None else _display_title(filename, suffix)
         staging = self._tmp / uuid.uuid4().hex
         try:
             staging.mkdir(parents=True)
@@ -174,9 +180,10 @@ class Library:
             write_chunks(staging / CHUNKS, chunks)
             DenseIndex(index_docs(chunks, title), encoder=self._encoder,
                        cache_path=staging / EMBEDDINGS, model_name=self.model_name).save()
+            created_at = known.created_at if known is not None else _now()
             meta = DocMeta(doc_id=doc_id, title=title, kind=kind, suffix=suffix,
                            size_bytes=len(data), sha256=sha256, pages=len(pages),
-                           chunks=len(chunks), chars=chars, created_at=_now())
+                           chunks=len(chunks), chars=chars, created_at=created_at)
             write_meta(staging / META, meta)
             with self._lock:
                 if doc_id in self._metas and doc_id not in self._damaged:  # an identical upload finished meanwhile
@@ -281,10 +288,11 @@ class Library:
         return meta
 
     def _loads(self, meta: DocMeta) -> bool:
-        """Whether `meta`'s index loads. A damaged one is marked, so the upload asking replaces it."""
+        """Whether `meta`'s index loads. A damaged one is marked, so the upload asking replaces it; a file
+        that could not be read just now is no sign of damage, and its StorageError is raised."""
         try:
             self._index(meta)
-        except StorageError as e:
+        except DocumentDamaged as e:
             logger.warning("document %s is damaged; re-uploading its bytes replaces it: %s", meta.doc_id, e)
             with self._lock:
                 self._damaged.add(meta.doc_id)
@@ -293,7 +301,7 @@ class Library:
 
     def _index(self, meta: DocMeta) -> DocumentIndex:
         """`meta`'s dense index: cached, or loaded from its chunks and saved embeddings, never
-        re-embedded. StorageError when those files are damaged."""
+        re-embedded. DocumentDamaged when those files are damaged, StorageError when they are unreadable."""
         with self._lock:
             cached = self._indexes.get(meta.doc_id)
         if cached is not None:
@@ -302,7 +310,9 @@ class Library:
         try:
             loaded = load_index(self._docs / meta.doc_id, meta.title, meta.chunks, self._encoder, self.model_name)
         except IndexDamaged as e:
-            raise StorageError(f"document {meta.doc_id} is damaged: {e}") from e
+            raise DocumentDamaged(f"document {meta.doc_id} is damaged: {e}") from e
+        except IndexUnreadable as e:
+            raise StorageError(f"document {meta.doc_id} could not be read: {e}") from e
         with self._lock:
             current = self._metas.get(meta.doc_id)
             if current is None or current.deleted:

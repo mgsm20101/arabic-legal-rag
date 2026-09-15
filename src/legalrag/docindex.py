@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import threading
 import zipfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from importlib.util import find_spec
 from pathlib import Path
@@ -19,6 +21,10 @@ from .chunking import Chunk
 from .dense import DenseIndex, Encoder
 from .docstore import CHUNKS, EMBEDDINGS, read_chunks
 
+# An OSError saying a stored file is gone, or is no longer a file, is damage. Any other (permission
+# denied, a file another process holds open on Windows, an I/O error) says it could not be read just now.
+_GONE = (FileNotFoundError, IsADirectoryError, NotADirectoryError)
+
 
 class EncoderUnavailable(RuntimeError):
     """The embedding model cannot be loaded: a server configuration problem, not a client error."""
@@ -26,6 +32,11 @@ class EncoderUnavailable(RuntimeError):
 
 class IndexDamaged(Exception):
     """A stored document's chunks.jsonl or embeddings.npz is not what the library wrote."""
+
+
+class IndexUnreadable(Exception):
+    """A stored document's chunks.jsonl or embeddings.npz could not be read just now, which says
+    nothing about what it holds."""
 
 
 @dataclass(frozen=True)
@@ -42,19 +53,33 @@ def index_docs(chunks: list[Chunk], title: str) -> list[dict]:
 def load_index(doc_dir: Path, title: str, chunk_count: int, encoder: Encoder, model_name: str) -> DocumentIndex:
     """A stored document's index, from its chunks.jsonl and saved embeddings, never by embedding a
     passage. IndexDamaged when either file is not what the library wrote, a chunks file holding
-    other than `chunk_count` chunks included; any other error is a bug, and raised as itself."""
-    try:
+    other than `chunk_count` chunks included; IndexUnreadable when either could not be read just
+    now; any other error is a bug, and raised as itself."""
+    with _reading(CHUNKS):
         chunks = read_chunks(doc_dir / CHUNKS)
-    except (OSError, ValueError, TypeError) as e:  # TypeError: a line of JSON that is not a chunk
-        raise IndexDamaged(f"chunks.jsonl will not load: {e}") from e
     if len(chunks) != chunk_count:
         raise IndexDamaged(f"chunks.jsonl holds {len(chunks)} chunks, not {chunk_count}")
+    # Opened here first: DenseIndex takes a cache np.load cannot open for one to rebuild, and
+    # _QueriesOnly takes that rebuild for damage.
+    with _reading(EMBEDDINGS), open(doc_dir / EMBEDDINGS, "rb"):
+        pass
     try:
         index = DenseIndex(index_docs(chunks, title), encoder=_QueriesOnly(encoder),
                            cache_path=doc_dir / EMBEDDINGS, model_name=model_name)
     except (EOFError, zipfile.BadZipFile) as e:  # what np.load raises past DenseIndex's own cache check
         raise IndexDamaged(f"embeddings.npz will not load: {e}") from e
     return DocumentIndex(dense=index, chunks={c.id: c for c in chunks})
+
+
+@contextmanager
+def _reading(name: str) -> Iterator[None]:
+    """A failure to read the stored file `name`, sorted into damage or a read that failed just now."""
+    try:
+        yield
+    except (*_GONE, ValueError, TypeError) as e:  # TypeError: a line of JSON that is not a chunk
+        raise IndexDamaged(f"{name} will not load: {e}") from e
+    except OSError as e:
+        raise IndexUnreadable(f"{name} could not be read just now: {e}") from e
 
 
 class _QueriesOnly:

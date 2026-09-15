@@ -62,8 +62,11 @@ function toDocument(raw) {
 
 export async function refreshDocuments(ctx) {
   const { state } = ctx;
+  state.documentsRequest += 1;
+  const request = state.documentsRequest;
   try {
     const data = await api("/api/documents");
+    if (request !== state.documentsRequest) return; // a newer refresh went out; its reply wins
     const documents = (Array.isArray(data.documents) ? data.documents : [])
       .map((raw) => toDocument(raw))
       .filter((doc) => doc !== null)
@@ -74,6 +77,7 @@ export async function refreshDocuments(ctx) {
     state.docsStatus = "ready";
   } catch (error) {
     const message = messageOf(error);
+    if (request !== state.documentsRequest) return;
     if (state.docsStatus === "ready") {
       ctx.announce(message, { tone: "error" });
     } else {
@@ -134,6 +138,10 @@ function documentRow(ctx, doc) {
   setText(date, formatDate(doc.createdAt));
   if (!date.hidden) date.dateTime = doc.createdAt;
 
+  // a list refresh must not hand an enabled button back to a row whose delete is in flight
+  const deleting = ctx.state.deleting.has(doc.id);
+  remove.disabled = deleting;
+  setBusy(remove, deleting);
   remove.setAttribute("aria-label", TEXT.deleteLabel(doc.title));
   remove.addEventListener("click", () => deleteDocument(ctx, doc, remove));
   return row;
@@ -200,7 +208,9 @@ export function syncFilePicker({ ui, state }) {
   const file = selectedFile(ui);
   ui.fileName.textContent = file === null ? TEXT.pickFile : file.name;
   ui.filePicker.classList.toggle("is-chosen", file !== null);
-  ui.uploadButton.disabled = state.uploading || file === null || fileProblem(file) !== null;
+  // Mid-upload the button stays focusable and only says it is unavailable; upload() ignores it.
+  ui.uploadButton.setAttribute("aria-disabled", String(state.uploading));
+  ui.uploadButton.disabled = !state.uploading && (file === null || fileProblem(file) !== null);
   return file;
 }
 
@@ -223,7 +233,7 @@ export async function upload(ctx, event) {
 
   state.uploading = true;
   ui.fileInput.disabled = true;
-  ui.uploadButton.disabled = true;
+  syncFilePicker(ctx);
   setBusy(ui.uploadButton, true);
   showFileError(ui, null);
   showPendingRow(ctx, file.name);
@@ -245,9 +255,12 @@ export async function upload(ctx, event) {
     state.uploading = false;
     ui.fileInput.disabled = false;
     setBusy(ui.uploadButton, false);
+    const buttonHadFocus = document.activeElement === ui.uploadButton;
     syncFilePicker(ctx);
     renderDocuments(ctx);
-    if (document.activeElement === null || document.activeElement === document.body) {
+    // A successful upload empties the picker, which disables the button. Browsers drop focus from a
+    // disabled element only at the next render, so move it to the picker now rather than lose it.
+    if ((buttonHadFocus && ui.uploadButton.disabled) || document.activeElement === document.body) {
       ui.fileInput.focus();
     }
   }
@@ -270,23 +283,42 @@ function clearPendingRow(state) {
   state.stopPendingClock = null;
 }
 
+/** A file dropped anywhere but the picker would open in the tab and wipe the conversation. */
+export function guardStrayDrop({ ui }, event) {
+  if (event.target instanceof Node && ui.filePicker.contains(event.target)) return;
+  event.preventDefault();
+  if (event.type === "dragover" && event.dataTransfer !== null) event.dataTransfer.dropEffect = "none";
+}
+
 // --- delete ------------------------------------------------------------------
 
+function withoutId(ids, id) {
+  return new Set([...ids].filter((item) => item !== id));
+}
+
 async function deleteDocument(ctx, doc, button) {
-  if (!window.confirm(TEXT.confirmDelete(doc.title))) return;
-  const position = ctx.state.documents.findIndex((item) => item.id === doc.id);
+  const { state } = ctx;
+  if (state.deleting.has(doc.id) || !window.confirm(TEXT.confirmDelete(doc.title))) return;
+  const position = state.documents.findIndex((item) => item.id === doc.id);
+  state.deleting = new Set([...state.deleting, doc.id]);
   button.disabled = true;
   setBusy(button, true);
   try {
     await api(`/api/documents/${encodeURIComponent(doc.id)}`, { method: "DELETE" });
   } catch (error) {
-    button.disabled = false;
-    setBusy(button, false);
+    state.deleting = withoutId(state.deleting, doc.id);
+    if (button.isConnected) {
+      button.disabled = false;
+      setBusy(button, false);
+    } else {
+      renderDocuments(ctx);
+    }
     ctx.announce(messageOf(error), { tone: "error" });
     return;
   }
   ctx.announce(TEXT.deleted(doc.title), { tone: "success" });
   await refreshDocuments(ctx);
+  state.deleting = withoutId(state.deleting, doc.id);
   focusDocumentAt(ctx.ui, position);
   refreshHealth(ctx);
 }

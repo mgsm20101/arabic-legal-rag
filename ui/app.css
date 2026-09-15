@@ -129,7 +129,7 @@ h1{font-size:var(--text-xl);line-height:1.4;font-weight:700}
 @media (min-width:960px){
   .layout{grid-template-columns:minmax(300px,340px) minmax(0,1fr)}
 }
-/* keep this breakpoint in step with WIDE_LAYOUT in app.js */
+/* keep this breakpoint in step with WIDE_LAYOUT in js/copy.js; tests/test_ui_static.py checks it */
 @media (min-width:1280px){
   .layout.has-source{grid-template-columns:minmax(300px,340px) minmax(0,1fr) minmax(360px,440px)}
 }
@@ -399,19 +399,29 @@ textarea[aria-invalid="true"]{border-color:var(--bad)}
 
 /* --- source panel --------------------------------------------------------- */
 
+/* The close button follows the heading in DOM order, so Tab reaches it next; the grid keeps it top left. */
 .source-panel{
-  display:flex;flex-direction:column;gap:var(--space-md);min-width:0;
+  display:grid;grid-template-columns:minmax(0,1fr) auto;align-content:start;
+  grid-template-areas:"eyebrow close" "title title" "meta meta" "text text" "foot foot";
+  gap:var(--space-md);min-width:0;
   padding:var(--space-md) var(--space-lg) var(--space-lg);
   background:var(--panel);border:1px solid var(--line);border-radius:var(--radius-lg);
 }
-.source-head{display:flex;align-items:center;justify-content:space-between;gap:var(--space-md);min-height:40px}
-.eyebrow{display:inline-flex;align-items:center;gap:var(--space-xs);font-size:var(--text-sm);font-weight:650;color:var(--accent)}
+.eyebrow{
+  grid-area:eyebrow;align-self:center;
+  display:inline-flex;align-items:center;gap:var(--space-xs);font-size:var(--text-sm);font-weight:650;color:var(--accent);
+}
 .eyebrow .icon{width:16px;height:16px}
+.source-close{grid-area:close;justify-self:end}
 /* focus lands here when the panel opens; the inline padding gives its ring room */
 .source-title{
+  grid-area:title;
   margin-inline:calc(-1 * var(--space-xs));padding-inline:var(--space-xs);border-radius:var(--radius-sm);
   font-size:var(--text-lg);line-height:1.6;font-weight:650;overflow-wrap:anywhere;
 }
+.source-meta{grid-area:meta}
+.source-text{grid-area:text}
+.source-foot{grid-area:foot}
 .source-meta{display:flex;flex-wrap:wrap;gap:var(--space-xs) var(--space-lg);margin:0;font-size:var(--text-sm)}
 .meta-item{display:flex;gap:var(--space-sm)}
 .source-meta dt{color:var(--muted)}

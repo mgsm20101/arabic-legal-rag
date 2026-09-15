@@ -3,7 +3,7 @@
  * source panel. Every function takes the page context that app.js builds:
  * { ui, state, announce, wideLayout, changed }.
  */
-import { api, isObject, messageOf, textOf, wholeNumber } from "./api.js";
+import { ApiError, api, isObject, messageOf, textOf, wholeNumber } from "./api.js";
 import {
   COUNTER_WARNING_LENGTH,
   MAX_QUESTION_LENGTH,
@@ -11,10 +11,14 @@ import {
   STATUS_TAGS,
   TEXT,
   abstainSentence,
+  droppedNote,
   formatDuration,
 } from "./copy.js";
 import { el, fromTemplate, icon, reveal, setBusy, startClock } from "./dom.js";
-import { scopeForRequest, scopeStatus } from "./documents.js";
+import { refreshHealth, scopeForRequest, scopeStatus } from "./documents.js";
+
+// Failures that can mean the model server went away, so the health chip is checked again.
+const GENERATOR_TROUBLE = new Set([0, 503]);
 
 // --- asking ------------------------------------------------------------------
 
@@ -29,8 +33,11 @@ export function updateAskState({ ui, state }) {
   ui.counter.dataset.tone = typed >= COUNTER_WARNING_LENGTH ? "warn" : "muted";
   if (length >= MIN_QUESTION_LENGTH) hideQuestionError(ui);
 
-  ui.askButton.disabled = state.chat !== null || !scope.askable || length < MIN_QUESTION_LENGTH;
-  ui.newChat.disabled = ui.thread.childElementCount === 0;
+  ui.askButton.disabled = state.asking || !scope.askable || length < MIN_QUESTION_LENGTH;
+  // The server keeps generating an answer nobody waits for, so a new chat waits for it instead.
+  ui.newChat.disabled = state.asking || ui.thread.childElementCount === 0;
+  if (state.asking) ui.newChat.title = TEXT.newChatBusy;
+  else ui.newChat.removeAttribute("title");
 }
 
 function showQuestionError(ui) {
@@ -53,36 +60,29 @@ export async function ask(ctx, event) {
     showQuestionError(ui);
     return;
   }
-  if (ui.askButton.disabled || !scopeStatus(state).askable) return;
+  if (ui.askButton.disabled || state.asking || !scopeStatus(state).askable) return;
 
-  const controller = new AbortController();
   const docIds = scopeForRequest(state);
   const refocus = document.activeElement === ui.askButton;
   const exchange = addExchange(ui, question);
-  state.chat = controller;
+  state.asking = true;
   ui.question.value = "";
   setBusy(ui.askButton, true);
   updateAskState(ctx);
   if (refocus) ui.question.focus();
 
   try {
-    const data = await api("/api/chat", {
-      method: "POST",
-      json: { question, doc_ids: docIds },
-      signal: controller.signal,
-    });
-    if (!controller.signal.aborted) renderAnswer(ctx, exchange, data);
+    const data = await api("/api/chat", { method: "POST", json: { question, doc_ids: docIds } });
+    renderAnswer(ctx, exchange, data);
   } catch (error) {
-    if (controller.signal.aborted) return;
-    renderError(exchange, error);
+    renderError(ctx, exchange, error);
     if (ui.question.value === "") ui.question.value = question;
+    if (error instanceof ApiError && GENERATOR_TROUBLE.has(error.status)) refreshHealth(ctx);
   } finally {
     exchange.stopClock();
-    if (state.chat === controller) {
-      state.chat = null;
-      setBusy(ui.askButton, false);
-      updateAskState(ctx);
-    }
+    state.asking = false;
+    setBusy(ui.askButton, false);
+    updateAskState(ctx);
   }
 }
 
@@ -99,11 +99,7 @@ function addExchange(ui, question) {
 
 export function clearThread(ctx) {
   const { ui, state } = ctx;
-  if (state.chat !== null) {
-    state.chat.abort();
-    state.chat = null;
-    setBusy(ui.askButton, false);
-  }
+  if (state.asking) return; // the button is disabled meanwhile; see updateAskState
   closeSource(ctx, { restoreFocus: false });
   ui.thread.replaceChildren();
   ui.threadIntro.hidden = false;
@@ -166,22 +162,34 @@ function renderAnswer(ctx, exchange, data) {
     statusTag(status),
     shown.length > 0 ? claimList(ctx, shown) : el("p", "abstain-text", abstainSentence(answer.abstainReason)),
   ];
-  const dropped = answer.dropped + unsourced;
-  if (dropped > 0) parts.push(el("p", "answer-note", TEXT.dropped(dropped)));
+  const note = droppedNote(answer.dropped + unsourced, answer.abstainReason);
+  if (note !== "") parts.push(el("p", "answer-note", note));
   const timings = timingsText(answer.timings);
   if (timings !== "") parts.push(el("p", "answer-timings", timings));
-  showAnswer(exchange, status, parts);
+  showAnswer(ctx, exchange, status, parts);
 }
 
-function renderError(exchange, error) {
-  showAnswer(exchange, "error", [statusTag("error"), el("p", "error-text", messageOf(error))]);
+function renderError(ctx, exchange, error) {
+  showAnswer(ctx, exchange, "error", [statusTag("error"), el("p", "error-text", messageOf(error))]);
 }
 
-function showAnswer(exchange, status, parts) {
+/** Whether any part of `node` shows inside `frame` and inside the viewport. */
+function isOnScreen(node, frame) {
+  const box = node.getBoundingClientRect();
+  const bounds = frame.getBoundingClientRect();
+  return box.bottom > Math.max(bounds.top, 0) && box.top < Math.min(bounds.bottom, window.innerHeight);
+}
+
+function showAnswer(ctx, exchange, status, parts) {
+  const { ui } = ctx;
+  // Follow the answer only if the reader is still watching its loading card, never pull them back down.
+  const watched = isOnScreen(exchange.answer, ui.threadScroll);
   exchange.answer.dataset.status = status;
   exchange.answer.replaceChildren(...parts);
   exchange.answer.setAttribute("aria-busy", "false");
-  reveal(exchange.root, "start");
+  if (watched) reveal(exchange.root, "start");
+  // Behind the source drawer the thread is inert, and its live region is silent with it.
+  if (ui.chatPanel.inert) ctx.announce(TEXT.answerArrived(STATUS_TAGS[status].text));
 }
 
 function statusTag(status) {
@@ -207,7 +215,7 @@ function citeChip(ctx, source) {
   const chip = fromTemplate("tpl-cite");
   chip.querySelector(".cite-label").textContent = source.label;
   chip.title = source.docTitle;
-  chip.setAttribute("aria-label", TEXT.citeName(source.label, source.docTitle));
+  chip.setAttribute("aria-label", TEXT.citeName(source.label));
   chip.addEventListener("click", () => openSource(ctx, source, chip));
   return chip;
 }

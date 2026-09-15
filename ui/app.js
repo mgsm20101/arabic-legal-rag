@@ -1,7 +1,7 @@
 /*
  * Chat page of the arabic-legal-rag demo layer (ADR-023): upload an Arabic PDF
  * or TXT document, ask about it, and read every displayed sentence beside the
- * source the pipeline verified for it.
+ * chunk it cites.
  *
  * The entry module: the element map, the in-memory state, and the event
  * wiring. The work lives in ./js/, and the server serves exactly these six
@@ -14,6 +14,7 @@
 import { WIDE_LAYOUT } from "./js/copy.js";
 import { byId, createAnnouncer } from "./js/dom.js";
 import {
+  guardStrayDrop,
   onFileChosen,
   refreshDocuments,
   refreshHealth,
@@ -55,6 +56,7 @@ const ui = Object.freeze({
   docsRetry: byId("docs-retry"),
   chatPanel: byId("chat-panel"),
   newChat: byId("new-chat"),
+  threadScroll: byId("thread-scroll"),
   threadIntro: byId("thread-intro"),
   thread: byId("thread"),
   askForm: byId("ask-form"),
@@ -78,11 +80,13 @@ const ui = Object.freeze({
 const state = {
   documents: [], // frozen documents, newest first
   excluded: new Set(), // doc_ids unticked out of the scope; a new document starts ticked
+  deleting: new Set(), // doc_ids whose delete request is in flight
+  documentsRequest: 0, // numbers each documents refresh, so a late reply cannot overwrite a newer one
   docsStatus: "loading", // "loading" | "ready" | "error"
   uploading: false,
   pendingRow: null,
   stopPendingClock: null,
-  chat: null, // AbortController of the question in flight
+  asking: false, // a question is in flight
   sourceOpener: null, // the citation chip whose source is open
 };
 
@@ -105,6 +109,8 @@ function init() {
   ui.sourceClose.addEventListener("click", () => closeSource(ctx));
   ui.scrim.addEventListener("click", () => closeSource(ctx));
   document.addEventListener("keydown", (event) => onDocumentKeydown(ctx, event));
+  document.addEventListener("dragover", (event) => guardStrayDrop(ctx, event));
+  document.addEventListener("drop", (event) => guardStrayDrop(ctx, event));
   ctx.wideLayout.addEventListener("change", () => applySourceMode(ctx));
 
   syncFilePicker(ctx);

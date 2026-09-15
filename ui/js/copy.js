@@ -104,13 +104,20 @@ export const TEXT = Object.freeze({
   scopeSome: (selected, total) => `نطاق البحث: ${formatCount(selected, "document")} من أصل ${total}`,
   questionTooShort: `الحد الأدنى لطول السؤال: ${formatCount(MIN_QUESTION_LENGTH, "letter")}.`,
   newChat: "بدأت محادثة جديدة.",
+  newChatBusy: "انتظر انتهاء الإجابة الجارية",
+  answerArrived: (status) => `وصل الرد على سؤالك: ${status}.`,
   // a dual subject takes the dual pronoun; a non-human plural takes the feminine singular
   dropped: (n) => `حُذفت ${formatCount(n, "sentence")} ${n === 2 ? "لأنهما" : "لأنها"} بلا مصدر متحقَّق منه`,
   retrieval: (duration) => `الاسترجاع ${duration}`,
   generation: (duration) => `التوليد ${duration}`,
-  citeName: (label, title) => `المصدر ${label}، ${title}`,
+  citeName: (label) => `المصدر ${label}`,
   sourceLabel: (n) => `مصدر ${n}`,
 });
+
+/** The note under an answer about sentences the gate dropped; all_dropped already says so itself. */
+export function droppedNote(count, abstainReason) {
+  return count > 0 && abstainReason !== "all_dropped" ? TEXT.dropped(count) : "";
+}
 
 // --- formatters --------------------------------------------------------------
 

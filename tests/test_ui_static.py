@@ -8,22 +8,38 @@ no visible symptom:
 - nothing on the page needs an exception to its Content-Security-Policy, and
   nothing is loaded from another origin;
 - every request goes through one helper that sends the app header;
-- every script the page imports is one the server serves;
+- every script the page imports is one the server serves, every script
+  parses, and every id, template, icon and class a script reaches for is in
+  the markup, so a rename or a syntax error cannot kill the page silently;
 - every abstain reason the API can return has its Arabic sentence;
-- every count the page shows agrees with its noun.
+- every count the page shows agrees with its noun, and the limits the page
+  states are the ones the server enforces;
+- the page claims only what the citation gate checks.
 
 Every scan first runs on known-bad samples, so a pattern that has quietly
-stopped matching cannot pass for a clean page.
+stopped matching cannot pass for a clean page. The tests that run the scripts
+need Node on PATH, and skip without it.
 """
 
 from __future__ import annotations
 
+import json
 import posixpath
 import re
+import shutil
+import subprocess
+import sys
 import unicodedata
 from pathlib import Path
 
-UI = Path(__file__).resolve().parents[1] / "ui"
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+UI = ROOT / "ui"
+sys.path.insert(0, str(ROOT / "src"))
+
+NODE = shutil.which("node")
+needs_node = pytest.mark.skipif(NODE is None, reason="node is not on PATH")
 
 TAG = re.compile(r"<[a-zA-Z][^>]*>")
 
@@ -152,12 +168,12 @@ JS_PROTOCOL_RELATIVE = re.compile(r"[\"'`]//")
 
 
 def _urls(html: str) -> list[str]:
-    """Every URL the markup points at, except same-document #fragments."""
+    """Every URL the markup fetches, which leaves out #fragments and inline data: URLs."""
     urls = []
     for tag in TAG.findall(html):
         for name in URL_ATTRIBUTES:
             value = _attr(tag, name)
-            if value is not None and not value.startswith("#"):
+            if value is not None and not value.startswith(("#", "data:")):
                 urls.append(value)
     return sorted(urls)
 
@@ -168,7 +184,8 @@ def test_the_chat_page_is_rtl_arabic_and_loads_only_its_own_assets():
     assert CSS_LOAD.search('@import "theme.css";') and CSS_LOAD.search("background: url(/bg.png)")
     assert not CSS_LOAD.search("background: url(data:image/png;base64,AAAA)")
     assert JS_PROTOCOL_RELATIVE.search('fetch("//cdn.example/x.js")')
-    assert _urls('<img src="//cdn.example/x.png"><a href="#top">') == ["//cdn.example/x.png"]
+    sample = '<img src="//cdn.example/x.png"><a href="#top"><link rel="icon" href="data:,">'
+    assert _urls(sample) == ["//cdn.example/x.png"]
 
     html = _read("app.html")
     root = re.search(r"<html\b[^>]*>", html, re.I)
@@ -505,25 +522,235 @@ def test_every_count_on_the_page_goes_through_the_plural_formatter():
     assert _count_problems(_all_js(), _read("app.html")) == []
 
 
-def test_the_count_forms_follow_arabic_number_agreement():
-    copy = _read("js/copy.js")
-    assert 'new Intl.PluralRules("ar")' in copy
-    assert "function countForms(one, two, few, many, other)" in copy
-    table = COUNT_TABLE.search(copy)
-    assert table, "js/copy.js has no COUNT_FORMS table"
-    rows = re.findall(r'^\s*(\w+): countForms\(((?:"[^"]+"(?:, )?){5})\),$', table.group(0), re.M)
-    parsed = {noun: tuple(_nfc(form) for form in re.findall(r'"([^"]+)"', forms)) for noun, forms in rows}
-    assert parsed == {noun: tuple(_nfc(form) for form in forms) for noun, forms in COUNT_FORMS.items()}
+# --- what the scripts reach for is in the markup -------------------------------
+
+WIRING = {
+    "id": re.compile(r"\bbyId\(\s*\"([^\"]+)\"\s*\)"),
+    "template": re.compile(r"\bfromTemplate\(\s*\"([^\"]+)\"\s*\)"),
+    "icon": re.compile(r"\bicon(?:\(\s*|:\s*)\"([^\"]+)\""),
+    "class": re.compile(r"\bquerySelector(?:All)?\(\s*\"\.([\w-]+)\"\s*\)"),
+}
+
+WIRING_HTML_SAMPLE = (
+    '<p id="health"></p><svg><symbol id="i-check"></symbol></svg>'
+    '<template id="tpl-doc"><li class="doc"><input class="doc-check"></li></template>'
+)
+
+WIRING_SAMPLES = {
+    "a renamed id": 'const chip = byId("health-chip");',
+    "a missing template": 'const row = fromTemplate("tpl-exchange");',
+    "a missing icon": 'node.append(icon("spark"));',
+    "a status icon with no symbol": 'Object.freeze({ text: "x", icon: "abstain" });',
+    "a class no template has": 'row.querySelector(".doc-delete");',
+}
+
+GOOD_WIRING_SAMPLE = 'byId("health"); fromTemplate("tpl-doc"); icon("check"); row.querySelector(".doc-check");'
 
 
-# --- the limits the server enforces ---------------------------------------------
+def _markup_names(html: str) -> dict[str, set[str]]:
+    tags = TAG.findall(html)
+    ids_of = lambda element: {_attr(t, "id") for t in tags if re.match(rf"<{element}\b", t, re.I)} - {None}  # noqa: E731
+    return {
+        "id": {_attr(tag, "id") for tag in tags} - {None},
+        "template": ids_of("template"),
+        "icon": {symbol[2:] for symbol in ids_of("symbol") if symbol.startswith("i-")},
+        "class": {name for tag in tags for name in (_attr(tag, "class") or "").split()},
+    }
 
 
-def test_the_limits_are_stated_as_the_server_enforces_them():
-    copy = _read("js/copy.js")
-    assert "export const MAX_DOC_IDS = 20;" in copy
-    assert "export const MAX_UPLOAD_MB = 20;" in copy
+def _wiring_problems(js: str, html: str) -> list[str]:
+    markup = _markup_names(html)
+    return [
+        f"a script reaches for {kind} {name!r}, which app.html does not have"
+        for kind, pattern in WIRING.items()
+        for name in pattern.findall(js)
+        if name not in markup[kind]
+    ]
+
+
+def test_every_id_template_icon_and_class_the_scripts_use_is_in_the_markup():
+    for label, sample in WIRING_SAMPLES.items():
+        assert _wiring_problems(sample, WIRING_HTML_SAMPLE), f"the scan misses {label}"
+    assert _wiring_problems(GOOD_WIRING_SAMPLE, WIRING_HTML_SAMPLE) == []
+
+    assert _wiring_problems(_all_js(), _read("app.html")) == []
+
+
+NAMED_IMPORT = re.compile(r"^\s*import\s*\{([^}]*)\}\s*from\s*(['\"])([^'\"]+)\2", re.M)
+EXPORTED_NAME = re.compile(r"^export\s+(?:async\s+)?(?:function\*?|class|const|let)\s+([A-Za-z_$][\w$]*)", re.M)
+
+EXPORT_SAMPLES = {
+    "a name the module never exported": {
+        "app.js": 'import { refresh } from "./js/api.js";',
+        "js/api.js": "export async function api() {}",
+    },
+    "a renamed export": {
+        "app.js": 'import {\n  api,\n  isObject,\n} from "./js/api.js";',
+        "js/api.js": "export async function api() {}\nexport const isPlainObject = () => true;",
+    },
+}
+
+GOOD_EXPORT_SAMPLE = {
+    "app.js": 'import { api, ApiError as Failure } from "./js/api.js";',
+    "js/api.js": "export class ApiError extends Error {}\nexport async function api() {}",
+}
+
+
+def _missing_exports(files: dict[str, str]) -> list[str]:
+    """Named imports that their module does not export: the page would die at link time."""
+    exports = {name: set(EXPORTED_NAME.findall(source)) for name, source in files.items()}
+    problems = []
+    for name, source in files.items():
+        for names, _quote, spec in NAMED_IMPORT.findall(source):
+            target = posixpath.normpath(posixpath.join(posixpath.dirname(name), spec))
+            for imported in (part.split(" as ")[0].strip() for part in names.split(",")):
+                if imported and target in exports and imported not in exports[target]:
+                    problems.append(f"{name} imports {imported!r}, which {target} does not export")
+    return problems
+
+
+def test_every_imported_name_is_exported_by_its_module():
+    for label, files in EXPORT_SAMPLES.items():
+        assert _missing_exports(files), f"the scan misses {label}"
+    assert _missing_exports(GOOD_EXPORT_SAMPLE) == []
+
+    assert _missing_exports({name: _read(name) for name in ALLOWLISTED_JS}) == []
+
+
+def test_the_wide_layout_breakpoint_is_the_same_in_the_script_and_the_stylesheet():
+    match = re.search(r'WIDE_LAYOUT = "\(min-width: (\d+)px\)"', _read("js/copy.js"))
+    assert match, "js/copy.js has no WIDE_LAYOUT media query"
+    width = int(match.group(1))
+    css = re.sub(r"\s+", "", _read("app.css"))
+    assert f"@media(min-width:{width}px)" in css, "the source column starts at another width in app.css"
+    assert f"@media(max-width:{width - 1}.98px)" in css, "the source drawer ends at another width in app.css"
+
+
+# --- the scripts run: js/copy.js under Node ------------------------------------
+
+COUNT_NUMBERS = (0, 1, 2, 3, 10, 11, 99, 100, 101, 102, 103, 111)
+
+
+def _arabic_plural_category(n: int) -> str:
+    """CLDR's Arabic plural rules for a whole number, which Intl.PluralRules("ar") follows."""
+    if n in (0, 1, 2):
+        return ("zero", "one", "two")[n]
+    if 3 <= n % 100 <= 10:
+        return "few"
+    if 11 <= n % 100 <= 99:
+        return "many"
+    return "other"
+
+
+def _expected_count(n: int, noun: str) -> str:
+    one, two, few, many, other = COUNT_FORMS[noun]
+    category = _arabic_plural_category(n)
+    if category in ("one", "two"):
+        return one if category == "one" else two
+    return f"{n} {({'zero': few, 'few': few, 'many': many, 'other': other})[category]}"
+
+
+def _node_copy_of_the_scripts(tmp_path: Path) -> Path:
+    """The page's scripts, copied under a package.json that has Node read .js as ES modules."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "package.json").write_text('{"type": "module"}', encoding="utf-8")
+    for name in ALLOWLISTED_JS:
+        target = tmp_path / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(_read(name), encoding="utf-8")
+    return tmp_path
+
+
+def _node(*args: str, stdin: str | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [NODE, *args], input=stdin, capture_output=True, text=True, encoding="utf-8", timeout=60
+    )
+
+
+@needs_node
+def test_every_script_parses_as_an_es_module(tmp_path):
+    broken = tmp_path / "broken"
+    broken.mkdir()
+    (broken / "package.json").write_text('{"type": "module"}', encoding="utf-8")
+    (broken / "bad.js").write_text('import { a } from "./a.js";\nexport const = a;\n', encoding="utf-8")
+    assert _node("--check", str(broken / "bad.js")).returncode != 0, "node --check misses a syntax error"
+
+    scripts = _node_copy_of_the_scripts(tmp_path / "ui")
+    for name in ALLOWLISTED_JS:
+        result = _node("--check", str(scripts / name))
+        assert result.returncode == 0, f"{name}: {result.stderr}"
+
+
+@needs_node
+def test_the_copy_module_counts_and_states_the_limits_the_server_enforces(tmp_path):
+    from legalrag.library import MAX_UPLOAD_BYTES
+    from legalrag.webapp import MAX_DOC_IDS
+
+    copy_url = (_node_copy_of_the_scripts(tmp_path) / "js" / "copy.js").as_uri()
+    script = (
+        f"const copy = await import({json.dumps(copy_url)});\n"
+        f"const numbers = {json.dumps(COUNT_NUMBERS)};\n"
+        "const nouns = Object.keys(copy.COUNT_FORMS);\n"
+        "console.log(JSON.stringify({\n"
+        "  counts: Object.fromEntries(nouns.map((noun) => [noun, numbers.map((n) => copy.formatCount(n, noun))])),\n"
+        "  maxDocIds: copy.MAX_DOC_IDS,\n"
+        "  maxUploadBytes: copy.MAX_UPLOAD_BYTES,\n"
+        "  tooLarge: copy.TEXT.tooLarge,\n"
+        "  tooMany: copy.TEXT.scopeTooMany,\n"
+        "  tooShort: copy.TEXT.questionTooShort,\n"
+        "  retry: [1, 2, 12].map((n) => copy.TEXT.retryAfter(n)),\n"
+        '  notes: [[3, "all_dropped"], [2, null], [3, null], [0, null]].map(([n, why]) => copy.droppedNote(n, why)),\n'
+        '  abstain: ["all_dropped", "constructor"].map((why) => copy.abstainSentence(why)),\n'
+        "}));\n"
+    )
+    result = _node("--input-type=module", stdin=script)
+    assert result.returncode == 0, result.stderr
+    out = json.loads(result.stdout)
+    nfc = lambda value: _nfc(value) if isinstance(value, str) else [nfc(v) for v in value]  # noqa: E731
+
+    assert {noun: nfc(forms) for noun, forms in out["counts"].items()} == {
+        noun: [_nfc(_expected_count(n, noun)) for n in COUNT_NUMBERS] for noun in COUNT_FORMS
+    }
+
+    assert (out["maxDocIds"], out["maxUploadBytes"]) == (MAX_DOC_IDS, MAX_UPLOAD_BYTES)
+    megabytes = MAX_UPLOAD_BYTES // (1024 * 1024)
     # a file just over the limit is told the limit, never its own size rounded to read as the limit
-    assert "tooLarge: `الحد الأقصى لحجم الملف ${MAX_UPLOAD_MB} ميجابايت.`," in copy
-    assert "formatSize(file.size)" not in _all_js()
-    assert 'يمكن اختيار ${formatCount(MAX_DOC_IDS, "document")} كحد أقصى، أو اختيار الكل.' in copy
+    assert nfc(out["tooLarge"]) == _nfc(f"الحد الأقصى لحجم الملف {megabytes} ميجابايت.")
+    assert nfc(out["tooMany"]) == _nfc(
+        f"يمكن اختيار {_expected_count(MAX_DOC_IDS, 'document')} كحد أقصى، أو اختيار الكل."
+    )
+    assert nfc(out["tooShort"]) == _nfc(f"الحد الأدنى لطول السؤال: {_expected_count(3, 'letter')}.")
+    assert nfc(out["retry"]) == [
+        _nfc(f"مدة الانتظار قبل إعادة المحاولة: {_expected_count(n, 'second')}.") for n in (1, 2, 12)
+    ]
+
+    # all_dropped already says every sentence went; the count note would say it twice
+    assert nfc(out["notes"]) == [
+        "",
+        _nfc("حُذفت جملتان لأنهما بلا مصدر متحقَّق منه"),
+        _nfc("حُذفت 3 جمل لأنها بلا مصدر متحقَّق منه"),
+        "",
+    ]
+    assert nfc(out["abstain"][0]) == _nfc(ABSTAIN_SENTENCES["all_dropped"])
+    assert ARABIC_LETTER.search(out["abstain"][1]) and out["abstain"][1] not in ABSTAIN_SENTENCES.values()
+
+
+# --- the page claims only what the citation gate checks ------------------------
+
+HONEST_COPY = (
+    "محلي بالكامل · البحث في المستندات المرفوعة فقط · يتحقّق الكود من أن كل جملة معروضة تستشهد بمقطع من مستنداتك",
+    "تأتي الإجابة جملاً، ومع كل جملة المقطع الذي تستشهد به. اضغط على المصدر لتقرأ نصه وتتحقّق بنفسك.",
+    "نص المقطع كما استُخرج من المستند. يتحقّق الكود من الاستشهاد، لا من المعنى.",
+    "للعرض فقط — ليست استشارة قانونية. الإجابات مولّدة آلياً وقد تكون ناقصة أو غير دقيقة؛ راجع المصدر قبل الاعتماد عليها.",
+)
+
+# The gate checks that a sentence cites a retrieved chunk, not that the chunk supports it.
+OVERCLAIMS = ("مصدر تحقّق منه الكود", "مصدرها في المستند")
+
+
+def test_the_page_claims_only_what_the_citation_gate_checks():
+    page = _nfc(re.sub(r"\s+", " ", _read("app.html")))
+    for sentence in HONEST_COPY:
+        assert _nfc(sentence) in page, sentence
+    for claim in OVERCLAIMS:
+        assert _nfc(claim) not in page, claim

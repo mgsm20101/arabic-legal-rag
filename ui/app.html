@@ -6,6 +6,7 @@
 <meta name="color-scheme" content="light dark">
 <title>اسأل مستنداتك — كل جملة بمصدرها</title>
 <link rel="stylesheet" href="app.css">
+<link rel="icon" href="data:,">
 <script type="module" src="app.js"></script>
 </head>
 <body>
@@ -32,7 +33,7 @@
     <svg class="brand-mark" aria-hidden="true" focusable="false"><use href="#i-seal"></use></svg>
     <div class="brand-text">
       <h1>اسأل مستنداتك — كل جملة بمصدرها</h1>
-      <p class="subtitle">محلي بالكامل · الإجابة من المستندات المرفوعة فقط · كل جملة معروضة لها مصدر تحقّق منه الكود</p>
+      <p class="subtitle">محلي بالكامل · البحث في المستندات المرفوعة فقط · يتحقّق الكود من أن كل جملة معروضة تستشهد بمقطع من مستنداتك</p>
     </div>
   </div>
   <p class="health" id="health" data-state="pending">
@@ -91,11 +92,11 @@
       </button>
     </div>
 
-    <div class="thread-scroll">
+    <div class="thread-scroll" id="thread-scroll">
       <div class="thread-intro" id="thread-intro">
         <svg class="intro-mark" aria-hidden="true" focusable="false"><use href="#i-seal"></use></svg>
         <p class="intro-title">اسأل عن مستنداتك</p>
-        <p class="intro-text">تأتي الإجابة جملاً، ومع كل جملة مصدرها في المستند. اضغط على المصدر لتقرأ نصه الأصلي.</p>
+        <p class="intro-text">تأتي الإجابة جملاً، ومع كل جملة المقطع الذي تستشهد به. اضغط على المصدر لتقرأ نصه وتتحقّق بنفسك.</p>
       </div>
       <div class="thread" id="thread" role="log" aria-live="polite" aria-labelledby="chat-title"></div>
     </div>
@@ -123,23 +124,21 @@
   </section>
 
   <aside class="source-panel" id="source-panel" aria-labelledby="source-title" hidden>
-    <div class="source-head">
-      <p class="eyebrow">
-        <svg class="icon" aria-hidden="true" focusable="false"><use href="#i-page"></use></svg>
-        <span>المصدر</span>
-      </p>
-      <button class="btn btn-quiet btn-sm" type="button" id="source-close">
-        <svg class="icon" aria-hidden="true" focusable="false"><use href="#i-close"></use></svg>
-        <span class="btn-label">إغلاق</span>
-      </button>
-    </div>
+    <p class="eyebrow">
+      <svg class="icon" aria-hidden="true" focusable="false"><use href="#i-page"></use></svg>
+      <span>المصدر</span>
+    </p>
     <h2 class="source-title" id="source-title" tabindex="-1"></h2>
+    <button class="btn btn-quiet btn-sm source-close" type="button" id="source-close">
+      <svg class="icon" aria-hidden="true" focusable="false"><use href="#i-close"></use></svg>
+      <span class="btn-label">إغلاق</span>
+    </button>
     <dl class="source-meta">
       <div class="meta-item"><dt>الموضع</dt><dd id="source-label"></dd></div>
       <div class="meta-item" id="source-page-row"><dt>الصفحة</dt><dd id="source-page"></dd></div>
     </dl>
     <blockquote class="source-text" id="source-text"></blockquote>
-    <p class="source-foot">نص المقطع كما استُخرج من المستند.</p>
+    <p class="source-foot">نص المقطع كما استُخرج من المستند. يتحقّق الكود من الاستشهاد، لا من المعنى.</p>
   </aside>
 
 </main>
@@ -148,7 +147,7 @@
 <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
 
 <footer class="app-footer" id="app-footer">
-  <p>للعرض فقط — ليست استشارة قانونية. الإجابات مولّدة آلياً من المستندات المرفوعة وقد تكون ناقصة.</p>
+  <p>للعرض فقط — ليست استشارة قانونية. الإجابات مولّدة آلياً وقد تكون ناقصة أو غير دقيقة؛ راجع المصدر قبل الاعتماد عليها.</p>
 </footer>
 
 <template id="tpl-icon">

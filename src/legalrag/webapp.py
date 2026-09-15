@@ -49,6 +49,7 @@ from .web_guard import (  # noqa: F401  ALLOWED_HOSTS, APP_HEADER, SECURITY_HEAD
     QUESTION_MESSAGE_AR,
     SECURITY_HEADERS,
     UPLOAD_PATH,
+    BodyTooLarge,
     Guard,
     RateLimiter,
     error_response,
@@ -213,6 +214,10 @@ def _add_error_handlers(app: FastAPI) -> None:
     async def invalid_question(request, exc: QuestionRejected) -> JSONResponse:
         return error_response("invalid_request", message=QUESTION_MESSAGE_AR)
 
+    async def body_too_large(request, exc: BodyTooLarge) -> JSONResponse:
+        logger.info("%s %s refused (%s): the body passed its cap", request.method, request.url.path, exc.code)
+        return error_response(exc.code, 413)
+
     async def invalid_input(request, exc: RequestValidationError) -> JSONResponse:
         # FastAPI's own 422 body echoes the submitted input; this one names nothing.
         logger.info("%s %s refused: the request did not validate", request.method, request.url.path)
@@ -228,10 +233,12 @@ def _add_error_handlers(app: FastAPI) -> None:
         logger.error("%s %s failed unexpectedly", request.method, request.url.path, exc_info=exc)
         return error_response("internal")
 
-    for exc_type, handler in ((LibraryError, library_error), (EncoderUnavailable, unavailable),
-                              (GeneratorUnavailable, unavailable), (QuestionRejected, invalid_question),
-                              (RequestValidationError, invalid_input), (StarletteHTTPException, http_error),
-                              (Exception, internal)):
+    handlers = (
+        (LibraryError, library_error), (EncoderUnavailable, unavailable), (GeneratorUnavailable, unavailable),
+        (QuestionRejected, invalid_question), (BodyTooLarge, body_too_large),
+        (RequestValidationError, invalid_input), (StarletteHTTPException, http_error), (Exception, internal),
+    )
+    for exc_type, handler in handlers:
         app.add_exception_handler(exc_type, handler)
 
 
@@ -303,7 +310,9 @@ def main(argv: list[str] | None = None) -> int:
         print(str(e))
         return 2
     print(f"\n  http://127.0.0.1:{args.port}\n\nCtrl+C to stop.")
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    # proxy_headers=False: every peer of a loopback app is 127.0.0.1, which uvicorn trusts
+    # by default, so X-Forwarded-For would otherwise choose the rate-limit key.
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info", proxy_headers=False)
     return 0
 
 

@@ -71,15 +71,45 @@ def tree(root: Path) -> list[str]:
     return sorted(p.relative_to(root).as_posix() for p in root.rglob("*"))
 
 
-def raw_request(app, method: str, path: str, headers=(), body: bytes | None = None):
+LOCAL_CLIENT = ("127.0.0.1", 50123)
+CHUNK = 16 * 1024
+
+
+def raw_request(app, method: str, path: str, headers=(), body: bytes | None = None,
+                client: tuple[str, int] = LOCAL_CLIENT):
     """Call the ASGI app directly: no client tidies the path first, and with
     `body=None` any attempt to read the request body fails the test."""
-    sent = []
+    asked = []
 
     async def receive():
+        asked.append(True)
         if body is None:
             raise AssertionError("the request body was read")
         return {"type": "http.request", "body": body, "more_body": False}
+
+    response = _call(app, method, path, headers, receive, client)
+    assert body is not None or not asked, "the request body was read"  # even if the app swallowed the error
+    return response
+
+
+def streamed_request(app, path: str, headers, prefix: bytes, total: int):
+    """POST `total` body bytes in CHUNK-sized messages, `prefix` first and
+    filler after, whatever the headers declare. Returns the status, headers
+    and body of the response, and how many body bytes the app took."""
+    delivered = 0
+
+    async def receive():
+        nonlocal delivered
+        piece = ((prefix if delivered == 0 else b"") + b"x" * CHUNK)[:min(CHUNK, total - delivered)]
+        delivered += len(piece)
+        return {"type": "http.request", "body": piece, "more_body": delivered < total}
+
+    status, response_headers, content = _call(app, "POST", path, headers, receive, LOCAL_CLIENT)
+    return status, response_headers, content, delivered
+
+
+def _call(app, method: str, path: str, headers, receive, client: tuple[str, int]):
+    sent = []
 
     async def send(message):
         sent.append(message)
@@ -87,7 +117,7 @@ def raw_request(app, method: str, path: str, headers=(), body: bytes | None = No
     scope = {
         "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "scheme": "http",
         "method": method, "path": path, "raw_path": path.encode("latin-1"), "query_string": b"",
-        "root_path": "", "client": ("127.0.0.1", 50123), "server": ("127.0.0.1", 80),
+        "root_path": "", "client": client, "server": ("127.0.0.1", 80),
         "headers": [(b"host", b"127.0.0.1")]
         + [(name.lower().encode("latin-1"), value.encode("latin-1")) for name, value in headers],
     }

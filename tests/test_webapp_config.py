@@ -170,3 +170,14 @@ def test_main_stops_with_the_reason_when_the_configuration_is_refused(served, mo
     assert webapp.main([]) == 2
     assert served == []
     assert "LEGALRAG_MODEL must be an ollama: model spec" in capsys.readouterr().out
+
+
+def test_main_never_lets_a_forwarded_header_pick_the_client_address(served):
+    """uvicorn trusts X-Forwarded-For from 127.0.0.1 by default, and every
+    peer of a loopback app is 127.0.0.1: a header would then choose the
+    rate-limit key. TestClient never runs uvicorn's wrapper, so `main` is
+    where this is pinned."""
+    assert webapp.main([]) == 0
+    assert webapp.main(["--host", "0.0.0.0"]) == 0
+
+    assert [kwargs.get("proxy_headers") for _, kwargs in served] == [False, False]

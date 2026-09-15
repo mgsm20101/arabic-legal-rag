@@ -26,9 +26,11 @@ from fastapi.testclient import TestClient  # noqa: E402
 import legalrag.library as library_mod  # noqa: E402
 import legalrag.webapp as webapp  # noqa: E402
 from legalrag.ollama import GeneratorUnavailable  # noqa: E402
+from legalrag.web_guard import MAX_JSON_BYTES, MULTIPART_OVERHEAD  # noqa: E402
 from legalrag.webapp import APP_HEADER, RateLimiter  # noqa: E402
 from stubs import text_document  # noqa: E402
 from webapp_harness import (  # noqa: E402
+    CHUNK,
     HEADERS,
     QUESTION,
     FakeClock,
@@ -36,6 +38,7 @@ from webapp_harness import (  # noqa: E402
     assert_error,
     assert_security_headers,
     raw_request,
+    streamed_request,
 )
 
 
@@ -135,6 +138,58 @@ def test_a_rate_limited_upload_is_refused_before_its_body_is_read(make):
     assert first == 400  # an empty multipart body: counted, then refused
     status, headers, content = raw_request(h.app, "POST", "/api/documents", upload)  # body=None: unread
     assert (status, json.loads(content)["error"], headers["retry-after"]) == (429, "rate_limited", "60")
+
+
+def test_a_chunked_body_is_refused_whatever_its_content_length_says(make):
+    """uvicorn frames a body by Transfer-Encoding before Content-Length, so a
+    Content-Length check alone would size a chunked body by a number it ignores."""
+    h = make()
+    for path, content_type in (("/api/chat", "application/json"),
+                               ("/api/documents", "multipart/form-data; boundary=b")):
+        both = [(APP_HEADER, "1"), ("content-type", content_type), ("content-length", "64"),
+                ("transfer-encoding", "chunked")]
+        status, _, content = raw_request(h.app, "POST", path, both)  # body=None: never read
+        assert (status, json.loads(content)["error"]) == (411, "invalid_request"), path
+
+    status, _, _ = raw_request(h.app, "GET", "/api/documents", [("transfer-encoding", "chunked")])
+    assert status == 411
+    assert h.library.documents() == [] and h.relevance.seen == []
+
+
+CRLF = bytes((13, 10))
+MULTIPART_FILE_PART = b"".join((b"--b", CRLF, b'Content-Disposition: form-data; name="file"; filename="big.txt"',
+                                CRLF, b"Content-Type: text/plain", CRLF, CRLF))
+
+
+def test_a_body_is_cut_off_once_it_passes_its_cap_whatever_the_headers_say(make, monkeypatch):
+    monkeypatch.setattr(library_mod, "MAX_UPLOAD_BYTES", 64 * 1024)
+    h = make()
+    cases = (
+        ("/api/chat", "application/json", b'{"question": "', MAX_JSON_BYTES, "invalid_request"),
+        ("/api/documents", "multipart/form-data; boundary=b", MULTIPART_FILE_PART,
+         64 * 1024 + MULTIPART_OVERHEAD, "file_too_large"),
+    )
+    for path, content_type, prefix, cap, code in cases:
+        understated = [(APP_HEADER, "1"), ("content-type", content_type), ("content-length", "64")]
+
+        status, _, content, taken = streamed_request(h.app, path, understated, prefix, total=4 * cap)
+
+        assert (status, json.loads(content)["error"]) == (413, code), path
+        assert taken <= cap + CHUNK, f"{path} took {taken} body bytes against a cap of {cap}"
+    assert h.library.documents() == []
+
+
+def test_the_rate_limit_key_is_the_connection_address_never_a_header(make):
+    h = make(chat_limiter=RateLimiter(2, 60.0, clock=FakeClock()))
+    chat = [(APP_HEADER, "1"), ("content-type", "application/json"), ("content-length", "2")]
+    claimed = [("x-forwarded-for", "203.0.113.1"), ("x-forwarded-for", "203.0.113.2"),
+               ("forwarded", "for=198.51.100.7"), ("x-real-ip", "198.51.100.8")]
+
+    statuses = [raw_request(h.app, "POST", "/api/chat", [*chat, header], body=b"{}")[0] for header in claimed]
+
+    assert statuses == [400, 400, 429, 429], "every claimed address spent the one connection's budget"
+    other, _, _ = raw_request(h.app, "POST", "/api/chat", chat, body=b"{}", client=("127.0.0.2", 50124))
+    assert other == 400, "another connection address has a budget of its own"
 
 
 def test_health_never_exposes_the_host_or_exception_text(make):

@@ -7,9 +7,13 @@
    that is not this app's own: 403. A cross-site page cannot add that header
    without a CORS preflight, and no CORS is configured;
 3. an upload or a chat over its client's rate limit: 429, with Retry-After;
-4. a POST whose declared length is missing (411) or too large (413), before
-   a byte of its body is read.
-Whatever it lets through gets `SECURITY_HEADERS` on its response.
+4. any request framed by Transfer-Encoding: 411. The server sizes such a body
+   by its chunks, so a Content-Length beside it is a number nothing enforces;
+5. a POST whose declared length is missing (411) or too large (413).
+All of that happens before a byte of the body is read. Whatever it lets
+through reads its body through a counter that stops it with 413 once it
+passes its cap, whatever the headers claimed, and gets `SECURITY_HEADERS` on
+its response.
 
 The error shape lives here too, since the guard answers with it:
 `{"error": code, "message_ar": sentence}`, a stable code and a Modern
@@ -25,6 +29,7 @@ from collections import OrderedDict, deque
 from collections.abc import Callable
 
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException
 
 from . import library as lib
 from .pipeline import MAX_QUESTION_CHARS, MIN_QUESTION_CHARS
@@ -142,7 +147,7 @@ class Guard:
         if refusal is not None:
             await refusal(scope, receive, send_with_headers)
         else:
-            await self.app(scope, receive, send_with_headers)
+            await self.app(scope, _capped(receive, *_body_cap(scope)), send_with_headers)
 
     def _refusal(self, scope) -> JSONResponse | None:
         headers = _first_headers(scope)
@@ -154,15 +159,22 @@ class Guard:
             origin = headers.get("origin")
             if headers.get(APP_HEADER.lower()) != "1" or (origin is not None and origin not in _origins(port)):
                 return error_response("forbidden")
-        if method != "POST":
-            return None
-        limiter = self.limits.get(scope["path"])
-        if limiter is not None:
-            client = scope.get("client")
-            wait = limiter.check(client[0] if client else "unknown")
+        if method == "POST":
+            wait = self._wait(scope)
             if wait is not None:
                 return error_response("rate_limited", headers={"Retry-After": str(max(1, math.ceil(wait)))})
-        return _length_refusal(scope["path"], headers.get("content-length"))
+        if "transfer-encoding" in headers:
+            return error_response("invalid_request", 411)  # framed by chunks, not by Content-Length
+        return _length_refusal(scope, headers.get("content-length")) if method == "POST" else None
+
+    def _wait(self, scope) -> float | None:
+        """Seconds until this client may POST here again, or None. The key is the
+        connection's own address, never a header a client can write."""
+        limiter = self.limits.get(scope["path"])
+        if limiter is None:
+            return None
+        client = scope.get("client")
+        return limiter.check(client[0] if client else "unknown")
 
 
 def _first_headers(scope) -> dict[str, str]:
@@ -194,14 +206,44 @@ def _origins(port: int | None) -> set[str]:
     return origins | ({f"http://{host}" for host in ALLOWED_HOSTS} if port == 80 else set())
 
 
-def _length_refusal(path: str, declared: str | None) -> JSONResponse | None:
+def _length_refusal(scope, declared: str | None) -> JSONResponse | None:
     if declared is None:
         return error_response("invalid_request", 411)
     if not (declared.isascii() and declared.isdigit()):
         return error_response("invalid_request")
-    if path == UPLOAD_PATH:
-        if int(declared) > lib.MAX_UPLOAD_BYTES + MULTIPART_OVERHEAD:
-            return error_response("file_too_large")
-    elif int(declared) > MAX_JSON_BYTES:
-        return error_response("invalid_request", 413)
-    return None
+    cap, code = _body_cap(scope)
+    return error_response(code, 413) if int(declared) > cap else None
+
+
+def _body_cap(scope) -> tuple[int, str]:
+    """The most body bytes a request may carry, and the error code past that."""
+    if scope["method"] == "POST" and scope["path"] == UPLOAD_PATH:
+        return lib.MAX_UPLOAD_BYTES + MULTIPART_OVERHEAD, "file_too_large"
+    return MAX_JSON_BYTES, "invalid_request"
+
+
+class BodyTooLarge(HTTPException):
+    """A body past its cap, raised while it is read. An HTTPException, so
+    FastAPI's body parsing re-raises it instead of turning it into a 400; the
+    app answers it as `code`, with status 413."""
+
+    def __init__(self, code: str):
+        super().__init__(status_code=413)
+        self.code = code
+
+
+def _capped(receive, cap: int, code: str):
+    """`receive`, counting the body bytes the app takes: past `cap` it raises
+    BodyTooLarge, whatever Content-Length or Transfer-Encoding claimed."""
+    taken = 0
+
+    async def capped():
+        nonlocal taken
+        message = await receive()
+        if message["type"] == "http.request":
+            taken += len(message.get("body", b""))
+            if taken > cap:
+                raise BodyTooLarge(code)
+        return message
+
+    return capped

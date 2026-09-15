@@ -407,6 +407,26 @@ def test_an_unexpected_error_is_500_with_no_detail(make, monkeypatch, caplog):
     assert "secret detail" in caplog.text
 
 
+def test_a_library_fault_on_this_side_is_500_and_logged_with_its_traceback(make, monkeypatch, caplog):
+    h = make()
+
+    class DiskGone(library_mod.LibraryError):
+        code = "internal"
+
+    def fail():
+        raise DiskGone("the disk under /secret/data went away")
+
+    monkeypatch.setattr(h.library, "documents", fail)
+
+    with caplog.at_level(logging.INFO, logger="legalrag.webapp"):
+        response = h.client.get("/api/documents")
+
+    assert_error(response, 500, "internal")
+    assert "secret" not in response.text
+    errors = [record for record in caplog.records if record.levelno >= logging.ERROR]
+    assert errors and errors[0].exc_info, "a fault on this side is logged as an error, with its traceback"
+
+
 def test_only_the_allowlisted_ui_files_are_served(make):
     h = make()
     for path, content_type in (("/", "text/html; charset=utf-8"), ("/app.css", "text/css; charset=utf-8"),

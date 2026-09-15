@@ -195,8 +195,12 @@ def _add_error_handlers(app: FastAPI) -> None:
 
     async def library_error(request, exc: LibraryError) -> JSONResponse:
         code = exc.code if exc.code in MESSAGES_AR else "invalid_request"
-        logger.info("%s %s refused (%s): %s", request.method, request.url.path, code, exc)
-        return error_response(code)
+        response = error_response(code)
+        if response.status_code >= 500:  # a fault on this side (storage, say), not the client's
+            logger.error("%s %s failed (%s)", request.method, request.url.path, code, exc_info=exc)
+        else:
+            logger.info("%s %s refused (%s): %s", request.method, request.url.path, code, exc)
+        return response
 
     async def unavailable(request, exc: Exception) -> JSONResponse:
         code = "encoder_unavailable" if isinstance(exc, EncoderUnavailable) else "generator_unavailable"

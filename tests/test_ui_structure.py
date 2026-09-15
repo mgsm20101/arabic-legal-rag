@@ -9,6 +9,8 @@ link:
 - every name a script imports is exported by its module;
 - every script parses as an ES module;
 - every id, template, icon and class a script reaches for is in the markup;
+- the listeners on the document itself, which no screen shows, are wired;
+- on a narrow screen a new loading card scrolls in above the sticky composer;
 - the wide layout starts at the same width in the script and the stylesheet.
 
 Every scan first runs on known-bad samples, so a pattern that has quietly
@@ -214,6 +216,75 @@ def test_every_id_template_icon_and_class_the_scripts_use_is_in_the_markup():
     assert _wiring_problems(GOOD_WIRING_SAMPLE, WIRING_HTML_SAMPLE) == []
 
     assert _wiring_problems(all_js(), read("app.html")) == []
+
+
+# --- the listeners on the document itself are wired ------------------------------
+
+# Nothing on the page shows one of these is gone until the key is pressed or the file dropped.
+DOCUMENT_LISTENERS = {"keydown": "onDocumentKeydown", "dragover": "guardStrayDrop", "drop": "guardStrayDrop"}
+DOCUMENT_LISTENER = re.compile(r"\bdocument\.addEventListener\(\s*\"(\w+)\"\s*,\s*\(event\)\s*=>\s*(\w+)\(ctx,\s*event\)\s*\)")
+
+GOOD_LISTENERS = (
+    'document.addEventListener("keydown", (event) => onDocumentKeydown(ctx, event));\n'
+    'document.addEventListener("dragover", (event) => guardStrayDrop(ctx, event));\n'
+    'document.addEventListener("drop", (event) => guardStrayDrop(ctx, event));\n'
+)
+_DROP = 'document.addEventListener("drop", (event) => guardStrayDrop(ctx, event));'
+LISTENER_SAMPLES = {
+    "a missing drop listener": GOOD_LISTENERS.replace(_DROP + "\n", ""),
+    "a drop listener commented out": GOOD_LISTENERS.replace(_DROP, "// " + _DROP),
+    "a drop listener in a block comment": GOOD_LISTENERS.replace(_DROP, f"/* {_DROP} */"),
+    "the drop guard on another event": GOOD_LISTENERS.replace('"drop"', '"dragend"'),
+    "a second drop listener": GOOD_LISTENERS + _DROP,
+}
+
+
+def _document_listeners(source: str) -> dict[str, list[str] | None]:
+    """The handlers each event in DOCUMENT_LISTENERS gets on the document, comments left out."""
+    code = re.sub(r"^\s*//.*$", "", re.sub(r"/\*.*?\*/", "", source, flags=re.S), flags=re.M)
+    found: dict[str, list[str]] = {}
+    for event, handler in DOCUMENT_LISTENER.findall(code):
+        found.setdefault(event, []).append(handler)
+    return {event: found.get(event) for event in DOCUMENT_LISTENERS}
+
+
+def test_the_listeners_on_the_document_itself_are_wired():
+    wired = {event: [handler] for event, handler in DOCUMENT_LISTENERS.items()}
+    for label, sample in LISTENER_SAMPLES.items():
+        assert _document_listeners(sample) != wired, f"the scan misses {label}"
+    assert _document_listeners(GOOD_LISTENERS) == wired
+
+    assert _document_listeners(read("app.js")) == wired
+
+
+# --- on a narrow screen a new loading card scrolls in above the sticky composer ------
+
+STICKY_COMPOSER = "@media(max-width:959.98px)and(min-height:700px){"
+
+
+def _media_block(css: str, prelude: str) -> str:
+    """The rules inside the @media block that opens with `prelude`, whitespace removed."""
+    css = re.sub(r"\s+", "", css)
+    start = css.find(prelude)
+    if start == -1:
+        return ""
+    depth, end = 1, start + len(prelude)
+    while depth and end < len(css):
+        depth += {"{": 1, "}": -1}.get(css[end], 0)
+        end += 1
+    return css[start + len(prelude) : end - 1]
+
+
+def test_on_a_narrow_screen_a_new_loading_card_scrolls_in_above_the_sticky_composer():
+    """The composer sticks over the end of the thread. Without a scroll padding its height, a new
+    question scrolls its loading card in behind it, where nobody watches it and the answer does not follow."""
+    outside = "@media (max-width:959.98px) and (min-height:700px){ .composer{position:sticky} }\nhtml{scroll-padding-bottom:1px}"
+    assert "scroll-padding-bottom" not in _media_block(outside, STICKY_COMPOSER), "the scan misses a rule outside the block"
+
+    block = _media_block(read("app.css"), STICKY_COMPOSER)
+    assert ".composer{position:sticky;bottom:0" in block
+    assert "html{scroll-padding-bottom:var(--composer-height" in block
+    assert re.search(r"setProperty\(\s*\"--composer-height\"", read("js/chat.js")), "nothing measures the composer"
 
 
 # --- the wide layout starts at the same width in the script and the stylesheet ---

@@ -86,7 +86,8 @@
   <section class="panel chat" id="chat-panel" aria-labelledby="chat-title">
     <div class="panel-head">
       <h2 class="panel-title" id="chat-title">المحادثة</h2>
-      <button class="btn btn-quiet btn-sm" type="button" id="new-chat" disabled>
+      <p class="hint panel-note" id="new-chat-note" hidden></p>
+      <button class="btn btn-quiet btn-sm" type="button" id="new-chat" aria-describedby="new-chat-note" disabled>
         <svg class="icon" aria-hidden="true" focusable="false"><use href="#i-plus"></use></svg>
         <span class="btn-label">محادثة جديدة</span>
       </button>

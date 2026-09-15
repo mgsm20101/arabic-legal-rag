@@ -14,7 +14,7 @@ import {
   droppedNote,
   formatDuration,
 } from "./copy.js";
-import { el, fromTemplate, icon, reveal, setBusy, startClock } from "./dom.js";
+import { el, fromTemplate, icon, reveal, setBusy, setText, startClock } from "./dom.js";
 import { refreshHealth, scopeForRequest, scopeStatus } from "./documents.js";
 
 // Failures that can mean the model server went away, so the health chip is checked again.
@@ -34,10 +34,12 @@ export function updateAskState({ ui, state }) {
   if (length >= MIN_QUESTION_LENGTH) hideQuestionError(ui);
 
   ui.askButton.disabled = state.asking || !scope.askable || length < MIN_QUESTION_LENGTH;
-  // The server keeps generating an answer nobody waits for, so a new chat waits for it instead.
-  ui.newChat.disabled = state.asking || ui.thread.childElementCount === 0;
-  if (state.asking) ui.newChat.title = TEXT.newChatBusy;
-  else ui.newChat.removeAttribute("title");
+  // The server keeps generating an answer nobody waits for, so a new chat waits for it instead. Meanwhile the
+  // button keeps any focus it has and only says it is unavailable, the note it points at says why, and
+  // clearThread ignores a press.
+  ui.newChat.setAttribute("aria-disabled", String(state.asking));
+  ui.newChat.disabled = !state.asking && ui.thread.childElementCount === 0;
+  setText(ui.newChatNote, state.asking ? TEXT.newChatBusy : "");
 }
 
 function showQuestionError(ui) {
@@ -69,6 +71,7 @@ export async function ask(ctx, event) {
   ui.question.value = "";
   setBusy(ui.askButton, true);
   updateAskState(ctx);
+  revealNewExchange(ui, exchange.root);
   if (refocus) ui.question.focus();
 
   try {
@@ -93,13 +96,21 @@ function addExchange(ui, question) {
   const stopClock = startClock(answer.querySelector(".elapsed"));
   ui.threadIntro.hidden = true;
   ui.thread.append(root);
-  reveal(root, "nearest");
   return Object.freeze({ root, answer, stopClock });
+}
+
+/**
+ * Scrolls a new exchange into view, just enough. On a narrow screen the composer sticks over the end of the
+ * thread, and app.css pads the scroll by its height, measured once it shows the question is on its way.
+ */
+function revealNewExchange(ui, root) {
+  document.documentElement.style.setProperty("--composer-height", `${ui.askForm.offsetHeight}px`);
+  reveal(root, "nearest");
 }
 
 export function clearThread(ctx) {
   const { ui, state } = ctx;
-  if (state.asking) return; // the button is disabled meanwhile; see updateAskState
+  if (state.asking) return; // meanwhile the button only says it is unavailable; see updateAskState
   closeSource(ctx, { restoreFocus: false });
   ui.thread.replaceChildren();
   ui.threadIntro.hidden = false;
@@ -173,17 +184,22 @@ function renderError(ctx, exchange, error) {
   showAnswer(ctx, exchange, "error", [statusTag("error"), el("p", "error-text", messageOf(error))]);
 }
 
-/** Whether any part of `node` shows inside `frame` and inside the viewport. */
-function isOnScreen(node, frame) {
+/**
+ * Whether any part of `node` shows inside `frame`, inside the viewport, and above `composer`, which on a narrow
+ * screen sticks over the bottom of the viewport. Elsewhere the composer sits below the thread and changes nothing.
+ */
+function isOnScreen(node, frame, composer) {
   const box = node.getBoundingClientRect();
   const bounds = frame.getBoundingClientRect();
-  return box.bottom > Math.max(bounds.top, 0) && box.top < Math.min(bounds.bottom, window.innerHeight);
+  const bottom = Math.min(bounds.bottom, window.innerHeight, composer.getBoundingClientRect().top);
+  return box.bottom > Math.max(bounds.top, 0) && box.top < bottom;
 }
 
-function showAnswer(ctx, exchange, status, parts) {
+/** Puts the answer in place of the loading card, and follows it only if the reader still watches the card. */
+export function showAnswer(ctx, exchange, status, parts) {
   const { ui } = ctx;
   // Follow the answer only if the reader is still watching its loading card, never pull them back down.
-  const watched = isOnScreen(exchange.answer, ui.threadScroll);
+  const watched = isOnScreen(exchange.answer, ui.threadScroll, ui.askForm);
   exchange.answer.dataset.status = status;
   exchange.answer.replaceChildren(...parts);
   exchange.answer.setAttribute("aria-busy", "false");

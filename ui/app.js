@@ -56,6 +56,7 @@ const ui = Object.freeze({
   docsRetry: byId("docs-retry"),
   chatPanel: byId("chat-panel"),
   newChat: byId("new-chat"),
+  newChatNote: byId("new-chat-note"),
   threadScroll: byId("thread-scroll"),
   threadIntro: byId("thread-intro"),
   thread: byId("thread"),

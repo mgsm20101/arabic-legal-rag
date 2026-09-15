@@ -154,6 +154,8 @@ h1{font-size:var(--text-xl);line-height:1.4;font-weight:700}
   border-bottom:1px solid var(--line);
 }
 .panel-title{display:flex;align-items:center;gap:var(--space-sm);font-size:var(--text-lg);line-height:1.4;font-weight:650}
+/* why a head button is unavailable for now, beside it */
+.panel-note{flex:0 1 auto;min-width:0;margin-inline-start:auto;text-align:end}
 .count{
   min-width:24px;padding:0 var(--space-sm);border-radius:var(--radius-pill);
   background:var(--surface);color:var(--ink);
@@ -180,16 +182,16 @@ h1{font-size:var(--text-xl);line-height:1.4;font-weight:700}
 .btn-primary{background:var(--accent);color:var(--accent-ink)}
 .btn-primary:hover:not(:disabled){background:var(--accent-hover)}
 .btn-quiet{border-color:var(--line);color:var(--ink)}
-.btn-quiet:hover:not(:disabled){border-color:var(--line-strong);background:var(--surface)}
+.btn-quiet:hover:not(:disabled,[aria-disabled="true"]){border-color:var(--line-strong);background:var(--surface)}
 .btn-danger{color:var(--bad)}
 .btn-danger:hover:not(:disabled){border-color:var(--bad);background:var(--bad-bg)}
 .btn-sm{min-height:32px;gap:var(--space-xs);padding:var(--space-xs) var(--space-sm);font-size:var(--text-sm)}
 .btn-sm .icon{width:16px;height:16px}
 .btn-block{width:100%}
 
-.btn:disabled{cursor:not-allowed}
+.btn:disabled,.btn[aria-disabled="true"]:not(.is-busy){cursor:not-allowed}
 .btn-primary:disabled{border-color:var(--line);background:var(--surface);color:var(--muted)}
-.btn-quiet:disabled{color:var(--muted)}
+.btn-quiet:disabled,.btn-quiet[aria-disabled="true"]{color:var(--muted)}
 .btn.is-busy{cursor:progress}
 .btn-primary.is-busy{border-color:transparent;background:var(--accent);color:var(--accent-ink)}
 .btn.is-busy::after{
@@ -488,6 +490,8 @@ body.has-overlay{overflow:hidden}
 /* the composer follows the reader down the thread only where it still leaves room to read */
 @media (max-width:959.98px) and (min-height:700px){
   .composer{position:sticky;bottom:0;z-index:5;box-shadow:0 -12px 24px -20px rgb(0 0 0 / 35%)}
+  /* a new question's loading card scrolls in above it, not behind it; chat.js measures the height */
+  html{scroll-padding-bottom:var(--composer-height,0px)}
 }
 @media (max-width:599.98px){
   h1{font-size:var(--text-lg)}

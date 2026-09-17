@@ -74,10 +74,16 @@ def _refuse_new_directories(monkeypatch) -> None:
 
 
 def _fake_extract_pages(*pages: str, seen: list | None = None):
-    def fake(path, keep_latin=False, line_tol=None, *, max_pages=None, deadline=None, report=None):
+    """A fake for `docextract_mod._extract_pages_isolated` (T04): extraction now runs in a
+    subprocess via `isolate.run_isolated`, which pickles its target by reference and hands it to
+    a freshly spawned child — a monkeypatch on the *parent* process's `pdf_text.extract_pages`
+    has no effect there at all, since the child re-imports that module fresh from disk.
+    `_extract_pages_isolated` is the seam that stays in-process and fast to replace instead; see
+    docextract.py's docstring for it."""
+    def fake(path, keep_latin, max_pages, deadline):
         if seen is not None:
             seen.append({"path": Path(path), "keep_latin": keep_latin, "max_pages": max_pages, "deadline": deadline})
-        return list(pages)
+        return list(pages), {}
 
     return fake
 
@@ -369,7 +375,7 @@ def test_an_unsupported_suffix_and_an_oversized_upload_are_rejected_before_anyth
 
 
 def test_the_client_filename_never_becomes_a_path(tmp_path, monkeypatch):
-    monkeypatch.setattr(pdf_text, "extract_pages", _fake_extract_pages("نص مستخرج من ملف PDF " * 30))
+    monkeypatch.setattr(docextract_mod, "_extract_pages_isolated", _fake_extract_pages("نص مستخرج من ملف PDF " * 30))
     root = tmp_path / "library"
     library = Library(root, encoder=KeywordEncoder())
 
@@ -400,7 +406,7 @@ def test_the_client_filename_never_becomes_a_path(tmp_path, monkeypatch):
 
 def test_a_pdf_without_a_text_layer_raises_no_text_layer_and_leaves_nothing_behind(tmp_path, monkeypatch):
     seen: list[dict] = []
-    monkeypatch.setattr(pdf_text, "extract_pages", _fake_extract_pages("", "   ", "\n", seen=seen))
+    monkeypatch.setattr(docextract_mod, "_extract_pages_isolated", _fake_extract_pages("", "   ", "\n", seen=seen))
     library = Library(tmp_path, encoder=KeywordEncoder())
     before = _tree(tmp_path)
 
@@ -414,10 +420,10 @@ def test_a_pdf_without_a_text_layer_raises_no_text_layer_and_leaves_nothing_behi
 
 
 def test_a_pdf_the_extractor_cannot_read_is_unsupported_and_leaves_nothing_behind(tmp_path, monkeypatch):
-    def broken(path, keep_latin=False, line_tol=None, **limits):
+    def broken(path, keep_latin, max_pages, deadline):
         raise ValueError("corrupt cross-reference table")
 
-    monkeypatch.setattr(pdf_text, "extract_pages", broken)
+    monkeypatch.setattr(docextract_mod, "_extract_pages_isolated", broken)
     library = Library(tmp_path, encoder=KeywordEncoder())
     before = _tree(tmp_path)
 
@@ -444,6 +450,13 @@ def test_a_pdf_over_the_page_limit_is_pdf_too_large_and_leaves_nothing_behind(tm
 
 
 def test_a_pdf_whose_extraction_outruns_its_budget_is_pdf_too_large_and_leaves_nothing_behind(tmp_path, monkeypatch):
+    """T04: with the deadline already passed before extraction even starts, `run_isolated`
+    kills the worker preemptively — long before pdf_text's own in-loop check between pages
+    would ever get a chance to run, let alone raise `DeadlineExceeded` itself. The cause is now
+    the isolation layer's own `ExtractionLimitExceeded` (the base class: a killed subprocess
+    cannot honestly report pages_done/pages the way DeadlineExceeded requires), not the specific
+    old subclass — this is the whole point of making the deadline preemptive instead of
+    cooperative, not a loss of coverage."""
     monkeypatch.setattr(docextract_mod, "EXTRACTION_BUDGET_SECONDS", -1)  # the deadline has passed before page 2
     library = Library(tmp_path, encoder=KeywordEncoder())
     before = _tree(tmp_path)
@@ -452,14 +465,14 @@ def test_a_pdf_whose_extraction_outruns_its_budget_is_pdf_too_large_and_leaves_n
         library.add(blank_pdf(2), "slow.pdf")
 
     assert refused.value.code == "pdf_too_large"
-    assert isinstance(refused.value.__cause__, pdf_text.DeadlineExceeded)
+    assert isinstance(refused.value.__cause__, pdf_text.ExtractionLimitExceeded)
     assert _tree(tmp_path) == before
     assert library.documents() == []
 
 
 def test_both_pdf_limits_reach_extract_pages_from_add(tmp_path, monkeypatch):
     seen: list[dict] = []
-    monkeypatch.setattr(pdf_text, "extract_pages", _fake_extract_pages("نص مستخرج من ملف PDF " * 30, seen=seen))
+    monkeypatch.setattr(docextract_mod, "_extract_pages_isolated", _fake_extract_pages("نص مستخرج من ملف PDF " * 30, seen=seen))
     monkeypatch.setattr(docextract_mod, "monotonic", lambda: 1000.0)
     library = Library(tmp_path, encoder=KeywordEncoder())
 
@@ -487,11 +500,13 @@ RAW_STATUTE = Path(__file__).resolve().parents[1] / "data" / "raw" / "law-151-20
 
 
 def _two_pass_extractor(latin: list[str], arabic: list[str], calls: list, second_pass_error=None):
-    def fake(path, keep_latin=False, line_tol=None, *, max_pages=None, deadline=None, report=None):
+    """A fake for `docextract_mod._extract_pages_isolated` — see `_fake_extract_pages` above for
+    why that seam, not `pdf_text.extract_pages`, is the one these tests replace."""
+    def fake(path, keep_latin, max_pages, deadline):
         calls.append((keep_latin, max_pages, deadline))
         if not keep_latin and second_pass_error is not None:
             raise second_pass_error
-        return list(latin if keep_latin else arabic)
+        return list(latin if keep_latin else arabic), {}
 
     return fake
 
@@ -503,7 +518,7 @@ def _stored_chunks(root: Path, meta) -> list[dict]:
 
 def test_a_statute_like_pdf_is_chunked_as_a_statute_from_a_second_arabic_only_extraction(tmp_path, monkeypatch):
     calls: list[tuple] = []
-    monkeypatch.setattr(pdf_text, "extract_pages", _two_pass_extractor(STATUTE_LATIN, STATUTE_ARABIC, calls))
+    monkeypatch.setattr(docextract_mod, "_extract_pages_isolated", _two_pass_extractor(STATUTE_LATIN, STATUTE_ARABIC, calls))
     ticks = itertools.count(1000.0, 60.0)  # each reading of the clock is a minute after the last
     monkeypatch.setattr(docextract_mod, "monotonic", lambda: next(ticks))
     library = Library(tmp_path, encoder=KeywordEncoder())
@@ -529,7 +544,7 @@ def test_one_article_header_left_in_the_first_extraction_still_gets_the_arabic_o
         f"مادة {n} Article {n} of the translation, welded onto the header line\n{body}"
         for n, body in enumerate(_BODIES[1:], start=2)
     )]
-    monkeypatch.setattr(pdf_text, "extract_pages", _two_pass_extractor(one_header_left, STATUTE_ARABIC, calls))
+    monkeypatch.setattr(docextract_mod, "_extract_pages_isolated", _two_pass_extractor(one_header_left, STATUTE_ARABIC, calls))
     library = Library(tmp_path, encoder=KeywordEncoder())
 
     meta = library.add(b"%PDF-1.7 statute with one header left", "law.pdf")
@@ -545,7 +560,7 @@ def test_headers_whose_arabic_only_text_is_no_valid_statute_fall_back_to_the_fir
 ):
     calls: list[tuple] = []
     not_a_statute = [*STATUTE_ARABIC[:2], STATUTE_ARABIC[2].replace("مادة 3", "مادة 5")]  # 3 and 4 missing
-    monkeypatch.setattr(pdf_text, "extract_pages", _two_pass_extractor(STATUTE_LATIN, not_a_statute, calls))
+    monkeypatch.setattr(docextract_mod, "_extract_pages_isolated", _two_pass_extractor(STATUTE_LATIN, not_a_statute, calls))
     library = Library(tmp_path, encoder=KeywordEncoder())
 
     meta = library.add(b"%PDF-1.7 almost a statute", "almost.pdf")
@@ -563,7 +578,7 @@ def test_headers_whose_arabic_only_text_is_no_valid_statute_fall_back_to_the_fir
 def test_a_pdf_without_article_headers_is_extracted_once(tmp_path, monkeypatch):
     calls: list[tuple] = []
     policy = ["سياسة العمل عن بعد تسري على الموظفين الدائمين عبر شبكة VPN الخاصة " * 5]
-    monkeypatch.setattr(pdf_text, "extract_pages", _two_pass_extractor(policy, ["must never be read"], calls))
+    monkeypatch.setattr(docextract_mod, "_extract_pages_isolated", _two_pass_extractor(policy, ["must never be read"], calls))
     library = Library(tmp_path, encoder=KeywordEncoder())
 
     meta = library.add(b"%PDF-1.7 policy", "policy.pdf")
@@ -581,7 +596,7 @@ def test_a_deadline_hit_during_the_arabic_only_extraction_keeps_the_upload_as_th
     first: refusing it after that wait would throw them away."""
     calls: list[tuple] = []
     passed = pdf_text.DeadlineExceeded(1, len(STATUTE_ARABIC))
-    monkeypatch.setattr(pdf_text, "extract_pages",
+    monkeypatch.setattr(docextract_mod, "_extract_pages_isolated",
                         _two_pass_extractor(STATUTE_LATIN, STATUTE_ARABIC, calls, second_pass_error=passed))
     library = Library(tmp_path, encoder=KeywordEncoder())
 
@@ -609,7 +624,7 @@ def test_a_non_deadline_failure_on_the_arabic_only_pass_is_a_storage_error_not_u
     Arabic-only pass is a fault on this side (StorageError, 500), never the client's
     (UnsupportedFile, 400) — and nothing is left on disk from the failed attempt."""
     calls: list[tuple] = []
-    monkeypatch.setattr(pdf_text, "extract_pages",
+    monkeypatch.setattr(docextract_mod, "_extract_pages_isolated",
                         _two_pass_extractor(STATUTE_LATIN, STATUTE_ARABIC, calls,
                                             second_pass_error=RuntimeError("a pdfminer bug, not a bad file")))
     library = Library(tmp_path, encoder=KeywordEncoder())

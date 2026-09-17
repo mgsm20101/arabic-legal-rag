@@ -484,12 +484,29 @@ class TooManyPages(ExtractionLimitExceeded):
         super().__init__(f"the PDF has more than {max_pages} pages")
         self.max_pages = max_pages
 
+    def __reduce__(self):
+        # Default exception pickling replays `cls(*self.args)`, i.e. `TooManyPages(message)`
+        # — the formatted string, not the `max_pages` int this constructor actually takes.
+        # That still happens not to crash (the garbled message is then overwritten by the
+        # real `__dict__`, restoring `.max_pages`), but it is unpicklable-by-accident, not by
+        # design, and this task's isolation layer (docextract.run_isolated) needs this
+        # exception to survive a real pickle round-trip so it can cross a subprocess
+        # boundary and still be `isinstance()`-checked correctly on the other side.
+        return (self.__class__, (self.max_pages,))
+
 
 class DeadlineExceeded(ExtractionLimitExceeded):
     def __init__(self, pages_done: int, pages: int):
         super().__init__(f"extraction ran out of time after {pages_done} of {pages} pages")
         self.pages_done = pages_done
         self.pages = pages
+
+    def __reduce__(self):
+        # Same reasoning as `TooManyPages.__reduce__`: without this, unpickling replays
+        # `DeadlineExceeded(message)` with one positional arg where `__init__` requires two,
+        # which raises `TypeError` outright (confirmed empirically) instead of merely
+        # producing a garbled message.
+        return (self.__class__, (self.pages_done, self.pages))
 
 
 def mirror_pages(pages: list[str]) -> tuple[list[str], dict]:

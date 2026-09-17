@@ -24,6 +24,7 @@ pytest.importorskip("numpy")
 pytest.importorskip("fastapi")
 pytest.importorskip("multipart")
 
+import legalrag.docextract as docextract_mod  # noqa: E402
 import legalrag.library as library_mod  # noqa: E402
 import legalrag.webapp as webapp  # noqa: E402
 from legalrag.library import MAX_UPLOAD_BYTES  # noqa: E402
@@ -68,18 +69,19 @@ def test_a_non_deadline_extraction_bug_on_the_second_pass_is_500_never_400(make,
     """F1 at the HTTP layer: the first extraction pass already proved the upload readable, so a
     bug on the second (Arabic-only) pass is StorageError (`internal`), which _STATUS maps to
     500 — never `unsupported_file`'s 400 — and the raw exception text never reaches the client."""
-    from legalrag import pdf_text
-
     statute_like = "مادة 1\nنص المادة الأولى مصحوب بترجمة"
     calls: list[bool] = []
 
-    def flaky(path, keep_latin=False, line_tol=None, *, max_pages=None, deadline=None, report=None):
+    def flaky(path, keep_latin, max_pages, deadline):
         calls.append(keep_latin)
         if not keep_latin:
             raise RuntimeError("a pdfminer bug on the second pass — must never reach the client")
-        return [statute_like]
+        return [statute_like], {}
 
-    monkeypatch.setattr(pdf_text, "extract_pages", flaky)
+    # T04: extraction now runs through docextract._extract_pages_isolated (a subprocess), so a
+    # monkeypatch on the parent process's pdf_text.extract_pages would have no effect on it —
+    # see docextract.py's docstring for _extract_pages_isolated.
+    monkeypatch.setattr(docextract_mod, "_extract_pages_isolated", flaky)
     h = make()
 
     response = h.upload(b"%PDF-1.7 bilingual statute", "law.pdf")

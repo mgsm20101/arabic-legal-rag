@@ -2,9 +2,10 @@
 
 `RateLimiter` on its own (a sliding window per client, bounded memory, safe
 across threads), `build_from_env` (an ollama: model or nothing, one pipeline,
-no network at startup, a warning for a non-loopback Ollama host) and `main`
-(a warning for a non-loopback bind address). Nothing here serves a request,
-loads a model, or opens a socket.
+no network at startup, a hard refusal for an OLLAMA_HOST that is neither
+loopback nor host.docker.internal — ADR-023) and `main` (a warning for a
+non-loopback bind address). Nothing here serves a request, loads a model, or
+opens a socket.
 """
 
 import logging
@@ -129,14 +130,45 @@ def test_build_from_env_builds_one_pipeline_and_opens_no_connection(env, monkeyp
     assert "loopback" not in caplog.text
 
 
-def test_build_from_env_warns_when_the_ollama_host_is_not_loopback(env, monkeypatch, caplog):
+def test_build_from_env_refuses_a_remote_ollama_host(env, monkeypatch):
     monkeypatch.setattr(ollama_mod, "OLLAMA_HOST", "http://192.168.1.20:11434")
 
-    with caplog.at_level(logging.WARNING, logger="legalrag.webapp"):
+    with pytest.raises(webapp.AppConfigError, match="192.168.1.20"):
         webapp.build_from_env()
 
-    assert "not a loopback address" in caplog.text
-    assert env == [("ollama:gemma3:4b", "gated")], "a warning, not a refusal"
+    assert env == [], "refused before build_generators was ever called"
+
+
+def test_build_from_env_accepts_the_docker_gateway_host(env, monkeypatch):
+    monkeypatch.setattr(ollama_mod, "OLLAMA_HOST", "http://host.docker.internal:11434")
+
+    webapp.build_from_env()
+
+    assert env == [("ollama:gemma3:4b", "gated")]
+
+
+def test_build_from_env_accepts_the_docker_gateway_host_case_insensitively(env, monkeypatch):
+    monkeypatch.setattr(ollama_mod, "OLLAMA_HOST", "http://HOST.DOCKER.INTERNAL:11434")
+
+    webapp.build_from_env()
+
+    assert env == [("ollama:gemma3:4b", "gated")]
+
+
+def test_build_from_env_accepts_an_ipv6_loopback_host(env, monkeypatch):
+    monkeypatch.setattr(ollama_mod, "OLLAMA_HOST", "http://[::1]:11434")
+
+    webapp.build_from_env()
+
+    assert env == [("ollama:gemma3:4b", "gated")]
+
+
+def test_build_from_env_accepts_a_bare_localhost_host(env, monkeypatch):
+    monkeypatch.setattr(ollama_mod, "OLLAMA_HOST", "http://localhost:11434")
+
+    webapp.build_from_env()
+
+    assert env == [("ollama:gemma3:4b", "gated")]
 
 
 @pytest.fixture

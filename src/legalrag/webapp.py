@@ -309,6 +309,16 @@ def _is_loopback(host: str) -> bool:
         return False
 
 
+def _ollama_host_is_permitted(host: str) -> bool:
+    """Loopback, or the one non-loopback address this project's own tooling
+    uses: host.docker.internal, the Docker Desktop / Docker Engine
+    (`extra_hosts: host.docker.internal:host-gateway`, see docker-compose.yml)
+    special DNS name that lets the app inside a container reach an Ollama
+    server on the host machine. Still "fully local" for ADR-023's purpose —
+    same physical machine, just not the container's own loopback."""
+    return _is_loopback(host) or host.lower() == "host.docker.internal"
+
+
 def build_from_env() -> FastAPI:
     """LEGALRAG_DATA_DIR (default data/app) and LEGALRAG_MODEL (default
     ollama:gemma3:4b). Exactly one Pipeline: its lock is what keeps two
@@ -324,9 +334,12 @@ def build_from_env() -> FastAPI:
             "The app answers through a local Ollama server (ADR-023)."
         )
     host = urlsplit(ollama.OLLAMA_HOST).hostname or ""
-    if not _is_loopback(host):
-        logger.warning("OLLAMA_HOST %s is not a loopback address: questions and document text will "
-                       "leave this machine, and ADR-023 keeps the demo fully local", ollama.OLLAMA_HOST)
+    if not _ollama_host_is_permitted(host):
+        raise AppConfigError(
+            f"OLLAMA_HOST {ollama.OLLAMA_HOST} is not a loopback address or host.docker.internal. "
+            "ADR-023 keeps the demo fully local: questions and document text would otherwise "
+            "leave this machine."
+        )
     library = Library(Path(os.environ.get("LEGALRAG_DATA_DIR") or DEFAULT_DATA_DIR))
     pipeline = Pipeline(library, build_generators(spec, "gated"))
     probe = ollama_probe(spec)

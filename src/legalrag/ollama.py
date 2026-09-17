@@ -141,6 +141,15 @@ class OllamaChat:
             self._client = httpx.Client(timeout=httpx.Timeout(self.timeout, connect=CONNECT_TIMEOUT))
         return self._client
 
+    def close(self) -> None:
+        """Close the underlying `httpx.Client`, freeing its connection pool —
+        the same cleanup `ollama.health` already does for its own client
+        (`finally: if owns_client: c.close()`), which this one never had. A
+        safe no-op when `__call__` was never made (no client to close), and
+        `httpx.Client.close()` is itself safe to call more than once."""
+        if self._client is not None:
+            self._client.close()
+
     def __call__(self, messages: list[dict]) -> str:
         resp = self._post(self._request_body(messages))
         if not (200 <= resp.status_code < 300):

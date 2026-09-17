@@ -31,6 +31,7 @@ from legalrag.pipeline import (  # noqa: E402
     ChatResult,
     Pipeline,
     Source,
+    TooBusy,
 )
 from stubs import (  # noqa: E402
     ANSWERS_NO,
@@ -420,3 +421,188 @@ def test_two_questions_at_once_never_share_a_model_or_its_call_stats():
     assert (relevance.overlaps, claims.overlaps) == (0, 0)
     assert [r.status for r in results] == ["answered", "answered"]
     assert [(r.timings_ms["relevance"], r.timings_ms["claims"]) for r in results] == [(500, 500), (500, 500)]
+
+
+class _BlockingChat(ScriptedChat):
+    """Blocks in `__call__` until `release` is set, so a test can hold
+    `Pipeline._generating` open for exactly as long as it needs — `entered`
+    (if given) is set the instant the call starts, proving the caller
+    already holds the lock at that point."""
+
+    def __init__(self, replies, release: threading.Event, entered: threading.Event | None = None):
+        super().__init__(replies)
+        self._release = release
+        self._entered = entered
+
+    def __call__(self, messages):
+        if self._entered is not None:
+            self._entered.set()
+        self._release.wait(timeout=10)
+        return super().__call__(messages)
+
+
+def test_a_caller_past_the_admission_bound_is_refused_immediately_not_queued():
+    """T11 finding: the generation lock had no admission bound at all — any
+    number of callers could pile up waiting on it forever. At most
+    `max_concurrent_generations` may now wait for (or hold) it; the next one
+    must be refused right away, not after joining a queue."""
+    release = threading.Event()
+    entered = threading.Event()
+    chat = _BlockingChat([ONE_GOOD_CLAIM, ONE_GOOD_CLAIM], release=release, entered=entered)
+    pipeline = Pipeline(_FakeLibrary(*_two_hits()), ClaimsGenerator(model=chat),
+                        max_concurrent_generations=2, max_wait_seconds=10.0)
+    results: list = []
+    errors: list = []
+
+    def ask():
+        try:
+            results.append(pipeline.ask("كم مهلة رد المدير؟"))
+        except TooBusy as e:
+            errors.append(e)
+
+    first = threading.Thread(target=ask)
+    first.start()
+    assert entered.wait(timeout=5), "the first caller must reach the model"  # now holds _generating
+
+    second = threading.Thread(target=ask)
+    second.start()
+    time.sleep(0.05)  # the second caller has time to be admitted and start waiting on the lock
+
+    before = time.perf_counter()
+    with pytest.raises(TooBusy) as excinfo:
+        pipeline.ask("كم مهلة رد المدير؟")
+    elapsed = time.perf_counter() - before
+
+    assert elapsed < 0.5, "the (N+1)th caller must be refused immediately, never by waiting for the lock"
+    assert excinfo.value.code == "rate_limited"
+    assert excinfo.value.retry_after_s > 0
+
+    release.set()
+    first.join(timeout=5)
+    second.join(timeout=5)
+    assert not first.is_alive() and not second.is_alive()
+    assert [r.status for r in results] == ["answered", "answered"]
+    assert errors == []
+
+
+def test_a_caller_that_already_waited_past_the_deadline_never_reaches_the_model(monkeypatch):
+    """T11 finding: nothing expired a caller who had already been waiting a
+    long time once its turn at the lock finally came — an expensive
+    generation call would start anyway for someone who may well be gone."""
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(pipeline_mod, "perf_counter", lambda: clock["now"])
+
+    class _SlowLibrary(_FakeLibrary):
+        def search(self, query, k=5, doc_ids=None):
+            clock["now"] += 999.0  # far past any max_wait_seconds used below
+            return super().search(query, k, doc_ids)
+
+    chat = ScriptedChat([ONE_GOOD_CLAIM])
+    pipeline = Pipeline(_SlowLibrary(*_two_hits()), ClaimsGenerator(model=chat), max_wait_seconds=10.0)
+
+    with pytest.raises(TooBusy) as excinfo:
+        pipeline.ask("كم مهلة رد المدير؟")
+
+    assert excinfo.value.code == "rate_limited"
+    assert chat.seen == [], "the model must never be called once the deadline has already passed"
+
+    # The admission slot and the lock were both released immediately, not
+    # leaked: a fresh, fast request right after must still go through.
+    clock["now"] = 2000.0
+    pipeline.library = _FakeLibrary(*_two_hits())
+    assert pipeline.ask("كم مهلة رد المدير؟").status == "answered"
+
+
+class _DistinctOverlapChat(_OverlapChat):
+    """Like `_OverlapChat`, but each call in the script gets its own
+    `total_s` instead of one shared value — so if two overlapping answers'
+    calls were ever mixed up, the resulting timing would belong to neither
+    answer, instead of two identical numbers hiding the mix-up."""
+
+    def __init__(self, replies, total_s_by_call):
+        super().__init__(replies)
+        self._total_s_by_call = list(total_s_by_call)
+
+    def __call__(self, messages):
+        self.total_s = self._total_s_by_call.pop(0)
+        return super().__call__(messages)
+
+
+def test_call_history_is_cleared_before_the_generation_lock_is_released_not_after():
+    """T11's critical ordering constraint: `_reset_call_history` must run
+    while `_generating` is still held, never after it is released — if it
+    ran after, a second, already-waiting request could start appending to
+    `model.calls` before the first request's clear ran, and that clear would
+    then wipe out the second request's own in-flight calls (corrupting the
+    `timings_ms` `claims._stage_calls` derives from `model.calls` by
+    *position*).
+
+    A genuine two-thread race is not a reliable way to prove this: the reset
+    is one line of pure-Python bytecode right after the lock's release, with
+    no I/O in between, so a buggy "release, then reset" ordering essentially
+    never actually loses the OS scheduling race in practice (verified by
+    hand: 30/30 runs of a barrier-started two-thread version of this test
+    still passed against a deliberately reintroduced "reset after release"
+    bug). This instead records the real order `_generate` performs "reset"
+    and "release" in, which fails the instant that order is ever reversed,
+    regardless of scheduling luck."""
+    order: list[str] = []
+    real_lock = threading.Lock()
+
+    class _OrderRecordingLock:
+        def __enter__(self):
+            real_lock.acquire()
+            return self
+
+        def __exit__(self, *exc_info):
+            real_lock.release()
+            order.append("release")
+
+    generator = ClaimsGenerator(model=ScriptedChat([ONE_GOOD_CLAIM]))
+    pipeline = Pipeline(_FakeLibrary(*_two_hits()), generator)
+    pipeline._generating = _OrderRecordingLock()
+    real_reset = pipeline._reset_call_history
+
+    def recording_reset():
+        order.append("reset")
+        real_reset()
+
+    pipeline._reset_call_history = recording_reset
+
+    result = pipeline.ask("كم مهلة رد المدير؟")
+
+    assert result.status == "answered"
+    assert order == ["reset", "release"], (
+        "the calls-history reset must be recorded before the lock's release, never after"
+    )
+
+
+def test_clearing_a_finished_answers_calls_never_corrupts_an_overlapping_answers_timings():
+    """A supplementary, best-effort concurrency check alongside the
+    deterministic ordering test above: two real overlapping `ask()` calls
+    must still never share a model's calls, and `OllamaChat.calls` (T11
+    finding: it grew for the app's whole lifetime) is bounded back to empty
+    after each one, not left to accumulate. Two distinct `total_s` values
+    make any mix-up between the two answers show up as a wrong number,
+    instead of two coincidentally-equal ones hiding it."""
+    claims = _DistinctOverlapChat([ONE_GOOD_CLAIM, ONE_GOOD_CLAIM], total_s_by_call=[0.05, 0.09])
+    pipeline = Pipeline(_FakeLibrary(*_two_hits()), ClaimsGenerator(model=claims))
+    start = threading.Barrier(2, timeout=10)
+    results = []
+
+    def ask():
+        start.wait()
+        results.append(pipeline.ask("كم مهلة رد المدير؟"))
+
+    threads = [threading.Thread(target=ask) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    assert claims.overlaps == 0, "the two answers' model calls must still never overlap"
+    assert [r.status for r in results] == ["answered", "answered"]
+    assert sorted(r.timings_ms["claims"] for r in results) == [50, 90], (
+        "each answer must keep exactly its own call's timing, never the other's, and never zero"
+    )
+    assert claims.calls == [], "T11: bounded back to empty after the second answer too, not left to accumulate"

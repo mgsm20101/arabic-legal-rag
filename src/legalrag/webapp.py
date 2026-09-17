@@ -23,6 +23,7 @@ import math
 import os
 import sys
 from collections.abc import Callable
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 from urllib.parse import urlsplit
@@ -40,7 +41,7 @@ from .claims import build_generators
 from .generate import parse_model_spec
 from .library import DocMeta, DocumentNotFound, EncoderUnavailable, Library, LibraryError
 from .ollama import GeneratorUnavailable
-from .pipeline import Pipeline, QuestionRejected
+from .pipeline import Pipeline, QuestionRejected, TooBusy
 from .web_guard import (  # noqa: F401  ALLOWED_HOSTS, APP_HEADER, SECURITY_HEADERS: this module's contract too
     ALLOWED_HOSTS,
     APP_HEADER,
@@ -106,13 +107,19 @@ def _document(meta: DocMeta) -> dict:
 def create_app(library, pipeline, *, model_spec: str = DEFAULT_MODEL,
                health_probe: Callable[[], dict] | None = None,
                chat_limiter: RateLimiter | None = None, upload_limiter: RateLimiter | None = None,
-               ui_dir: Path = UI_DIR) -> FastAPI:
+               ui_dir: Path = UI_DIR, close_at_shutdown: tuple = ()) -> FastAPI:
     """The app over `library` and `pipeline`. /api/health names `model_spec`,
     the spec the pipeline answers with, whatever the probe does. `health_probe`
     answers `{"reachable", "gpu_share"}` (see `ollama_probe`); without one, or
     when it fails, the generator reads as unreachable. Only those values, each
-    of its own type, ever reach the client."""
-    app = FastAPI(title="arabic-legal-rag", docs_url=None, redoc_url=None, openapi_url=None)
+    of its own type, ever reach the client.
+
+    `close_at_shutdown` holds anything else worth closing when the app stops
+    that `pipeline.generator` does not already reach on its own — the extra,
+    separate `OllamaChat` a health probe opens (`ollama_probe`), say. The
+    pipeline's own generator model(s) are always included."""
+    app = FastAPI(title="arabic-legal-rag", docs_url=None, redoc_url=None, openapi_url=None,
+                  lifespan=_lifespan(pipeline, close_at_shutdown))
     app.add_middleware(Guard, limits={
         CHAT_PATH: chat_limiter if chat_limiter is not None else RateLimiter(*CHAT_LIMIT),
         UPLOAD_PATH: upload_limiter if upload_limiter is not None else RateLimiter(*UPLOAD_LIMIT),
@@ -123,6 +130,27 @@ def create_app(library, pipeline, *, model_spec: str = DEFAULT_MODEL,
     _add_document_routes(app, library)
     _add_chat_route(app, pipeline)
     return app
+
+
+def _lifespan(pipeline, close_at_shutdown: tuple):
+    """Closes every closeable generator runtime this app opened, once, on
+    shutdown: `pipeline.generator.model`, its `relevance_model` if there is
+    one, and whatever else `close_at_shutdown` names. `getattr(obj, "close",
+    None)` — called only if present and callable — so an `hf:` runtime (a
+    plain callable with no `.close`) is skipped, the same defensive style
+    this module already uses for `.calls`."""
+    generator = pipeline.generator
+    closeables = (generator.model, getattr(generator, "relevance_model", None), *close_at_shutdown)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        yield
+        for obj in closeables:
+            close = getattr(obj, "close", None)
+            if callable(close):
+                close()
+
+    return lifespan
 
 
 def _add_ui_routes(app: FastAPI, ui_dir: Path) -> None:
@@ -219,6 +247,11 @@ def _add_error_handlers(app: FastAPI) -> None:
         logger.info("%s %s refused (%s): the body passed its cap", request.method, request.url.path, exc.code)
         return error_response(exc.code, 413)
 
+    async def too_busy(request, exc: TooBusy) -> JSONResponse:
+        logger.info("%s %s refused (%s): %s", request.method, request.url.path, exc.code, exc)
+        retry_after = str(max(1, math.ceil(exc.retry_after_s)))
+        return error_response(exc.code, headers={"Retry-After": retry_after})
+
     async def invalid_input(request, exc: RequestValidationError) -> JSONResponse:
         # FastAPI's own 422 body echoes the submitted input; this one names nothing.
         logger.info("%s %s refused: the request did not validate", request.method, request.url.path)
@@ -236,7 +269,7 @@ def _add_error_handlers(app: FastAPI) -> None:
 
     handlers = (
         (LibraryError, library_error), (EncoderUnavailable, unavailable), (GeneratorUnavailable, unavailable),
-        (QuestionRejected, invalid_question), (BodyTooLarge, body_too_large),
+        (QuestionRejected, invalid_question), (BodyTooLarge, body_too_large), (TooBusy, too_busy),
         (RequestValidationError, invalid_input), (StarletteHTTPException, http_error), (Exception, internal),
     )
     for exc_type, handler in handlers:
@@ -248,7 +281,14 @@ def _add_error_handlers(app: FastAPI) -> None:
 
 def ollama_probe(spec: str) -> Callable[[], dict]:
     """/api/health's check of an ollama: generator: is the server up, and how
-    much of this model sits on the GPU. Opens no connection until first called."""
+    much of this model sits on the GPU. Opens no connection until first called.
+
+    `probe.chat` is this probe's own `OllamaChat` — a third one, separate
+    from the pipeline's claims and relevance models, and just as much in
+    need of closing at shutdown (`build_from_env` does, via
+    `create_app`'s `close_at_shutdown`). Stashed as a plain attribute
+    rather than changing this function's return type: every existing
+    caller that only wants `Callable[[], dict]` keeps working unchanged."""
     _, name = parse_model_spec(spec)
     chat = ollama.ollama_chat(name, num_predict=1)  # never generates: a host, a name, one reused client
 
@@ -256,6 +296,7 @@ def ollama_probe(spec: str) -> Callable[[], dict]:
         meta = ollama.run_metadata(chat)
         return {"reachable": meta["reachable"], "gpu_share": meta["gpu_share"]}
 
+    probe.chat = chat
     return probe
 
 
@@ -288,7 +329,9 @@ def build_from_env() -> FastAPI:
                        "leave this machine, and ADR-023 keeps the demo fully local", ollama.OLLAMA_HOST)
     library = Library(Path(os.environ.get("LEGALRAG_DATA_DIR") or DEFAULT_DATA_DIR))
     pipeline = Pipeline(library, build_generators(spec, "gated"))
-    return create_app(library, pipeline, model_spec=spec, health_probe=ollama_probe(spec))
+    probe = ollama_probe(spec)
+    return create_app(library, pipeline, model_spec=spec, health_probe=probe,
+                      close_at_shutdown=(probe.chat,))
 
 
 def main(argv: list[str] | None = None) -> int:

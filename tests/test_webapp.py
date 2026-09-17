@@ -24,13 +24,17 @@ pytest.importorskip("numpy")
 pytest.importorskip("fastapi")
 pytest.importorskip("multipart")
 
+from fastapi.testclient import TestClient  # noqa: E402
+
 import legalrag.docextract as docextract_mod  # noqa: E402
 import legalrag.library as library_mod  # noqa: E402
 import legalrag.webapp as webapp  # noqa: E402
+from legalrag.claims import ClaimsGenerator  # noqa: E402
 from legalrag.library import MAX_UPLOAD_BYTES  # noqa: E402
 from legalrag.ollama import GeneratorUnavailable  # noqa: E402
+from legalrag.pipeline import Pipeline  # noqa: E402
 from legalrag.webapp import APP_HEADER  # noqa: E402
-from stubs import ANSWERS_YES, claims_json, text_document  # noqa: E402
+from stubs import ANSWERS_YES, KeywordEncoder, ScriptedChat, claims_json, text_document  # noqa: E402
 from webapp_harness import HEADERS, POLICY, QUESTION, Harness, assert_error, raw_request, tree  # noqa: E402
 
 
@@ -248,3 +252,67 @@ def test_invalid_request_blames_the_question_only_when_its_length_is_the_problem
     not_a_string = h.client.post("/api/chat", json={"question": ["س"] * 5}, headers=HEADERS)
     assert assert_error(not_a_string, 400, "invalid_request")["message_ar"] == generic
     assert h.relevance.seen == []
+
+
+class _CloseableChat(ScriptedChat):
+    """An `OllamaChat`-shaped stub (callable, `.calls`) plus a `close()` that
+    records whether it ran — enough to verify the app's shutdown hook
+    reaches a generator's model without a real Ollama server."""
+
+    def __init__(self, replies=()):
+        super().__init__(list(replies))
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_the_apps_shutdown_hook_closes_the_generators_models(tmp_path):
+    """T11 finding: `OllamaChat` is never closed anywhere, including at app
+    shutdown. Plain `TestClient(app)` (every other test in this file, via
+    `Harness`) never sends lifespan events at all — only `with
+    TestClient(app) as client:` does, which is why this test builds its own
+    app instead of using `Harness`."""
+    claims_chat = _CloseableChat([claims_json(("نص كافٍ للإجابة.", [1]))])
+    relevance_chat = _CloseableChat([ANSWERS_YES])
+    library = library_mod.Library(tmp_path, encoder=KeywordEncoder())
+    generator = ClaimsGenerator(model=claims_chat, relevance_model=relevance_chat)
+    pipeline = Pipeline(library, generator)
+    app = webapp.create_app(library, pipeline)
+
+    with TestClient(app, base_url="http://127.0.0.1"):
+        assert claims_chat.closed is False and relevance_chat.closed is False
+
+    assert claims_chat.closed is True and relevance_chat.closed is True
+
+
+def test_the_apps_shutdown_hook_also_closes_extra_closeables(tmp_path):
+    """`build_from_env` passes its health probe's own separate `OllamaChat`
+    through `create_app(close_at_shutdown=...)` (webapp.py), because that
+    one is not reachable from `pipeline.generator` at all."""
+    library = library_mod.Library(tmp_path, encoder=KeywordEncoder())
+    pipeline = Pipeline(library, ClaimsGenerator(model=ScriptedChat([])))
+    probe_chat = _CloseableChat()
+    app = webapp.create_app(library, pipeline, close_at_shutdown=(probe_chat,))
+
+    with TestClient(app, base_url="http://127.0.0.1"):
+        assert probe_chat.closed is False
+
+    assert probe_chat.closed is True
+
+
+def test_the_apps_shutdown_hook_skips_a_model_with_no_close_method(tmp_path):
+    """An `hf:` runtime is a plain callable with no `.close` (and no
+    `.calls`) at all — the shutdown hook must skip it via `getattr(obj,
+    "close", None)`, the same defensive style already used for `.calls`,
+    not raise `AttributeError` while the app is stopping."""
+    library = library_mod.Library(tmp_path, encoder=KeywordEncoder())
+
+    def plain_hf_style_model(messages):
+        return claims_json(("نص كافٍ للإجابة.", [1]))
+
+    pipeline = Pipeline(library, ClaimsGenerator(model=plain_hf_style_model))
+    app = webapp.create_app(library, pipeline)
+
+    with TestClient(app, base_url="http://127.0.0.1"):
+        pass  # must not raise on shutdown

@@ -493,6 +493,32 @@ def test_run_metadata_is_unreachable_without_raising():
     assert isinstance(meta["error"], str)
 
 
+def test_close_on_a_chat_that_never_made_a_call_is_a_safe_no_op():
+    """T11: nothing ever closed `OllamaChat`'s own `httpx.Client`. A chat
+    that never made a call has no client to close at all — `close()` must
+    not raise on that, the same way it must not construct one just to close
+    it (construction touches no network — see the test right below)."""
+    chat = ollama_chat("m", num_predict=NUM_PREDICT)
+    assert chat._client is None
+
+    chat.close()  # must not raise
+    chat.close()  # calling it again must not raise either
+
+
+def test_close_closes_the_underlying_http_client_once_one_exists():
+    def handler(request):
+        return httpx.Response(200, json=_chat_body())
+
+    chat = ollama_chat("m", client=_client(handler), num_predict=NUM_PREDICT)
+    chat([{"role": "user", "content": "x"}])  # the first call is what creates/uses the client
+    assert chat._client is not None and chat._client.is_closed is False
+
+    chat.close()
+
+    assert chat._client.is_closed is True
+    chat.close()  # httpx.Client.close() is itself idempotent; calling twice must not raise
+
+
 def test_ollama_chat_returns_a_chat_instance_without_touching_the_network(monkeypatch):
     """Building a client must be safe even when no server is running — the
     network call happens on the first `__call__`, not at construction.

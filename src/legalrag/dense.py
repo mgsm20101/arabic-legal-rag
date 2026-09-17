@@ -193,6 +193,10 @@ class DenseIndex:
     def search(self, query: str, k: int = 5) -> list[Hit]:
         # The query goes to the model verbatim. `search_normalize` belongs to
         # BM25 and would strip exactly the morphology the model reads (ADR-015).
+        # Checked before encoding, not after: an empty index must never touch
+        # `self.encoder`, which lazily loads the real model on first access.
+        if not self.docs or self.embeddings.size == 0:
+            return []
         return self.search_with_vector(encode_query(self.encoder, query, self.query_prefix), k)
 
     def search_with_vector(self, vec, k: int = 5) -> list[Hit]:

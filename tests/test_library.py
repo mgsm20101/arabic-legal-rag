@@ -710,6 +710,9 @@ def test_a_malformed_or_unknown_doc_id_is_not_found(tmp_path):
 
 
 def test_search_merges_documents_by_score_and_honours_doc_ids(tmp_path, monkeypatch):
+    """Also the T10 (F10) ranking-unchanged regression guard: encoding the query once and
+    reusing the vector across documents (instead of re-encoding it per document) must not move
+    a single score, tie-break or ordering asserted below."""
     stamps = iter(["2026-09-01T10:00:00+00:00", "2026-09-01T10:00:05+00:00"])
     monkeypatch.setattr(library_mod, "_now", lambda: next(stamps))
     encoder = KeywordEncoder(["قطط", "كلاب", "طيور"])
@@ -741,6 +744,52 @@ def test_search_merges_documents_by_score_and_honours_doc_ids(tmp_path, monkeypa
     assert len(encoder.seen) == asked, "an empty scope still encoded the query"
     with pytest.raises(ValueError):
         library.search("قطط", k=0)
+
+
+def _query_encodes_since(encoder: KeywordEncoder, before: int) -> list[str]:
+    """Every text embedded as a *query* since `before` (an index into `encoder.seen` taken
+    right before a `library.search()` call) — so setup-time passage encoding is never counted."""
+    return [t for t in encoder.seen[before:] if t.startswith("query: ")]
+
+
+def test_search_encodes_the_query_exactly_once_for_one_document(tmp_path):
+    encoder = KeywordEncoder(["الإجازة"])
+    library = Library(tmp_path, encoder=encoder)
+    library.add(text_document("رصيد الإجازة السنوية"), "one.txt")
+    before = len(encoder.seen)
+
+    hits = library.search("الإجازة", k=5)
+
+    assert len(hits) == 1
+    assert len(_query_encodes_since(encoder, before)) == 1
+
+
+def test_search_encodes_the_query_exactly_once_across_three_documents(tmp_path):
+    """F10/T10's core acceptance criterion: a search across N live documents must call the
+    encoder for the query exactly once, not once per document."""
+    encoder = KeywordEncoder(["الإجازة"])
+    library = Library(tmp_path, encoder=encoder)
+    for i in range(3):
+        library.add(text_document(f"رصيد الإجازة رقم {i}"), f"doc{i}.txt")
+    before = len(encoder.seen)
+
+    hits = library.search("الإجازة", k=5)
+
+    calls = _query_encodes_since(encoder, before)
+    assert len(hits) == 3  # one chunk per document, confirming the search actually ran
+    assert len(calls) == 1, f"expected exactly one query encode across 3 documents, got {len(calls)}: {calls}"
+
+
+def test_search_against_zero_live_documents_never_encodes_the_query(tmp_path):
+    """Matches today's behaviour: the per-document loop body never runs when the scope is
+    empty, so the query must never reach the encoder at all."""
+    encoder = KeywordEncoder(["الإجازة"])
+    library = Library(tmp_path, encoder=encoder)
+    before = len(encoder.seen)
+
+    assert library.search("الإجازة", k=5) == []
+
+    assert _query_encodes_since(encoder, before) == []
 
 
 def test_a_library_reopened_on_the_same_root_sees_its_documents_without_re_embedding(tmp_path):

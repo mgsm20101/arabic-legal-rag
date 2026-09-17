@@ -206,6 +206,14 @@ class Library:
             else:
                 scope = [self._live(doc_id) for doc_id in dict.fromkeys(doc_ids)]
 
+        # Encoded once for the whole scope, not once per document: every document's index shares
+        # this same encoder and the same (never overridden) default query prefix (docindex.py's
+        # load_index always wraps it as `_QueriesOnly(encoder)` with dense.py's own defaults), so
+        # this vector is exactly what each document's own `DenseIndex.search` would have computed
+        # for it — see F10/ADR-023's dense.encode_query docstring. Only computed when there is
+        # anything to rank: an empty scope must never reach the encoder, same as before.
+        query_vec = dense.encode_query(self._encoder, query) if scope else None
+
         ranked: list[tuple[tuple, LibraryHit]] = []
         for meta in scope:
             try:
@@ -215,7 +223,7 @@ class Library:
                 if doc_ids is not None:
                     raise
                 continue
-            for hit in index.dense.search(query, k):
+            for hit in index.dense.search_with_vector(query_vec, k):
                 chunk = index.chunks[hit.id]
                 order = (-hit.score, meta.created_at, chunk.number, meta.doc_id)
                 ranked.append((order, LibraryHit(chunk=chunk, doc_title=meta.title, score=hit.score)))

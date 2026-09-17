@@ -24,7 +24,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from legalrag.dense import DenseIndex, corpus_fingerprint  # noqa: E402
+from legalrag.dense import DenseIndex, QUERY_PREFIX, corpus_fingerprint, encode_query  # noqa: E402
 from legalrag.fusion import reciprocal_rank_fusion  # noqa: E402
 from legalrag.retrieve import Hit, recall_at_k, reciprocal_rank  # noqa: E402
 
@@ -179,6 +179,64 @@ def test_k_caps_the_number_of_hits():
 def test_empty_corpus_returns_no_hits_instead_of_raising():
     idx = DenseIndex([], encoder=StubEncoder())
     assert idx.search("أي سؤال", k=5) == []
+
+
+# ---------------------------------------------------------------------------
+# 3b. encode_query / search_with_vector split (F10/T10)
+# ---------------------------------------------------------------------------
+#
+# `Library.search` used to call `index.dense.search(query, k)` once per live document,
+# re-encoding the identical query string every time. These tests pin down that the split
+# into an encode step (`encode_query`) and a ranking step (`search_with_vector`) is an exact
+# refactor of `DenseIndex.search`'s old inline logic, not an approximation of it.
+
+
+def test_encode_query_matches_the_manually_normalized_vector():
+    """Exact-equivalence regression guard: `encode_query` must reproduce precisely what
+    `DenseIndex.search`'s old inline `_l2_normalize(encoder.encode([query_prefix + query]))[0]`
+    computed."""
+    enc = StubEncoder({"الخرق": [3.0, 4.0]})
+    query = "متى يجب الإبلاغ عن الخرق؟"
+
+    vec = encode_query(enc, query)
+
+    raw = np.asarray(enc.encode([QUERY_PREFIX + query]), dtype="float32")[0]
+    expected = raw / np.linalg.norm(raw)
+    assert np.allclose(vec, expected)
+    assert np.isclose(float(np.linalg.norm(vec)), 1.0)
+
+
+def test_encode_query_honours_a_custom_query_prefix():
+    enc = StubEncoder()
+    encode_query(enc, "سؤال", query_prefix="")
+    assert enc.seen == ["سؤال"]
+
+
+def test_search_with_vector_matches_search_on_the_same_query():
+    """The split must not change ranking: computing the vector externally with `encode_query`
+    and ranking with `search_with_vector` must return exactly what `search` returns."""
+    enc = StubEncoder(
+        {
+            "تعيين مسؤول": [0.0, 1.0],  # law-8 passage
+            "إبلاغ المركز": [1.0, 0.0],  # law-7 passage
+            "موظف مسؤول": [0.0, 1.0],  # the query, pointing at law-8
+        }
+    )
+    idx = DenseIndex(DOCS, encoder=enc)
+    query = "هل يلزم تعيين موظف مسؤول عن الخصوصية؟"
+
+    via_search = idx.search(query, k=2)
+    vec = encode_query(idx.encoder, query, idx.query_prefix)
+    via_vector = idx.search_with_vector(vec, k=2)
+
+    assert via_search == via_vector
+    assert via_search[0].id == "law-8"
+
+
+def test_search_with_vector_on_an_empty_index_returns_no_hits():
+    idx = DenseIndex([], encoder=StubEncoder())
+    vec = np.zeros(2, dtype="float32")
+    assert idx.search_with_vector(vec, k=5) == []
 
 
 # ---------------------------------------------------------------------------

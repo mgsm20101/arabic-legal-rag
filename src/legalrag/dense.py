@@ -191,16 +191,19 @@ class DenseIndex:
     # -- search -----------------------------------------------------------
 
     def search(self, query: str, k: int = 5) -> list[Hit]:
+        # The query goes to the model verbatim. `search_normalize` belongs to
+        # BM25 and would strip exactly the morphology the model reads (ADR-015).
+        return self.search_with_vector(encode_query(self.encoder, query, self.query_prefix), k)
+
+    def search_with_vector(self, vec, k: int = 5) -> list[Hit]:
+        """The ranking half of `search`, taking an already-encoded, already-normalized query
+        vector — see `encode_query`. Pulled apart so a caller ranking the same query across many
+        indexes (`Library.search`) can encode it once and reuse the vector here."""
         import numpy as np
 
         if not self.docs or self.embeddings.size == 0:
             return []
 
-        # The query goes to the model verbatim. `search_normalize` belongs to
-        # BM25 and would strip exactly the morphology the model reads (ADR-015).
-        vec = _l2_normalize(
-            np.asarray(self.encoder.encode([self.query_prefix + query]))
-        )[0]
         scores = self.embeddings @ vec
 
         order = np.argsort(-scores)[:k]
@@ -217,6 +220,15 @@ class DenseIndex:
                 )
             )
         return hits
+
+
+def encode_query(encoder: Encoder, query: str, query_prefix: str = QUERY_PREFIX):
+    """The L2-normalized query vector `DenseIndex.search` uses internally — pulled out so a
+    caller ranking the same query across many indexes (`Library.search`) can compute it once
+    and pass it to each index's `search_with_vector` instead of re-encoding the same string."""
+    import numpy as np
+
+    return _l2_normalize(np.asarray(encoder.encode([query_prefix + query])))[0]
 
 
 def _l2_normalize(matrix):

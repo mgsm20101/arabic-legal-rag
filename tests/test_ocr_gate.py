@@ -13,6 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from legalrag import ocr_gate  # noqa: E402
 from legalrag.ocr_gate import (  # noqa: E402
     PASS_THRESHOLD,
     digit_tokens,
@@ -121,3 +122,92 @@ def test_a_number_mixing_both_blocks_stays_one_token():
     """`مادة ( ۲٤ )` is U+06F2 then U+0664. Split, it reads as two numbers."""
     assert digit_tokens("مادة ( ۲٤ )") == ["۲٤"]
     assert fold("۲٤") == "24"
+
+
+def test_a_page_missing_from_ocr_is_a_full_miss_not_a_silent_drop():
+    """A ground-truth page with no matching OCR text at all must count as
+    completely missed -- it must not vanish from the aggregate the way it
+    does today, which lets a missing page contribute nothing to `expected`
+    or `critical_failures` and hide behind a perfect recall on the pages
+    that were present."""
+    gt = {
+        "p01": {"tokens": ["١", "٢"], "critical": {}},
+        "p02": {"tokens": ["٩", "٩"], "critical": {"٩": "x"}},
+    }
+    result = run(gt, {"p01": "١ ٢"})
+    assert result["expected"] == 4
+    assert result["correct"] == 2
+    assert result["recall"] == 0.5
+    assert "p02" in result["pages"]
+    assert result["pages"]["p02"]["missing"] == ["9", "9"]
+    assert result["pages"]["p02"]["recall"] == 0.0
+    assert result["pages"]["p02"]["critical"] == {"٩": False}
+    assert result["critical_failures"] == ["p02:٩"]
+
+
+def test_reproduces_the_missing_page_finding_recall_no_longer_hides_it():
+    """docs/review/reproductions.json's `ocr_missing_page` key recorded the
+    pre-fix behaviour: an OCR file simply missing p02 (which has ground
+    truth) still scored recall 1.0, because the page was skipped rather than
+    scored. It must not."""
+    gt = {
+        "p01": {"tokens": ["12"], "critical": {"12": "x"}},
+        "p02": {"tokens": ["99"], "critical": {"99": "x"}},
+    }
+    result = run(gt, {"p01": "12"})
+    assert result["recall"] < 1.0
+    assert result["pages"]["p02"]["recall"] == 0.0
+    assert result["critical_failures"] == ["p02:99"]
+
+
+def test_reproduces_the_spurious_digit_finding_main_now_fails(tmp_path, monkeypatch):
+    """docs/review/reproductions.json's `ocr_spurious_digits` key recorded
+    two invented digit tokens (777, 888) sitting alongside an otherwise
+    fully-correct page: recall was 1.0 and critical_failures was empty, so
+    the pre-fix `passed` check reported PASS. An invented digit is exactly
+    the silent-forever failure this gate exists to catch, so it must fail."""
+    gt = {
+        "p01": {"tokens": ["12"], "critical": {"12": "x"}},
+        "p02": {"tokens": ["99"], "critical": {"99": "x"}},
+    }
+    monkeypatch.setattr(ocr_gate, "load_ground_truth", lambda: gt)
+    ocr_path = tmp_path / "engine.json"
+    ocr_path.write_text(
+        json.dumps({"p01": "12 777 888", "p02": "99"}), encoding="utf-8"
+    )
+    assert ocr_gate.main([str(ocr_path)]) == 1
+
+
+def test_swapped_digits_and_duplicates_still_score_as_multiset_misses():
+    """Regression guard for the missing-page fix: a page that IS present
+    must still go through the untouched multiset comparison in score_page --
+    a token read with its digits reordered is a full miss on both sides
+    (missing the real one, spurious the invented one), and a duplicated
+    expected token still needs two matching reads, not one."""
+    gt = {"p01": {"tokens": ["12", "4", "4"], "critical": {}}}
+    result = run(gt, {"p01": "21 4"})
+    r = result["pages"]["p01"]
+    assert r["missing"] == ["12", "4"]
+    assert r["spurious"] == ["21"]
+    assert r["correct"] == 1
+    assert result["recall"] == 1 / 3
+
+
+def test_a_completely_empty_ocr_file_is_still_reported_as_no_match(
+    tmp_path, capsys, monkeypatch
+):
+    """A totally empty OCR file (wrong file, or an engine that produced
+    nothing at all) is a different failure than a page that is merely
+    missing from otherwise-real coverage: it must still surface the
+    existing 'no page matching the ground truth' message and exit 2,
+    not silently score every ground-truth page as a 100% miss."""
+    real_gt = load_ground_truth(REPO / "evals/ocr/digit_ground_truth.json")
+    monkeypatch.setattr(ocr_gate, "load_ground_truth", lambda: real_gt)
+    ocr_path = tmp_path / "empty.json"
+    ocr_path.write_text("{}", encoding="utf-8")
+
+    exit_code = ocr_gate.main([str(ocr_path)])
+    captured = capsys.readouterr()
+
+    assert exit_code == 2
+    assert "has no page matching the ground truth" in captured.out

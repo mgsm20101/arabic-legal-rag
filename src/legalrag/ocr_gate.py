@@ -99,6 +99,16 @@ def _page_text(ocr: dict, page: str) -> str | None:
     return None
 
 
+def _no_matching_page(gt: dict, ocr: dict) -> bool:
+    """True when the OCR output has text for none of the ground-truth pages.
+
+    That is the wrong-file case (wrong engine output, empty file, ...), and
+    it is a different failure from a real run where some pages are simply
+    missing -- `run` now scores each of those as a full miss on its own.
+    """
+    return not any(_page_text(ocr, page) is not None for page in gt)
+
+
 def load_ground_truth(path: Path = GROUND_TRUTH) -> dict:
     gt = json.loads(path.read_text(encoding="utf-8"))
     return {k: v for k, v in gt.items() if not k.startswith("_")}
@@ -108,11 +118,14 @@ def run(gt: dict, ocr: dict) -> dict:
     pages = {}
     for page in sorted(gt):
         text = _page_text(ocr, page)
-        if text is None:
-            continue
-        r = score_page(gt[page]["tokens"], digit_tokens(text))
+        # A page with no matching OCR text at all is not skipped: it is
+        # scored as if the engine had read nothing on it, so a page missing
+        # from the OCR output counts as a full miss instead of silently
+        # dropping out of `expected`/`correct` and every critical check.
+        got = digit_tokens(text) if text is not None else []
+        r = score_page(gt[page]["tokens"], got)
         r["critical"] = {
-            tok: fold(tok) in {fold(t) for t in digit_tokens(text)}
+            tok: fold(tok) in {fold(t) for t in got}
             for tok in gt[page].get("critical", {})
         }
         pages[page] = r
@@ -128,6 +141,14 @@ def run(gt: dict, ocr: dict) -> dict:
             for page, r in pages.items()
             for tok, ok in r["critical"].items()
             if not ok
+        ],
+        # Zero tolerance, same as critical_failures: an invented digit is a
+        # silent failure by design (see module docstring), not a precision
+        # threshold to tune.
+        "spurious_failures": [
+            f"{page}:{tok}"
+            for page, r in pages.items()
+            for tok in r["spurious"]
         ],
     }
 
@@ -147,12 +168,13 @@ def main(argv: list[str] | None = None) -> int:
 
     gt = load_ground_truth()
     ocr = json.loads(ocr_path.read_text(encoding="utf-8"))
-    result = run(gt, ocr)
 
-    if not result["pages"]:
+    if _no_matching_page(gt, ocr):
         print(f"{ocr_path} has no page matching the ground truth "
               f"({', '.join(sorted(gt))}).")
         return 2
+
+    result = run(gt, ocr)
 
     print(f"\n  OCR digit gate · {name}")
     print("  " + "-" * 64)
@@ -171,12 +193,19 @@ def main(argv: list[str] | None = None) -> int:
 
     if result["critical_failures"]:
         print(f"  critical failures: {', '.join(result['critical_failures'])}")
+    if result["spurious_failures"]:
+        print(f"  spurious digits  : {', '.join(result['spurious_failures'])}")
 
-    passed = result["recall"] >= PASS_THRESHOLD and not result["critical_failures"]
+    passed = (
+        result["recall"] >= PASS_THRESHOLD
+        and not result["critical_failures"]
+        and not result["spurious_failures"]
+    )
     print(f"\n  {'PASS' if passed else 'FAIL'} — "
-          + ("eligible as the text of record."
+          + ("passed the digit check (ADR-019); not a certification of the "
+             "text of record."
              if passed else
-             "not eligible as the text of record (ADR-019)."))
+             "failed the digit check (ADR-019)."))
     if not passed:
         print("  A wrong article number is not a typo here: it is the primary "
               "key.\n  It segments the corpus, it is the ground truth of every "

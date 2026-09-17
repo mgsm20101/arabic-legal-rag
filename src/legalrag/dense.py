@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import uuid
 from pathlib import Path
 from typing import Protocol
 
@@ -140,7 +142,22 @@ class DenseIndex:
                     return None  # different model — vectors are not comparable
                 if meta.get("passage_prefix") != self.passage_prefix:
                     return None
-                return z["embeddings"]
+                embeddings = z["embeddings"]
+                # The metadata can match while the array itself is not a usable (N, D) matrix —
+                # np.load does not raise just because what it hands back is empty, misshapen, the
+                # wrong dtype, or full of NaN. Each check below is a rebuild, not a crash, same as
+                # every check above: a bad cache is "don't trust this," never an exception.
+                if embeddings.ndim != 2:
+                    return None  # not a (N, D) matrix at all
+                if not np.issubdtype(embeddings.dtype, np.floating):
+                    return None  # not embedding vectors
+                if embeddings.shape[0] != len(self.docs):
+                    return None  # row count does not match the corpus on disk (0 == 0 for an
+                    # empty corpus is fine — that is the same shape __init__'s own no-cache
+                    # empty-corpus branch produces)
+                if not np.isfinite(embeddings).all():
+                    return None  # NaN/Inf smuggled into an otherwise loadable cache
+                return embeddings
         except (KeyError, ValueError, OSError):
             return None  # unreadable cache is a rebuild, not a crash
 
@@ -159,7 +176,17 @@ class DenseIndex:
             },
             ensure_ascii=False,
         )
-        np.savez(self.cache_path, embeddings=self.embeddings, meta=np.array(meta))
+        # Written to a temp file, then os.replace into place: a reader sees the old cache or the
+        # new one, never one truncated by a process that died mid-write (docstore.write_json_atomic
+        # and ingest._write_articles_atomic use the same pattern). The temp name keeps the .npz
+        # suffix on purpose — np.savez appends one to any path that lacks it, which would otherwise
+        # write the data somewhere other than the path os.replace is about to move.
+        tmp = self.cache_path.with_name(f".{self.cache_path.stem}.{uuid.uuid4().hex}.tmp.npz")
+        try:
+            np.savez(tmp, embeddings=self.embeddings, meta=np.array(meta))
+            os.replace(tmp, self.cache_path)
+        finally:
+            tmp.unlink(missing_ok=True)
 
     # -- search -----------------------------------------------------------
 

@@ -228,6 +228,136 @@ def test_a_stale_cache_is_rejected_not_silently_reused(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# 4b. structural validation of a loaded cache (F09/T09)
+# ---------------------------------------------------------------------------
+#
+# A cache can pass every metadata check (fingerprint, model, passage_prefix)
+# and still not be a usable (N, D) embedding matrix: `np.load` does not raise
+# just because the array it hands back is empty, the wrong shape, the wrong
+# dtype, or full of NaN. Each test below builds a *valid* cache first (so the
+# metadata matches the corpus on disk), then tampers with only the
+# `embeddings` array, keeping `meta` untouched — the same shape of damage as
+# the review's repro: a file that loads without raising, for a corpus it
+# does not actually describe.
+
+
+def _tamper_embeddings(cache_path, new_embeddings):
+    """Rewrite `cache_path`'s embeddings array in place, keeping its metadata
+    (fingerprint/model/passage_prefix) exactly as a legitimate cache wrote it."""
+    with np.load(cache_path, allow_pickle=False) as z:
+        meta = str(z["meta"])
+    np.savez(cache_path, embeddings=new_embeddings, meta=np.array(meta))
+
+
+def test_zero_rows_for_a_nonempty_corpus_is_rejected(tmp_path):
+    cache = tmp_path / "emb.npz"
+    DenseIndex(DOCS, encoder=StubEncoder(), cache_path=cache).save()
+    _tamper_embeddings(cache, np.zeros((0, 0), dtype="float32"))
+
+    enc = StubEncoder()
+    idx = DenseIndex(DOCS, encoder=enc, cache_path=cache)
+    assert enc.seen, "an empty embeddings matrix for a non-empty corpus was reused, not rebuilt"
+    assert not idx.from_cache
+
+
+def test_a_row_count_that_does_not_match_the_corpus_is_rejected(tmp_path):
+    cache = tmp_path / "emb.npz"
+    DenseIndex(DOCS, encoder=StubEncoder(), cache_path=cache).save()
+    _tamper_embeddings(cache, np.zeros((5, 2), dtype="float32"))  # DOCS has 2 entries, not 5
+
+    enc = StubEncoder()
+    idx = DenseIndex(DOCS, encoder=enc, cache_path=cache)
+    assert enc.seen, "a cache with the wrong row count was reused, not rebuilt"
+    assert not idx.from_cache
+
+
+def test_nan_values_in_the_cache_are_rejected(tmp_path):
+    cache = tmp_path / "emb.npz"
+    DenseIndex(DOCS, encoder=StubEncoder(), cache_path=cache).save()
+    bad = np.zeros((len(DOCS), 2), dtype="float32")
+    bad[0, 0] = np.nan
+    _tamper_embeddings(cache, bad)
+
+    enc = StubEncoder()
+    idx = DenseIndex(DOCS, encoder=enc, cache_path=cache)
+    assert enc.seen, "a cache containing NaN values was reused, not rebuilt"
+    assert not idx.from_cache
+
+
+def test_a_non_floating_dtype_is_rejected(tmp_path):
+    cache = tmp_path / "emb.npz"
+    DenseIndex(DOCS, encoder=StubEncoder(), cache_path=cache).save()
+    _tamper_embeddings(cache, np.zeros((len(DOCS), 2), dtype="int64"))
+
+    enc = StubEncoder()
+    idx = DenseIndex(DOCS, encoder=enc, cache_path=cache)
+    assert enc.seen, "an integer-dtype cache was reused, not rebuilt"
+    assert not idx.from_cache
+
+
+def test_the_wrong_number_of_dimensions_is_rejected(tmp_path):
+    cache = tmp_path / "emb.npz"
+    DenseIndex(DOCS, encoder=StubEncoder(), cache_path=cache).save()
+    _tamper_embeddings(cache, np.zeros(len(DOCS) * 2, dtype="float32"))  # flat, not (N, D)
+
+    enc = StubEncoder()
+    idx = DenseIndex(DOCS, encoder=enc, cache_path=cache)
+    assert enc.seen, "a 1-D embeddings array was reused, not rebuilt"
+    assert not idx.from_cache
+
+
+def test_an_empty_corpus_with_a_matching_empty_cache_is_still_accepted(tmp_path):
+    """Regression guard: `(0, 0)` is legitimate when the corpus really is empty —
+    it is exactly what `DenseIndex.__init__`'s own no-cache empty-corpus branch
+    produces — so the new row-count check must not treat it as damage."""
+    cache = tmp_path / "emb.npz"
+    DenseIndex([], encoder=StubEncoder(), cache_path=cache).save()
+
+    enc = StubEncoder()
+    idx = DenseIndex([], encoder=enc, cache_path=cache)
+    assert idx.from_cache, "a valid empty-corpus cache was rejected"
+    assert not enc.seen, "the model was called even though the cache was valid"
+
+
+# ---------------------------------------------------------------------------
+# 4c. atomic save() (F09/T09)
+# ---------------------------------------------------------------------------
+
+
+def test_save_leaves_no_temporary_file_behind(tmp_path):
+    cache = tmp_path / "emb.npz"
+    DenseIndex(DOCS, encoder=StubEncoder(), cache_path=cache).save()
+
+    leftover = [p.name for p in tmp_path.iterdir() if p != cache]
+    assert leftover == [], f"stray files left behind by save(): {leftover}"
+
+
+def test_a_failed_save_leaves_the_previous_cache_untouched_and_no_temp_file(tmp_path, monkeypatch):
+    """Simulates the process dying mid-write (disk full, kill -9, ...): `np.savez` is made to
+    write a truncated file and then raise, the way a real interrupted write would leave one
+    behind. The cache that was already on disk must survive completely unharmed."""
+    import numpy
+
+    cache = tmp_path / "emb.npz"
+    first = DenseIndex(DOCS, encoder=StubEncoder(), cache_path=cache)
+    first.save()
+    previous_bytes = cache.read_bytes()
+
+    def truncated_write(file, *args, **kwargs):
+        Path(file).write_bytes(b"not actually a valid npz file")
+        raise OSError("simulated disk failure mid-write")
+
+    monkeypatch.setattr(numpy, "savez", truncated_write)
+    with pytest.raises(OSError):
+        first.save()
+    monkeypatch.undo()
+
+    assert cache.read_bytes() == previous_bytes, "the previous cache was corrupted by the failed save"
+    leftover = [p.name for p in tmp_path.iterdir() if p != cache]
+    assert leftover == [], f"a partial/temp file was left behind: {leftover}"
+
+
+# ---------------------------------------------------------------------------
 # 5. reciprocal rank fusion (ADR-016)
 # ---------------------------------------------------------------------------
 

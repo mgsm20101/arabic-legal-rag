@@ -76,30 +76,49 @@ def _gated(relevance_replies, claims_replies):
 
 
 def test_chat_returns_only_claims_that_survived_the_gate():
+    """One claims-JSON reply may hold at most 3 claims (T13, finding F13:
+    SYSTEM_CLAIMS's own "ثلاث claims على الأكثر" is now enforced by
+    `parse_claims`) — the 5 drop-reason examples this test needs (2 kept,
+    1 of each of uncited/fabricated/ungrounded) are split across two `ask`
+    calls on the same pipeline/library instead of one 5-claim reply, so the
+    gate's per-claim classification is still exercised end to end for every
+    reason, just no longer inside a reply that violates the very contract
+    this task tightens."""
     library = _FakeLibrary(*_two_hits())
     kept_plain = "يرد المدير على طلب العمل عن بعد خلال خمسة أيام عمل."
     kept_article = "يصرف بدل الإنترنت الشهري وفقا للمادة 7."
-    generator, _, _ = _gated([ANSWERS_YES], [claims_json(
-        (kept_plain, [1]),
-        ("بدل الإنترنت الشهري 400 جنيه.", []),     # uncited
-        ("المهلة خمسة أيام عمل.", [3]),            # fabricated: two sources were shown
-        ("يصرف البدل وفقا للمادة 9.", [2]),        # ungrounded: source 2 is article 7, naming no 9
-        (kept_article, [2]),
-    )])
+    generator, _, _ = _gated([ANSWERS_YES, ANSWERS_YES], [
+        claims_json(
+            (kept_plain, [1]),
+            ("بدل الإنترنت الشهري 400 جنيه.", []),     # uncited
+            ("المهلة خمسة أيام عمل.", [3]),            # fabricated: two sources were shown
+        ),
+        claims_json(
+            ("يصرف البدل وفقا للمادة 9.", [2]),        # ungrounded: source 2 is article 7, naming no 9
+            (kept_article, [2]),
+        ),
+    ])
+    pipeline = Pipeline(library, generator)
 
-    result = Pipeline(library, generator).ask("  كم مهلة رد المدير؟  ")
+    first = pipeline.ask("  كم مهلة رد المدير؟  ")
+    second = pipeline.ask("  كم مهلة رد المدير؟  ")
 
-    assert isinstance(result, ChatResult)
-    assert library.searches == [("كم مهلة رد المدير؟", TOP_K, None)]
-    assert (result.status, result.abstain_reason) == ("partial", None)
-    assert result.claims == [{"text": kept_plain, "sources": [1]}, {"text": kept_article, "sources": [2]}]
-    assert result.dropped == {"uncited": 1, "fabricated": 1, "ungrounded": 1}
-    assert result.sources == [
+    assert isinstance(first, ChatResult) and isinstance(second, ChatResult)
+    assert library.searches == [("كم مهلة رد المدير؟", TOP_K, None)] * 2
+    assert (first.status, first.abstain_reason) == ("partial", None)
+    assert (second.status, second.abstain_reason) == ("partial", None)
+    assert first.claims == [{"text": kept_plain, "sources": [1]}]
+    assert second.claims == [{"text": kept_article, "sources": [2]}]
+    assert first.dropped == {"uncited": 1, "fabricated": 1, "ungrounded": 0}
+    assert second.dropped == {"uncited": 0, "fabricated": 0, "ungrounded": 1}
+    expected_sources = [
         Source(n=1, chunk_id=POLICY_CHUNK.id, doc_id=POLICY_ID, doc_title="سياسة العمل",
                label="ص 1", page=1, article=None, text=POLICY_TEXT),
         Source(n=2, chunk_id=STATUTE_CHUNK.id, doc_id=STATUTE_ID, doc_title="لائحة البدلات",
                label="مادة 7", page=3, article=7, text=STATUTE_TEXT),
     ]
+    assert first.sources == expected_sources
+    assert second.sources == expected_sources
 
 
 def test_chat_with_no_documents_abstains_without_calling_the_model(tmp_path):
@@ -162,7 +181,13 @@ def test_an_article_respelled_with_tashkeel_tatweel_or_a_colon_is_checked_agains
     """The gate reads each claim after evaluation_normalize, so a shadda, a
     fatha or a tatweel inside «مادة» hides nothing, and «المادة: 30» names
     article 30 too. None may rest on a page whose text names no article 30;
-    the plain spelling, citing a page that does name it, is kept."""
+    the plain spelling, citing a page that does name it, is kept.
+
+    One claims-JSON reply may hold at most 3 claims (T13, finding F13:
+    SYSTEM_CLAIMS's own "ثلاث claims على الأكثر" is now enforced by
+    `parse_claims`), so the 4 respelled variants plus the grounded claim are
+    split across two `ask` calls instead of one 5-claim reply — every
+    spelling is still checked against its sources exactly as before."""
     silent = "يلتزم الموظف بإبلاغ فريق أمن المعلومات خلال 24 ساعة من فقدان الجهاز."
     naming = "وتحدد المادة 30 من لائحة الجزاءات عقوبة التأخير في الإبلاغ عن فقدان الجهاز."
     pages = [Chunk(id=f"{POLICY_ID}:{n}", doc_id=POLICY_ID, number=n, article=None,
@@ -176,14 +201,22 @@ def test_an_article_respelled_with_tashkeel_tatweel_or_a_colon_is_checked_agains
         f"{penalty} بحسب المادة: 30.",
     ]
     grounded = f"{penalty} وفقاً للمادة 30."
-    generator, _, _ = _gated([ANSWERS_YES], [claims_json(*((text, [1]) for text in respelled), (grounded, [2]))])
+    generator, _, _ = _gated([ANSWERS_YES, ANSWERS_YES], [
+        claims_json(*((text, [1]) for text in respelled[:3])),
+        claims_json((respelled[3], [1]), (grounded, [2])),
+    ])
+    pipeline = Pipeline(library, generator)
 
-    result = Pipeline(library, generator).ask("ما عقوبة التأخير في الإبلاغ عن فقدان الجهاز؟")
+    first = pipeline.ask("ما عقوبة التأخير في الإبلاغ عن فقدان الجهاز؟")
+    second = pipeline.ask("ما عقوبة التأخير في الإبلاغ عن فقدان الجهاز؟")
 
     assert citations(silent) == [] and citations(naming) == [30]
-    assert result.claims == [{"text": grounded, "sources": [2]}]
-    assert result.dropped == {"uncited": 0, "fabricated": 0, "ungrounded": 4}
-    assert result.status == "partial"
+    assert first.claims == []
+    assert first.dropped == {"uncited": 0, "fabricated": 0, "ungrounded": 3}
+    assert first.status == "abstained"
+    assert second.claims == [{"text": grounded, "sources": [2]}]
+    assert second.dropped == {"uncited": 0, "fabricated": 0, "ungrounded": 1}
+    assert second.status == "partial"
 
 
 def test_the_result_never_carries_raw_model_output_or_dropped_claim_text():

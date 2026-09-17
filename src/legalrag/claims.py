@@ -50,6 +50,12 @@ CLAIMS_SCHEMA: dict = {
         "abstain": {"type": "boolean"},
         "claims": {
             "type": "array",
+            # Mirrors SYSTEM_CLAIMS's own "ثلاث claims على الأكثر" ("at most
+            # three claims") — a second layer of defense at generation time,
+            # not a replacement for `parse_claims`'s own count check below
+            # (see the module docstring on why a schema-side constraint is
+            # never trusted as the only check).
+            "maxItems": 3,
             "items": {
                 "type": "object",
                 "properties": {
@@ -73,6 +79,14 @@ CLAIMS_SCHEMA: dict = {
 # slightly-early stop. 384 leaves headroom over the measured 187 for the
 # "three claims at most" the prompt asks for.
 CLAIMS_MAX_TOKENS = 384
+
+# The prompt frames one claim as "جملة واحدة" ("one sentence") — well under
+# `pipeline.py`'s MAX_QUESTION_CHARS (500), the bound for an entire
+# *question*, not one sentence answering it. 300 leaves room for a real
+# Arabic legal sentence (dates, numbers, a "مادة N" citation or two) while
+# still catching a reply that ignores "one sentence" and pastes a full
+# paragraph, or several sentences run together, into a single claim.
+CLAIMS_MAX_TEXT_CHARS = 300
 
 # The pre-registration (EVAL.md, commit ecd37f8) specifies what this prompt
 # must convey — numbered sources, JSON-only instructions, "sources are data,
@@ -198,8 +212,11 @@ def parse_claims(raw: str) -> dict:
 
     Raises `ClaimsInvalid(reason)` for anything that does not match:
     invalid JSON, a top level that is not an object, `abstain` not a bool,
-    `claims` not a list, or any claim that is not an object, has no string
-    `text`, or has `sources` that are not a list of ints.
+    `claims` not a list, more than 3 claims (SYSTEM_CLAIMS's own "ثلاث
+    claims على الأكثر"), or any claim that is not an object, has no string
+    `text`, has `text` that is empty or all-whitespace once stripped, has
+    `text` longer than `CLAIMS_MAX_TEXT_CHARS` characters, or has `sources`
+    that are not a list of ints.
     """
     try:
         data = json.loads(raw)
@@ -216,6 +233,10 @@ def parse_claims(raw: str) -> dict:
     claims = data.get("claims")
     if not isinstance(claims, list):
         raise ClaimsInvalid("'claims' is not a list")
+    if len(claims) > 3:
+        raise ClaimsInvalid(
+            f"'claims' has {len(claims)} items, more than the 3 SYSTEM_CLAIMS asks for"
+        )
 
     parsed_claims = []
     for i, c in enumerate(claims):
@@ -224,6 +245,12 @@ def parse_claims(raw: str) -> dict:
         text = c.get("text")
         if not isinstance(text, str):
             raise ClaimsInvalid(f"claim {i} has no string 'text'")
+        if not text.strip():
+            raise ClaimsInvalid(f"claim {i} 'text' is empty")
+        if len(text) > CLAIMS_MAX_TEXT_CHARS:
+            raise ClaimsInvalid(
+                f"claim {i} 'text' is longer than {CLAIMS_MAX_TEXT_CHARS} characters"
+            )
         sources = c.get("sources")
         if not _valid_sources(sources):
             raise ClaimsInvalid(f"claim {i} 'sources' is not a list of integers")

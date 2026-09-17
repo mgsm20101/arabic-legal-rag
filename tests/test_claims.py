@@ -7,6 +7,7 @@ here calls a model — `ClaimsGenerator` is exercised with a stub, the same
 way `test_generate.py` exercises `Generator`; no network, no torch.
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -16,6 +17,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from legalrag.claims import (  # noqa: E402
+    CLAIMS_MAX_TEXT_CHARS,
     CLAIMS_MAX_TOKENS,
     CLAIMS_SCHEMA,
     RELEVANCE_MAX_TOKENS,
@@ -106,6 +108,66 @@ def test_a_claim_that_is_not_an_object_is_rejected():
         parse_claims('{"abstain": false, "claims": ["a claim"]}')
 
 
+# --- T13 (finding F13) — the prompt's own "ثلاث claims على الأكثر" ("at
+# most three claims") and "جملة واحدة" ("one sentence") were never enforced
+# by `parse_claims`: a reply with 4+ claims, or a claim with empty/all-
+# whitespace text, previously parsed successfully and could reach display. --
+
+
+def _claim(text="نص الادعاء.", sources=(1,)):
+    return {"text": text, "sources": list(sources)}
+
+
+def _claims_json(claims):
+    return json.dumps({"abstain": False, "claims": claims}, ensure_ascii=False)
+
+
+def test_more_than_three_claims_is_rejected():
+    raw = _claims_json([_claim() for _ in range(4)])
+    with pytest.raises(ClaimsInvalid):
+        parse_claims(raw)
+
+
+def test_exactly_three_claims_is_still_accepted():
+    """Boundary case — the 3-claim cap must not break the normal case."""
+    raw = _claims_json([_claim(f"نص الادعاء رقم {i}.") for i in range(3)])
+    parsed = parse_claims(raw)
+    assert len(parsed["claims"]) == 3
+
+
+def test_a_claim_with_empty_text_is_rejected():
+    raw = _claims_json([_claim(text="")])
+    with pytest.raises(ClaimsInvalid):
+        parse_claims(raw)
+
+
+def test_a_claim_with_whitespace_only_text_is_rejected():
+    raw = _claims_json([_claim(text="   ")])
+    with pytest.raises(ClaimsInvalid):
+        parse_claims(raw)
+
+
+def test_a_claim_with_text_longer_than_the_max_is_rejected():
+    raw = _claims_json([_claim(text="ط" * (CLAIMS_MAX_TEXT_CHARS + 1))])
+    with pytest.raises(ClaimsInvalid):
+        parse_claims(raw)
+
+
+def test_arabic_text_within_the_length_bound_is_accepted():
+    """Regression guard: length must be judged in Python `len()` (code
+    points), not encoded bytes — Arabic is multi-byte in UTF-8 but this must
+    not make a normal-length Arabic sentence look too long."""
+    text = "الرد خلال مهلة قدرها ستة أيام عمل من تاريخ العلم بالخرق." * 3
+    assert len(text) <= CLAIMS_MAX_TEXT_CHARS
+    raw = _claims_json([_claim(text=text)])
+    parsed = parse_claims(raw)
+    assert parsed["claims"][0]["text"] == text
+
+
+def test_claims_schema_caps_claims_at_three_items():
+    assert CLAIMS_SCHEMA["properties"]["claims"]["maxItems"] == 3
+
+
 class _StubClaimsModel:
     """Returns canned raw replies in order, recording every messages list it
     was called with and one stats dict per call — the shape `_stats_for`/
@@ -156,6 +218,24 @@ def test_invalid_json_is_retried_once_with_the_error_then_gives_up_as_a_schema_f
     # JSON" is the actual `ClaimsInvalid` reason `parse_claims` raised for
     # this input — it can only appear here if the real error was interpolated.
     assert "invalid JSON" in retry_messages[-1]["content"]
+
+
+def test_four_claims_triggers_exactly_one_retry_then_a_schema_failure_if_it_recurs():
+    """The retry/fallback acceptance criterion, exercised end-to-end through
+    `ClaimsGenerator.answer`/`ask_json` (not just `parse_claims` in
+    isolation): a first reply with 4 claims must not be recorded as
+    answered — it must retry once, and if the retry also has 4 claims, the
+    final result must be a schema failure, exactly like any other
+    `ClaimsInvalid`."""
+    four_claims = _claims_json([_claim() for _ in range(4)])
+    model = _StubClaimsModel([four_claims, four_claims])
+
+    answer = ClaimsGenerator(model=model).answer("سؤال", ["نص"])
+
+    assert answer.attempts == 2
+    assert answer.schema_failure is True
+    assert answer.parsed is None
+    assert len(model.seen_messages) == 2
 
 
 def test_a_valid_retry_is_used_and_both_raw_attempts_are_kept():

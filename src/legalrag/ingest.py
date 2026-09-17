@@ -19,8 +19,10 @@ Run: ``python tasks.py ingest --law "<اسم القانون>"``
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
+import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -278,6 +280,23 @@ def validate(articles: list[Article]) -> list[str]:
     return problems
 
 
+def _write_articles_atomic(path: Path, articles: list[Article]) -> None:
+    """Write `articles` as JSONL beside `path`, then ``os.replace`` over it.
+
+    Same pattern as ``docstore.write_json_atomic``: a reader of `path` sees the
+    old corpus or the new one, never a half-written one, and a failure here —
+    disk full while writing the temp file, or the final replace itself — raises
+    with `path` completely untouched, because `path` is never opened directly.
+    """
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        content = "".join(json.dumps(asdict(a), ensure_ascii=False) + "\n" for a in articles)
+        tmp.write_text(content, encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 NO_SOURCES = """Nothing to ingest — no .pdf or .txt in data/raw/.
 
 The corpus text comes from an official PDF downloaded by hand (ADR-006/012):
@@ -329,23 +348,21 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  - {p}")
         return 2
 
-    OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with OUT_PATH.open("w", encoding="utf-8") as fh:
-        for a in all_articles:
-            fh.write(json.dumps(asdict(a), ensure_ascii=False) + "\n")
-
-    print(f"\nlaw: {law_name}")
-    print(f"ingested {len(all_articles)} articles -> {OUT_PATH}")
-    for book in ("issuance", "law"):
-        n = sum(1 for a in all_articles if a.book == book)
-        print(f"  {book:9s}: {n}")
-
     problems = validate(all_articles)
     if problems:
         print("\nSTRUCTURAL PROBLEMS (fix before trusting any retrieval number):")
         for p in problems:
             print(f"  - {p}")
         return 2
+
+    OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _write_articles_atomic(OUT_PATH, all_articles)
+
+    print(f"\nlaw: {law_name}")
+    print(f"ingested {len(all_articles)} articles -> {OUT_PATH}")
+    for book in ("issuance", "law"):
+        n = sum(1 for a in all_articles if a.book == book)
+        print(f"  {book:9s}: {n}")
     print("\nstructure OK")
     return 0
 

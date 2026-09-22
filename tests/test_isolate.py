@@ -6,6 +6,7 @@ importable name, not a lambda or closure — see isolate.py's docstring).
 """
 
 import multiprocessing
+import queue
 import sys
 import threading
 import time
@@ -62,20 +63,43 @@ def test_a_worker_that_hangs_is_killed_within_roughly_the_timeout_not_the_full_s
     assert elapsed < LONG_SLEEP / 2
 
 
+# The timeout `run_isolated` is given starts at spawn, not at the point the child is
+# running, so it has to cover interpreter start-up as well as the work. A cold `spawn`
+# on Windows re-imports this module in a fresh interpreter, and under load that took
+# longer than the 2.0s this test used to allow: the child was killed before it reached
+# its `pid_queue.put`, and the test failed on an empty queue — a flake, roughly 1 run
+# in 8 while the machine was busy, and never once when the file ran on its own.
+#
+# The fix is headroom, not precision. This test asserts that the process is *gone*,
+# not that it died on schedule (the test above owns that), so widening the gap from
+# 2-against-5 to 8-against-60 strengthens "well before the full sleep" while giving
+# start-up room it demonstrably needed. It costs ~6s of suite time, once.
+SPAWN_HEADROOM_SECONDS = 8.0
+UNREACHABLE_SLEEP = 60.0
+
+
 def test_a_worker_that_hangs_leaves_no_process_still_alive_afterward():
     """Proves the OS process is actually gone, not merely abandoned: a thread-based timeout
     that lets the underlying work keep running is exactly the failure mode T04 rejects."""
     ctx = multiprocessing.get_context("spawn")
     pid_queue = ctx.Queue()
-    # A more generous timeout than SHORT_TIMEOUT: this test only needs "killed well before the
-    # full sleep", not timing precision, and the child must have enough headroom to actually
-    # start up and report its pid before it gets killed.
-    generous_timeout = 2.0
 
     with pytest.raises(IsolationTimeout):
-        run_isolated(_hangs_forever_after_reporting_pid, (pid_queue, LONG_SLEEP), timeout_seconds=generous_timeout)
+        run_isolated(
+            _hangs_forever_after_reporting_pid,
+            (pid_queue, UNREACHABLE_SLEEP),
+            timeout_seconds=SPAWN_HEADROOM_SECONDS,
+        )
 
-    child_pid = pid_queue.get(timeout=5)
+    try:
+        child_pid = pid_queue.get(timeout=5)
+    except queue.Empty:  # pragma: no cover - only on a regression or a very slow box
+        pytest.fail(
+            f"the child never reported its pid within {SPAWN_HEADROOM_SECONDS}s. "
+            "Either spawn start-up is slower than that here (raise "
+            "SPAWN_HEADROOM_SECONDS) or run_isolated is killing the child before it "
+            "runs at all, which would be the real bug this test exists to catch."
+        )
     if sys.platform != "win32":
         import errno
         import os

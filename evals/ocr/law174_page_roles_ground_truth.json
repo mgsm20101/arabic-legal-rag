@@ -1,0 +1,75 @@
+{
+  "_about": "Digit ground truth for Run 12: eight HELD-OUT pages of Law 174/2025, every token tagged by role. Read off the rasterised pages BY EYE on 2026-09-19, before any engine was run on any of them — an engine cannot be its own ruler. `tokens` keeps the same meaning and the same schema as the other two ground-truth files, so the unmodified gate scores this file too; `furniture` names which of those tokens are page furniture.",
+  "_source": "C:/Users/moham/Downloads/قانون الاجراءات الجنائية رقم 174 لسنة 2025.pdf, sha256 14bc1e99…, 137 pages, no text layer. Rasterised with pypdfium2 at the scan's own resolution, 800x1000 (96 DPI); a second set at 1200x1500 was rendered only to read by eye.",
+  "_why_held_out": "p00, p09 and p49 (law174_digit_ground_truth.json) are the pages that PRODUCED Run 11's hypothesis — that deepseek-ocr's errors all land on page furniture. An engine measured on the pages that formed a hypothesis does not test it. These eight are new and were never looked at before the rule in EVAL.md Run 12 was written.",
+  "_why_these_pages": "Chosen for the shapes a digit takes, not for spread alone. p108 carries the hardest one in the document: a comma-separated list of BARE SINGLE DIGITS, «في البنود (١، ٢، ٣، ٤) من المادة ٤١٤» — an engine that swallows the Arabic comma fuses two of them into one number, and a single digit has no redundancy left to lose. p020, p078 and p094 carry cross-references OUT of this law («المادة ٣١٠ من قانون العقوبات») and INSIDE it, where a wrong digit points at a real but different article. p035 carries another law's number and year («بالقانون رقم ١٨ لسنة ٢٠١٩»). p062 is the sparse case, three article headers and prose that spells its numbers as words.",
+  "_furniture_note": "Page furniture is the running header «الجريدة الرسمية — العدد ٤٥ مكرر (د) فى ١٢ نوفمبر سنة ٢٠٢٥» plus the bare page number, repeated on all 137 pages and stripped by ocr_text.py before ingestion. Four tokens a page, 32 of 85 here. Scoring it beside article numbers is what Run 12 exists to stop.",
+  "_known_masking_limit": "Content scoring removes one instance of each furniture token from both sides. So if an engine BOTH drops the header's ١٢ and fuses «١، ٢» into ١٢ on p108, the invented token is absorbed by the dropped one and goes unreported. Recorded rather than worked around: the whole-page score in the same run still shows it.",
+  "p020": {
+    "page_label": "٢٢",
+    "furniture": ["٢٢", "٤٥", "١٢", "٢٠٢٥"],
+    "tokens": ["٢٢", "٤٥", "١٢", "٢٠٢٥", "٦٦", "٦٧", "٦٨", "٣١٠", "٦٩", "٧٠"],
+    "critical": {
+      "٣١٠": "«العقوبة المقررة فى المادة ٣١٠ من قانون العقوبات» — a reference out of this law into another one."
+    }
+  },
+  "p035": {
+    "page_label": "٣٧",
+    "furniture": ["٣٧", "٤٥", "١٢", "٢٠٢٥"],
+    "tokens": ["٣٧", "٤٥", "١٢", "٢٠٢٥", "١٢٥", "١٢٦", "٧٢", "١٢٧", "١٢٨", "١٨", "٢٠١٩"],
+    "critical": {
+      "٧٢": "«بالفقرة الثانية من المادة ٧٢ من هذا القانون» — an in-prose reference inside this law.",
+      "١٨": "«بالقانون رقم ١٨ لسنة ٢٠١٩» — a two-digit law number sitting in running prose."
+    }
+  },
+  "p062": {
+    "page_label": "٦٤",
+    "furniture": ["٦٤", "٤٥", "١٢", "٢٠٢٥"],
+    "tokens": ["٦٤", "٤٥", "١٢", "٢٠٢٥", "٢٣٣", "٢٣٤", "٢٣٥"],
+    "critical": {
+      "٢٣٣": "the first article header on a page whose prose spells every number as words — nothing else here to fall back on."
+    }
+  },
+  "p078": {
+    "page_label": "٨٠",
+    "furniture": ["٨٠", "٤٥", "١٢", "٢٠٢٥"],
+    "tokens": ["٨٠", "٤٥", "١٢", "٢٠٢٥", "٢٩٦", "٢٩٧", "٢٩٨", "٢٩٩", "٣٠٣"],
+    "critical": {
+      "٣٠٣": "«الفقرة الثانية من المادة ٣٠٣ من قانون العقوبات» — the penalty this article imposes is defined by that number."
+    }
+  },
+  "p094": {
+    "page_label": "٩٦",
+    "furniture": ["٩٦", "٤٥", "١٢", "٢٠٢٥"],
+    "tokens": ["٩٦", "٤٥", "١٢", "٢٠٢٥", "٣٦٠", "٣٦١", "٣٥٧", "٣٦٢", "٣٦٣", "١٢٤", "٣٦٤", "٣٦٥"],
+    "critical": {
+      "٣٥٧": "«مع مراعاة حكم المادة ٣٥٧ من هذا القانون» — surrounded by the ٣٦x headers, so a single wrong digit lands on a real neighbouring article.",
+      "١٢٤": "«مع مراعاة أحكام المادة ١٢٤ من هذا القانون» — a reference far from its own page, unverifiable in place."
+    }
+  },
+  "p108": {
+    "page_label": "١١٠",
+    "furniture": ["١١٠", "٤٥", "١٢", "٢٠٢٥"],
+    "tokens": ["١١٠", "٤٥", "١٢", "٢٠٢٥", "٤٢٠", "٤٢١", "٤٢٢", "١", "٢", "٣", "٤", "٤١٤", "٤٢٣", "٤٢٤", "٤٢٥", "٤٢٦"],
+    "critical": {
+      "١": "first of «في البنود (١، ٢، ٣، ٤)» — bare single digits in a comma-separated list, the shape that fused two article numbers for easyocr on the 2020 gazette.",
+      "٤١٤": "«من المادة ٤١٤ من هذا القانون» — the article the whole list belongs to."
+    }
+  },
+  "p121": {
+    "page_label": "١٢٣",
+    "furniture": ["١٢٣", "٤٥", "١٢", "٢٠٢٥"],
+    "tokens": ["١٢٣", "٤٥", "١٢", "٢٠٢٥", "٤٨٧", "٤٨٨", "٤٨٩", "١٤٨", "٤٩٠", "٤٩١"],
+    "critical": {
+      "١٤٨": "«حكم الفقرة الثانية من المادة ١٤٨ من هذا القانون» — a reference whose digits are all far from the ٤٨x headers around it."
+    }
+  },
+  "p134": {
+    "page_label": "١٣٦",
+    "furniture": ["١٣٦", "٤٥", "١٢", "٢٠٢٥"],
+    "tokens": ["١٣٦", "٤٥", "١٢", "٢٠٢٥", "٥٣٢", "٥٣٣", "٥٣٧", "٥٣٤", "٥٣٥", "٥٣٦"],
+    "critical": {
+      "٥٣٧": "«وفقًا لحكم المادة ٥٣٧ من هذا القانون» — one digit from ٥٣٢–٥٣٦, the five headers printed on this same page."
+    }
+  }
+}

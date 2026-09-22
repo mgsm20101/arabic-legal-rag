@@ -1,0 +1,82 @@
+{
+  "_about": "Digit ground truth for the OCR gate (ADR-019/ADR-020) on a SECOND document: Law 174/2025, the Criminal Procedure Code. Read off the rasterised pages BY EYE on 2026-09-19, before any engine was run on this file — an engine cannot be its own ruler. Same schema and same scorer as digit_ground_truth.json; only the pages are new.",
+  "_source": "C:/Users/moham/Downloads/قانون الاجراءات الجنائية رقم 174 لسنة 2025.pdf, sha256 14bc1e99…, 137 pages, 600x750 pt, no text layer at all (0 chars, 1 image per page). Rasterised with pypdfium2 at scale 2.0 → 1200x1500.",
+  "_why_these_pages": "p00 is the issuance page and the most consequential in the document: it carries the law's own number (١٧٤), and the numbers of the two laws it repeals (١٥٠ لسنة ١٩٥٠، ١٤٠ لسنة ٢٠١٤). It also carries a BARE SINGLE DIGIT — «بالقانون رقم ١ لسنة ٢٠٢٤» — which is ADR-019's recorded failure mode exactly (easyocr read ١٥ as ٥). p49 carries five article headers plus a comma-separated in-prose reference, «لأحكام المادتين ١٧٤، ١٧٥» — the shape where an engine that swallows the Arabic comma fuses two article numbers into one, and where the same number appears both as a header and as a reference, so the multiset comparison has to count it twice. p09 is the plain case: header plus one article header, with every number in its prose spelled as words («عشرة أيام», «خمسة عشر يومًا») rather than digits. Between them: page header, article header, in-prose reference, comma-separated list, and a single bare digit.",
+  "_header_note": "The running header is identical on all pages: «الجريدة الرسمية — العدد ٤٥ مكرر (د) فى ١٢ نوفمبر سنة ٢٠٢٥». Keys are the 0-BASED image index, as in digit_ground_truth.json; here the printed page label is the image index + 2, not + 1, because the issue's own first page is not the law's first page.",
+  "_watermark_note": "Unlike the 2020 gazette, every page of this document carries a watermark — a large faint Arabic wordmark and the state crest — overlaid on the text. No engine's score on the earlier document transfers to this one unchecked; that is part of what this file exists to measure.",
+  "p00": {
+    "page_label": "٢",
+    "tokens": [
+      "٢",
+      "٤٥",
+      "١٢",
+      "٢٠٢٥",
+      "١٧٤",
+      "٢٠٢٥",
+      "١",
+      "٢٠٢٤",
+      "١٥٠",
+      "١٩٥٠",
+      "١٤٠",
+      "٢٠١٤"
+    ],
+    "critical": {
+      "١٧٤": "the law's own number, in the title «قانون رقم ١٧٤ لسنة ٢٠٢٥».",
+      "١": "a bare single digit — «بالقانون رقم ١ لسنة ٢٠٢٤». ADR-019 recorded easyocr dropping a digit from ١٥ and reading ٥; a one-digit number has no redundancy left to lose.",
+      "١٥٠": "«القانون رقم ١٥٠ لسنة ١٩٥٠» — one of the two laws this one repeals. A wrong digit here repeals a different law."
+    },
+    "furniture": [
+      "٢",
+      "٤٥",
+      "١٢",
+      "٢٠٢٥"
+    ]
+  },
+  "p09": {
+    "page_label": "١١",
+    "tokens": [
+      "١١",
+      "٤٥",
+      "١٢",
+      "٢٠٢٥",
+      "٢٣"
+    ],
+    "critical": {
+      "٢٣": "مادة (٢٣) — the only article header on the page, and what segmentation would key on."
+    },
+    "furniture": [
+      "١١",
+      "٤٥",
+      "١٢",
+      "٢٠٢٥"
+    ]
+  },
+  "p49": {
+    "page_label": "٥١",
+    "tokens": [
+      "٥١",
+      "٤٥",
+      "١٢",
+      "٢٠٢٥",
+      "١٧٥",
+      "١٧٦",
+      "١٧٤",
+      "١٧٥",
+      "١٧٧",
+      "١٧٨",
+      "١٧٩",
+      "١٧٦"
+    ],
+    "critical": {
+      "١٧٤": "first number in «لأحكام المادتين ١٧٤، ١٧٥» — an engine that swallows the Arabic comma fuses it with the next number and invents an article.",
+      "١٧٩": "مادة (١٧٩) — the last article header on the page; a missed header silently merges two articles into one chunk."
+    },
+    "furniture": [
+      "٥١",
+      "٤٥",
+      "١٢",
+      "٢٠٢٥"
+    ]
+  },
+  "_furniture_note": "`furniture` was added on 2026-09-19 for Run 12's body-only scoring. It is not a new reading of the pages: the four tokens on each page are the page label plus the running header this file's `_header_note` already spells out in full. Adding the key changes no token in `tokens`, so Run 11's whole-page score reproduces unchanged; what it enables is the body count of 17 that ADR-029 records in prose."
+}

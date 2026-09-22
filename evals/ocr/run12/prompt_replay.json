@@ -1,0 +1,31 @@
+{
+  "_about": "Proof that Run 12 used Run 11's prompt. Run 11 did not record it, so p00 was re-run with '<image>\nFree OCR.' and its digit tokens compared to Run 11's stored output for the same page.",
+  "prompt": "<image>\nFree OCR.",
+  "identical": true,
+  "tokens_now": [
+    "174",
+    "2025",
+    "45",
+    "12",
+    "2025",
+    "1",
+    "2024",
+    "150",
+    "1950",
+    "140",
+    "2014"
+  ],
+  "tokens_run11": [
+    "174",
+    "2025",
+    "45",
+    "12",
+    "2025",
+    "1",
+    "2024",
+    "150",
+    "1950",
+    "140",
+    "2014"
+  ]
+}

@@ -177,6 +177,11 @@ the interesting number. ADR-008.
 
 Full protocol, environment and raw files: **[`EVIDENCE.md`](EVIDENCE.md)**.
 
+> Want to see it run first? [`docs/demo/`](docs/demo/) has one screenshot of the
+> local test page answering a colloquial Arabic question. It is labelled
+> **Demo — not measurement evidence**, and it is kept out of this section on
+> purpose: a screenshot has no command, no commit and no raw result behind it.
+
 ### Retrieval quality — 15 scored questions, k=5, dev split
 
 | Configuration | Recall@5 | 95% CI | MRR |

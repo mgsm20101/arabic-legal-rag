@@ -220,6 +220,16 @@ $("#q").addEventListener("keydown", e => { if(e.key === "Enter") runSearch(); })
 $("#catFilter").onchange = renderQuestions;
 
 get("/api/status").then(renderStatus);
+
+// ?q=... opens the free-search tab and runs that query. A shareable link to a
+// specific result — and the only way to point someone at exactly what you saw,
+// since everything else on this page is a click away from the same URL.
+const deepLink = new URLSearchParams(location.search).get("q");
+if(deepLink){
+  document.querySelector('nav button[data-tab="search"]').click();
+  $("#q").value = deepLink;
+  runSearch();
+}
 </script>
 </body>
 </html>

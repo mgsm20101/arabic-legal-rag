@@ -242,12 +242,17 @@ stands.
 | | |
 |---|---|
 | **Command** | `python tasks.py test` |
-| **source_commit_sha** | `6484c7d7` |
-| **Result** | **890 passed**, 1 warning, 90.9 s |
+| **source_commit_sha** | `6484c7d7` locally · `20c44c63` from a fresh clone |
+| **Result** | **890 passed** locally · **888 passed, 2 skipped** from a clone of this repository |
 
 A test count is not a quality metric and is not presented as one. It is here so
 that the number quoted elsewhere is the *passing* count, taken from a run,
 rather than the collected count taken from `--collect-only`.
+
+The two numbers differ for a reason worth stating: the statute corpus is
+git-ignored, so the two tests that read it skip on any machine that has not run
+`ingest`. CI reports the same 888/2. A reader who clones this and sees 888
+should see it explained here rather than wonder which number was inflated.
 
 ---
 

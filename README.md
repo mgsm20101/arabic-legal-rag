@@ -315,7 +315,8 @@ instrument and is not redistributed here.
 ```bash
 python tasks.py ingest --law "قانون حماية البيانات الشخصية"
 python tasks.py verify-refs          # every ground-truth reference re-checked
-python tasks.py test                 # 890 tests, no model needed
+python tasks.py test                 # 890 tests, no model needed (2 skip on a
+                                     # fresh clone — they read the ignored corpus)
 
 python evals/environment.py          # regenerate the environment record
 python evals/ablation_result.py      # -> evals/registry/ablation_<sha>.json

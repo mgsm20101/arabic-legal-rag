@@ -42,6 +42,22 @@ def _git(*args: str) -> str:
     ).stdout.strip()
 
 
+def _source_is_clean() -> bool:
+    """True when nothing that could change the result is uncommitted.
+
+    `git status --porcelain` on its own is too coarse here: this run writes its
+    own log and JSON into evals/registry/, so the harness would report its own
+    output as evidence that the sha is untrustworthy. Anything outside that
+    directory still counts, tracked or not.
+    """
+    for line in _git("status", "--porcelain").splitlines():
+        path = line[3:].strip().strip('"')
+        if path.startswith("evals/registry/"):
+            continue
+        return False
+    return True
+
+
 def _repo_relative(path: Path) -> str:
     """`path` as a repo-relative POSIX string, whether it arrives relative or absolute.
 
@@ -124,7 +140,7 @@ def measure(reps: int, warmup: int) -> dict:
     return {
         "metric": "retrieval latency per query",
         "source_commit_sha": _git("rev-parse", "HEAD"),
-        "worktree_clean": _git("status", "--porcelain") == "",
+        "worktree_clean": _source_is_clean(),
         "environment_ref": "env-001",
         "dataset": {
             "corpus": _repo_relative(CORPUS_PATH),

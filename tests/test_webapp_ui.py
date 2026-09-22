@@ -39,10 +39,13 @@ def test_only_the_allowlisted_ui_files_are_served(make):
         assert response.headers["content-type"] == content_type
         assert response.content == (webapp.UI_DIR / webapp.UI_FILES[path][0]).read_bytes()
 
+    # `no_such_endpoint`, not `not_found`: none of these is a document, and the allowlist is
+    # what makes them 404 in the first place. The codes are kept apart so a reader of the
+    # response can tell "you asked for a path I do not serve" from "that document is gone".
     for path in ("/index.html", "/ui/app.js", "/js/../app.js", "/js/missing.js", "/../README.md",
                  "/app.html", "/js/", "/docs", "/openapi.json"):
         status, _, content = raw_request(h.app, "GET", path)
-        assert (status, json.loads(content)["error"]) == (404, "not_found"), path
+        assert (status, json.loads(content)["error"]) == (404, "no_such_endpoint"), path
 
 
 def test_a_listed_ui_file_that_does_not_exist_yet_is_404(make, tmp_path):

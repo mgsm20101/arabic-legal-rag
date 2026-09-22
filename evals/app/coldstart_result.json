@@ -1,0 +1,25 @@
+{
+  "socket_open_after_s": 2.4,
+  "chat_http": 200,
+  "chat_elapsed_s": 255.8,
+  "status": "answered",
+  "claims": [
+    {
+      "text": "يلتزم المتحكم بالبت في الطلب خلال ستة أيام عمل من تاريخ تقديمه إليه.",
+      "sources": [
+        1
+      ]
+    }
+  ],
+  "timings_ms": {
+    "retrieval": 412,
+    "relevance": 4254,
+    "claims": 6940,
+    "total": 11684
+  },
+  "error": null,
+  "message_ar": null,
+  "health_probes": 126,
+  "health_non_200": [],
+  "health_slowest_s": 0.965
+}

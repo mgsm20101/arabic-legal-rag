@@ -22,6 +22,7 @@ import logging
 import math
 import os
 import sys
+import threading
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -119,7 +120,7 @@ def create_app(library, pipeline, *, model_spec: str = DEFAULT_MODEL,
     separate `OllamaChat` a health probe opens (`ollama_probe`), say. The
     pipeline's own generator model(s) are always included."""
     app = FastAPI(title="arabic-legal-rag", docs_url=None, redoc_url=None, openapi_url=None,
-                  lifespan=_lifespan(pipeline, close_at_shutdown))
+                  lifespan=_lifespan(pipeline, close_at_shutdown, library))
     app.add_middleware(Guard, limits={
         CHAT_PATH: chat_limiter if chat_limiter is not None else RateLimiter(*CHAT_LIMIT),
         UPLOAD_PATH: upload_limiter if upload_limiter is not None else RateLimiter(*UPLOAD_LIMIT),
@@ -132,18 +133,48 @@ def create_app(library, pipeline, *, model_spec: str = DEFAULT_MODEL,
     return app
 
 
-def _lifespan(pipeline, close_at_shutdown: tuple):
-    """Closes every closeable generator runtime this app opened, once, on
-    shutdown: `pipeline.generator.model`, its `relevance_model` if there is
-    one, and whatever else `close_at_shutdown` names. `getattr(obj, "close",
-    None)` — called only if present and callable — so an `hf:` runtime (a
-    plain callable with no `.close`) is skipped, the same defensive style
-    this module already uses for `.calls`."""
+def _warm_encoder(library) -> None:
+    """Load the embedding model, logging rather than raising if it will not.
+
+    Startup is not a request and has nobody to report to, and a model that
+    cannot load is not a reason to refuse to serve: `/` and `/api/health`
+    still answer, and the upload and chat endpoints already turn
+    `EncoderUnavailable` into a proper error for the caller who asked.
+    """
+    warm = getattr(library, "warm_encoder", None)
+    if not callable(warm):
+        return
+    try:
+        warm()
+    except lib.EncoderUnavailable as e:
+        logger.warning("the embedding model is not ready: %s", e)
+    except Exception:  # noqa: BLE001 - a background thread must not die silently
+        logger.exception("warming the embedding model failed")
+
+
+def _lifespan(pipeline, close_at_shutdown: tuple, library=None):
+    """Warms the embedding model on startup, and closes every closeable
+    generator runtime this app opened, once, on shutdown:
+    `pipeline.generator.model`, its `relevance_model` if there is one, and
+    whatever else `close_at_shutdown` names. `getattr(obj, "close", None)` —
+    called only if present and callable — so an `hf:` runtime (a plain
+    callable with no `.close`) is skipped, the same defensive style this
+    module already uses for `.calls`.
+
+    The warm-up runs in a daemon thread, not inline. The first load downloads
+    about 1.1 GB, which takes minutes, while the container's HEALTHCHECK
+    allows a 30s start period: warming inline would have Docker declare the
+    app unhealthy while it was doing exactly what it should. A daemon thread
+    also lets the process exit if someone stops the app mid-download.
+    """
     generator = pipeline.generator
     closeables = (generator.model, getattr(generator, "relevance_model", None), *close_at_shutdown)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        if library is not None:
+            threading.Thread(target=_warm_encoder, args=(library,),
+                             name="warm-encoder", daemon=True).start()
         yield
         for obj in closeables:
             close = getattr(obj, "close", None)
@@ -259,7 +290,13 @@ def _add_error_handlers(app: FastAPI) -> None:
 
     async def http_error(request, exc: StarletteHTTPException) -> JSONResponse:
         status = exc.status_code
-        code = {404: "not_found", 413: "file_too_large"}.get(status, "internal" if status >= 500 else "invalid_request")
+        # 404 here is always a path that matched no route: a document that does
+        # not exist arrives as `DocumentNotFound`, which is a LibraryError and
+        # never reaches this handler. Answering both with "the document does not
+        # exist" costs the reader the one clue they had about a mistyped path.
+        code = {404: "no_such_endpoint", 413: "file_too_large"}.get(
+            status, "internal" if status >= 500 else "invalid_request"
+        )
         allow = exc.headers.get("Allow") if exc.headers else None
         return error_response(code, status, headers={"Allow": allow} if allow else None)
 

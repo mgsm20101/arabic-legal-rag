@@ -606,3 +606,94 @@ def test_clearing_a_finished_answers_calls_never_corrupts_an_overlapping_answers
         "each answer must keep exactly its own call's timing, never the other's, and never zero"
     )
     assert claims.calls == [], "T11: bounded back to empty after the second answer too, not left to accumulate"
+
+
+# --- the one-time encoder load is not this request's cost --------------------
+#
+# Observed in the container's first production run: `/api/chat` answered 429
+# after 244.9s, saying «waited 244.9s for a generation slot, past the 120s
+# limit». No caller was queued and the lock was free the whole time. The 244.9s
+# was `LazyEncoder` downloading the 1.1 GB e5 encoder on its first `encode`,
+# inside retrieval, inside the budget that starts when `ask` does.
+#
+# T11 asked for an end-to-end budget and that is what stays. What changes is
+# what the budget covers: loading a model once for the life of the process is
+# the process starting up, not the request queueing, and a request that happens
+# to be the first one must not be billed for it. `ask` now waits for the
+# encoder to be ready BEFORE starting its clock, and the app warms it off the
+# request path at startup so that wait is normally zero.
+
+
+class _ColdLibrary(_FakeLibrary):
+    """A library whose encoder is not loaded yet, and takes `load_s` to load."""
+
+    def __init__(self, *hits, clock, load_s):
+        super().__init__(*hits)
+        self.clock, self.load_s, self.warmed = clock, load_s, 0
+
+    def warm_encoder(self):
+        self.warmed += 1
+        if self.warmed == 1:
+            self.clock["now"] += self.load_s
+
+
+def test_a_cold_encoder_load_is_not_charged_to_the_generation_budget(monkeypatch):
+    """The reported bug, reproduced: nothing is queued, the lock is free, and
+    the only slow thing is a one-time model load."""
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(pipeline_mod, "perf_counter", lambda: clock["now"])
+    chat = ScriptedChat([ONE_GOOD_CLAIM])
+    library = _ColdLibrary(*_two_hits(), clock=clock, load_s=244.9)
+    pipeline = Pipeline(library, ClaimsGenerator(model=chat), max_wait_seconds=120.0)
+
+    result = pipeline.ask("كم مهلة رد المدير؟")
+
+    assert result.status == "answered"
+    assert chat.seen, "the model must be reached: no one was queued and the lock was free"
+    assert library.warmed == 1
+
+
+def test_the_encoder_is_waited_for_on_every_ask_not_only_the_first(monkeypatch):
+    """Cheap once warm, and the only thing that makes the first ask's wait
+    zero in production is that startup already did it — so `ask` must keep
+    asking rather than trusting a flag it set itself."""
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(pipeline_mod, "perf_counter", lambda: clock["now"])
+    library = _ColdLibrary(*_two_hits(), clock=clock, load_s=1.0)
+    pipeline = Pipeline(library, ClaimsGenerator(model=ScriptedChat([ONE_GOOD_CLAIM, ONE_GOOD_CLAIM])))
+
+    pipeline.ask("كم مهلة رد المدير؟")
+    pipeline.ask("كم مهلة رد المدير؟")
+
+    assert library.warmed == 2
+
+
+def test_a_library_that_cannot_be_warmed_is_left_alone(monkeypatch):
+    """Injected fakes and any other library without the method must still
+    work -- the same `getattr` shape this codebase already uses for `.close`
+    and `.calls`."""
+    pipeline = Pipeline(_FakeLibrary(*_two_hits()), ClaimsGenerator(model=ScriptedChat([ONE_GOOD_CLAIM])))
+    assert pipeline.ask("كم مهلة رد المدير؟").status == "answered"
+
+
+def test_slow_retrieval_still_spends_the_budget(monkeypatch):
+    """The fix must not turn the budget off. Retrieval is this request's own
+    work, however slow, and T11's end-to-end budget still covers it -- which
+    is what `test_a_caller_that_already_waited_past_the_deadline...` above
+    asserts through `_SlowLibrary`. Restated here next to its exception so
+    the boundary between them is visible in one place."""
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(pipeline_mod, "perf_counter", lambda: clock["now"])
+
+    class _SlowSearch(_ColdLibrary):
+        def search(self, query, k=5, doc_ids=None):
+            self.clock["now"] += 999.0
+            return super().search(query, k, doc_ids)
+
+    chat = ScriptedChat([ONE_GOOD_CLAIM])
+    library = _SlowSearch(*_two_hits(), clock=clock, load_s=0.0)
+    pipeline = Pipeline(library, ClaimsGenerator(model=chat), max_wait_seconds=10.0)
+
+    with pytest.raises(TooBusy):
+        pipeline.ask("كم مهلة رد المدير؟")
+    assert chat.seen == []

@@ -58,6 +58,10 @@ MESSAGES_AR = {
     "no_text": "لم يُعثر على نص كافٍ في الملف. إن كان PDF ممسوحاً ضوئياً، "
                "فالتعرّف الضوئي (OCR) غير مدعوم في هذه النسخة.",
     "not_found": "المستند غير موجود.",
+    # Kept apart from `not_found` on purpose. Both are 404s, and reading "the
+    # document does not exist" after a typo in the path sends the reader looking
+    # for a document that was never the problem.
+    "no_such_endpoint": "لا يوجد مسار بهذا الاسم على هذا الخادم.",
     "invalid_request": "طلب غير صالح.",
     "rate_limited": "طلبات كثيرة في وقت قصير. حاول مرة أخرى بعد قليل.",
     "generator_unavailable": "خادم النموذج المحلي (Ollama) غير متاح. شغّله ثم أعد المحاولة.",
@@ -70,7 +74,8 @@ QUESTION_MESSAGE_AR = f"السؤال يجب أن يكون بين {MIN_QUESTION_C
 
 _STATUS = {
     "unsupported_file": 400, "no_text": 400, "invalid_request": 400, "forbidden": 403,
-    "not_found": 404, "file_too_large": 413, "pdf_too_large": 413, "rate_limited": 429, "internal": 500,
+    "not_found": 404, "no_such_endpoint": 404, "file_too_large": 413, "pdf_too_large": 413,
+    "rate_limited": 429, "internal": 500,
     "generator_unavailable": 503, "encoder_unavailable": 503,
 }
 _UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})

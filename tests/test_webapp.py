@@ -13,6 +13,8 @@ tests/test_webapp_guard.py; the page's files are tests/test_webapp_ui.py.
 import json
 import logging
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -160,8 +162,13 @@ def test_delete_is_soft_and_a_malformed_id_is_404(make, monkeypatch):
         raise AssertionError(f"soft_delete was called with {doc_id!r}")
 
     monkeypatch.setattr(h.library, "soft_delete", refuse)
-    for malformed in ("ABCDEF123456", "abc", "0123456789abc", "0123456789a!", "%2e%2e%2fdocs"):
+    # These reach the route and are refused by `DOC_ID`: a document 404, as before.
+    for malformed in ("ABCDEF123456", "abc", "0123456789abc", "0123456789a!"):
         assert_error(h.client.delete(f"/api/documents/{malformed}", headers=HEADERS), 404, "not_found")
+    # `%2e%2e%2fdocs` decodes to `../docs`, which is two path segments and so matches no route at
+    # all — it never reaches the library. Still a 404 with nothing leaked, which is what this
+    # test is really about; only the code differs, and it is the accurate one.
+    assert_error(h.client.delete("/api/documents/%2e%2e%2fdocs", headers=HEADERS), 404, "no_such_endpoint")
 
 
 def test_chat_returns_only_claims_that_survived_the_gate(make):
@@ -316,3 +323,101 @@ def test_the_apps_shutdown_hook_skips_a_model_with_no_close_method(tmp_path):
 
     with TestClient(app, base_url="http://127.0.0.1"):
         pass  # must not raise on shutdown
+
+
+def test_a_path_that_matches_no_route_does_not_claim_a_document_is_missing(make):
+    """Both are 404s, and they had the same sentence: "the document does not exist".
+
+    A person who mistypes the path is then told their document is gone, and goes looking for
+    a document that was never the problem — which is exactly what happened to the first caller
+    of this API. The route 404 gets its own code and its own sentence; the document 404 keeps
+    the one it had, and the test below holds that line so the two cannot merge again.
+    """
+    h = make()
+    h.upload()
+
+    # `/api/ask` is a plausible guess for an endpoint that is really `/api/chat`.
+    unknown = h.client.post("/api/ask", json={"question": "؟" * 20}, headers=HEADERS)
+    body = assert_error(unknown, 404, "no_such_endpoint")
+    assert "المستند" not in body["message_ar"], "a mistyped path still blames the document"
+
+    # The document 404 is unchanged: it comes from DocumentNotFound, never from this handler.
+    assert_error(h.ask(doc_ids=["0123456789ab"]), 404, "not_found")
+
+
+class _SlowWarmLibrary:
+    """A library whose encoder takes a while to load, and says when it has."""
+
+    def __init__(self):
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.warms = 0
+
+    def warm_encoder(self):
+        self.warms += 1
+        self.started.set()
+        self.release.wait(timeout=10)
+
+    def documents(self):
+        return []
+
+
+def test_the_app_warms_the_encoder_at_startup_off_the_request_path(tmp_path):
+    """The container's first run answered `/api/chat` with 429 after 244.9s,
+    all of it a 1.1 GB encoder download inside that one request. The load has
+    to happen somewhere; startup is where, so no user waits for it."""
+    library = _SlowWarmLibrary()
+    pipeline = Pipeline(library_mod.Library(tmp_path, encoder=KeywordEncoder()),
+                        ClaimsGenerator(model=ScriptedChat([])))
+    app = webapp.create_app(library, pipeline)
+
+    with TestClient(app, base_url="http://127.0.0.1"):
+        assert library.started.wait(timeout=5), "startup must begin warming the encoder"
+        library.release.set()
+
+    assert library.warms == 1
+
+
+def test_warming_does_not_hold_up_the_health_check(tmp_path):
+    """It runs in the background for a reason: the container's HEALTHCHECK
+    allows 30s of start period and the download takes minutes. A blocking
+    warm-up would have the container declared unhealthy while it works."""
+    library = _SlowWarmLibrary()
+    pipeline = Pipeline(library_mod.Library(tmp_path, encoder=KeywordEncoder()),
+                        ClaimsGenerator(model=ScriptedChat([])))
+    app = webapp.create_app(library, pipeline)
+
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert library.started.wait(timeout=5)
+        # Still loading, deliberately not released: the app must answer anyway.
+        assert client.get("/").status_code == 200
+        library.release.set()
+
+
+def test_an_encoder_that_will_not_load_does_not_take_the_app_down_at_startup(tmp_path, caplog):
+    """`EncoderUnavailable` at startup must not kill the process. The request
+    path already reports it properly, per endpoint, to the caller who asked."""
+
+    class _Broken:
+        def warm_encoder(self):
+            raise library_mod.EncoderUnavailable("no weights here")
+
+        def documents(self):
+            return []
+
+    pipeline = Pipeline(library_mod.Library(tmp_path, encoder=KeywordEncoder()),
+                        ClaimsGenerator(model=ScriptedChat([])))
+    app = webapp.create_app(_Broken(), pipeline)
+
+    def logged():
+        return any("no weights here" in r.getMessage() for r in caplog.records)
+
+    with caplog.at_level(logging.WARNING):
+        with TestClient(app, base_url="http://127.0.0.1") as client:
+            assert client.get("/").status_code == 200
+            # The warning is written from the warm-up thread, so the assertion
+            # has to wait for it rather than race it.
+            deadline = time.monotonic() + 5
+            while not logged() and time.monotonic() < deadline:
+                time.sleep(0.01)
+    assert logged()

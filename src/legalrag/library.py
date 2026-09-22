@@ -193,6 +193,23 @@ class Library:
             self._indexes.pop(meta.doc_id, None)
             return meta
 
+    def warm_encoder(self) -> None:
+        """Load the embedding model now, if this library's encoder can be warmed.
+
+        A `LazyEncoder` loads on its first `encode`, which means the first
+        upload or the first question pays for a 1.1 GB download inside its own
+        request. Call this at startup instead. It raises `EncoderUnavailable`
+        exactly as the first `encode` would have, so a caller that wants the
+        failure gets it and one that does not can ignore it.
+
+        `getattr` rather than an interface: an injected encoder is anything
+        with `.encode`, which is how every test and every offline run supplies
+        one, and nothing else in this class demands more of it than that.
+        """
+        warm = getattr(self._encoder, "warm", None)
+        if callable(warm):
+            warm()
+
     def search(self, query: str, k: int = 5, doc_ids: list[str] | None = None) -> list[LibraryHit]:
         """The top `k` chunks for `query` across every live document, or exactly `doc_ids`
         (each a live document, or DocumentNotFound). Ranked by score, descending; a tie goes

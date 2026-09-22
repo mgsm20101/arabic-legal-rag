@@ -155,6 +155,18 @@ class Pipeline:
           waiting for (or holding) the generation lock, or when this caller
           waited past `max_wait_seconds` for its own turn at it.
         """
+        # BEFORE the clock starts, deliberately. `max_wait_seconds` is T11's
+        # end-to-end budget over this request's own work; loading the embedding
+        # model is the process starting up, once, for every request that comes
+        # after too. Billing it to whoever happens to be first turned a cold
+        # start into «waited 244.9s for a generation slot» with nothing queued
+        # and the lock free the whole time. Normally this returns at once,
+        # because the app warms the encoder at startup; it blocks only for a
+        # request that beat the warm-up, and then for the load, not a queue.
+        warm = getattr(self.library, "warm_encoder", None)
+        if callable(warm):
+            warm()
+
         started = perf_counter()
         question = question.strip()
         if not MIN_QUESTION_CHARS <= len(question) <= MAX_QUESTION_CHARS:

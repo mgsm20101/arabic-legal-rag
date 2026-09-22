@@ -1,0 +1,20 @@
+loading intfloat/multilingual-e5-base …
+  embeddings from cache (0.3s)
+loading cross-encoder/mmarco-mMiniLMv2-L12-H384-v1 …
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/201 [00:00<?, ?it/s]Loading weights:  72%|███████▏  | 145/201 [00:00<00:00, 1433.10it/s]Loading weights: 100%|██████████| 201/201 [00:00<00:00, 1318.48it/s]
+  ready (54.6s)
+  BM25               median       0.2 ms   p95       0.5 ms   n=45
+Loading weights:   0%|          | 0/199 [00:00<?, ?it/s]Loading weights:  95%|█████████▍| 189/199 [00:00<00:00, 1888.65it/s]Loading weights: 100%|██████████| 199/199 [00:00<00:00, 1969.98it/s]
+  dense              median     203.5 ms   p95     329.8 ms   n=45
+  hybrid (RRF)       median     223.9 ms   p95     345.6 ms   n=45
+  hybrid + rerank    median    7169.3 ms   p95   11991.3 ms   n=45
+Traceback (most recent call last):
+  File "D:\Ai engneer\Project\arabic-legal-rag\evals\retrieval_latency.py", line 134, in <module>
+    payload = measure(a.reps, a.warmup)
+  File "D:\Ai engneer\Project\arabic-legal-rag\evals\retrieval_latency.py", line 103, in measure
+    "corpus": str(CORPUS_PATH.relative_to(ROOT)),
+                  ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\Miniconda3\Lib\pathlib\__init__.py", line 490, in relative_to
+    raise ValueError(f"{str(self)!r} is not in the subpath of {str(other)!r}")
+ValueError: 'data\\processed\\articles.jsonl' is not in the subpath of 'D:\\Ai engneer\\Project\\arabic-legal-rag'

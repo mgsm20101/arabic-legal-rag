@@ -75,19 +75,33 @@ def measure(reps: int, warmup: int) -> dict:
 
     configs = build_configs(docs, answerable, k=EVAL_K)
 
-    results = []
+    # Warm every configuration before timing any of them. Each lazily loads its
+    # model on first search, and the configurations share objects — `hybrid`
+    # calls the same DenseIndex `dense` does — so warming them one at a time and
+    # timing in the same pass charges one configuration for work the next gets
+    # free.
     for cfg in configs:
         for _ in range(warmup):
             cfg.search(WARMUP_QUERY, EVAL_K)
 
-        samples: list[float] = []
-        for _ in range(reps):
-            for q in answerable:
+    # Interleave: one question through all four configurations, then the next.
+    # Timing each configuration to completion in turn makes every result a
+    # measurement of a different minute — any ambient load on the machine lands
+    # entirely on whichever configuration was running at the time. Measured the
+    # other way, an earlier pass of this benchmark put `hybrid` *below* `dense`,
+    # which cannot happen: hybrid calls dense. Interleaving spreads drift across
+    # all four instead of concentrating it in one.
+    samples: dict[str, list[float]] = {c.name: [] for c in configs}
+    for _ in range(reps):
+        for q in answerable:
+            for cfg in configs:
                 t0 = time.perf_counter()
                 cfg.search(q.question, EVAL_K)
-                samples.append((time.perf_counter() - t0) * 1000.0)
+                samples[cfg.name].append((time.perf_counter() - t0) * 1000.0)
 
-        s = sorted(samples)
+    results = []
+    for cfg in configs:
+        s = sorted(samples[cfg.name])
         results.append(
             {
                 "configuration": cfg.name,
@@ -125,11 +139,13 @@ def measure(reps: int, warmup: int) -> dict:
             "repetitions_per_question": reps,
             "samples_per_config": reps * len(answerable),
             "state": "warm",
+            "order": "interleaved — one question through all configurations, then the next",
             "percentile_method": "nearest-rank",
             "concurrency": 1,
             "note": (
-                "Single process, no other measurement running. p95 over this many "
-                "samples is coarse — read it with n, not alone."
+                "Single process. p95 over this many samples is coarse — read it "
+                "with n, not alone. Ambient machine load is spread across "
+                "configurations by interleaving, not eliminated."
             ),
         },
         "results": results,

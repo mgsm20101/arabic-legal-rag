@@ -1,0 +1,96 @@
+{
+  "metric": "retrieval quality — four-configuration ablation",
+  "source_commit_sha": "bd04e8e835499b76ff9c2fc8aa6c731ef63cfa57",
+  "worktree_clean": true,
+  "environment_ref": "env-001",
+  "dataset": {
+    "corpus_articles": 56,
+    "questions_written": 20,
+    "questions_scored": 15,
+    "questions_abstention": 5,
+    "split": "dev",
+    "k": 5,
+    "candidate_depth": 20
+  },
+  "results": [
+    {
+      "configuration": "BM25",
+      "note": "lexical only, no model",
+      "recall_at_5": 0.333,
+      "mrr": 0.289,
+      "recall_at_5_interval": {
+        "point": 0.333,
+        "ci95_low": 0.133,
+        "ci95_high": 0.567,
+        "method": "percentile bootstrap over per-question values",
+        "resamples": 10000,
+        "seed": 20260923
+      },
+      "per_category_recall_at_5": {
+        "direct": 0.75,
+        "multi_article": 0.333,
+        "colloquial": 0.125
+      }
+    },
+    {
+      "configuration": "dense",
+      "note": "multilingual-e5-base",
+      "recall_at_5": 0.767,
+      "mrr": 0.588,
+      "recall_at_5_interval": {
+        "point": 0.767,
+        "ci95_low": 0.567,
+        "ci95_high": 0.933,
+        "method": "percentile bootstrap over per-question values",
+        "resamples": 10000,
+        "seed": 20260923
+      },
+      "per_category_recall_at_5": {
+        "direct": 0.75,
+        "multi_article": 0.667,
+        "colloquial": 0.812
+      }
+    },
+    {
+      "configuration": "hybrid (RRF)",
+      "note": "BM25 + dense, depth 20",
+      "recall_at_5": 0.6,
+      "mrr": 0.53,
+      "recall_at_5_interval": {
+        "point": 0.6,
+        "ci95_low": 0.4,
+        "ci95_high": 0.8,
+        "method": "percentile bootstrap over per-question values",
+        "resamples": 10000,
+        "seed": 20260923
+      },
+      "per_category_recall_at_5": {
+        "direct": 0.75,
+        "multi_article": 0.5,
+        "colloquial": 0.562
+      }
+    },
+    {
+      "configuration": "hybrid + rerank",
+      "note": "mmarco-mMiniLMv2-L12-H384-v1",
+      "recall_at_5": 0.667,
+      "mrr": 0.567,
+      "recall_at_5_interval": {
+        "point": 0.667,
+        "ci95_low": 0.433,
+        "ci95_high": 0.867,
+        "method": "percentile bootstrap over per-question values",
+        "resamples": 10000,
+        "seed": 20260923
+      },
+      "per_category_recall_at_5": {
+        "direct": 1.0,
+        "multi_article": 0.833,
+        "colloquial": 0.438
+      }
+    }
+  ],
+  "candidate_ceiling_recall_at_20": 0.933,
+  "reading": "Differences here are a direction, not a magnitude. With 15 scored questions the intervals overlap; 'dense leads' is supported, 'dense leads by 0.433' is not.",
+  "measured_at": "2026-09-22T21:41:45+00:00"
+}

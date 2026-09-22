@@ -19,3 +19,9 @@ data/app/
 models/
 # a Hugging Face cache written into the working directory by an empty HF_HUB_CACHE
 models--*/
+
+# OCR scratch work on other laws — working files, page images, logs. Never published.
+.ocrwork/
+
+# agent session state
+HERMES-STATE.md

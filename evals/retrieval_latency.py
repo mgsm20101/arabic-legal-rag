@@ -42,6 +42,19 @@ def _git(*args: str) -> str:
     ).stdout.strip()
 
 
+def _repo_relative(path: Path) -> str:
+    """`path` as a repo-relative POSIX string, whether it arrives relative or absolute.
+
+    CORPUS_PATH is relative to the working directory, not to ROOT, so calling
+    Path.relative_to(ROOT) on it raises. Normalise instead of assuming.
+    """
+    resolved = path if path.is_absolute() else (Path.cwd() / path)
+    try:
+        return resolved.resolve().relative_to(ROOT).as_posix()
+    except ValueError:
+        return resolved.resolve().as_posix()
+
+
 def _percentile(sorted_values: list[float], q: float) -> float:
     """Nearest-rank percentile. Stated plainly because with n=45 the choice shows."""
     if not sorted_values:
@@ -100,7 +113,7 @@ def measure(reps: int, warmup: int) -> dict:
         "worktree_clean": _git("status", "--porcelain") == "",
         "environment_ref": "env-001",
         "dataset": {
-            "corpus": str(CORPUS_PATH.relative_to(ROOT)),
+            "corpus": _repo_relative(CORPUS_PATH),
             "articles": len(docs),
             "questions_scored": len(answerable),
             "k": EVAL_K,

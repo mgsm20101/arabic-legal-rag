@@ -111,22 +111,39 @@ Transitive dependencies are not enumerated by hand — see the generated report 
 ## 5. Security audit
 
 [`docs/review/dependency-audit-summary.json`](docs/review/dependency-audit-summary.json)
-— `pip-audit` over `constraints.txt`.
+— `pip-audit -r constraints.txt --no-deps`, run from an isolated venv so the
+environment being audited is not the environment doing the auditing.
 
 | | |
 |---|---|
-| Date | 2026-09-17 |
+| Date | **2026-09-23** |
 | Packages audited | 61 |
-| Unique advisories | **2** |
+| Unique advisories | **4** (6 raw records — two sources report the same two twice) |
 | Scope, as stated in the file | Package-version matches — **not** demonstrated application exploitability |
 
-| Package | Version | Advisory | Fixed in |
-|---|---|---|---|
-| `cryptography` | 49.0.0 | `PYSEC-2026-3552` / `CVE-2026-69247` | 50.0.0 |
-| `setuptools` | 82.0.1 | `PYSEC-2026-3447` / `CVE-2026-59890` | 83.0.0 |
+| Package | Version | Advisory | Fixed in | First seen |
+|---|---|---|---|---|
+| `anyio` | 4.12.1 | `CVE-2026-63374` / `GHSA-82r6-8w77-94w6` | 4.14.2 | 2026-09-23 |
+| `anyio` | 4.12.1 | `CVE-2026-64847` / `GHSA-5p39-cfhj-2xmp` | 4.14.2 | 2026-09-23 |
+| `cryptography` | 49.0.0 | `PYSEC-2026-3552` / `CVE-2026-69247` | 50.0.0 | 2026-09-17 |
+| `setuptools` | 82.0.1 | `PYSEC-2026-3447` / `CVE-2026-59890` | 83.0.0 | 2026-09-17 |
 
-Both are transitive and open. They are recorded rather than quietly dropped: an
-audit whose findings disappear is not an audit.
+All four are transitive, all four are open, and none sits in the retrieval
+path. They are recorded rather than quietly dropped: an audit whose findings
+disappear is not an audit.
+
+**Why they are not patched in this commit.** Upgrading a pin changes
+`constraints.txt`, and `constraints.txt`'s hash *is* part of `environment_ref`
+`env-001` — the environment every measured row in
+[`EVIDENCE.md`](EVIDENCE.md) points at. Bumping the pins and re-measuring is
+one action, not two, and doing the first half alone would leave the registry
+describing an environment that no longer exists. The upgrade is queued behind
+the next measurement pass, not forgotten.
+
+**The count went up between audits, and that is the useful part.** The
+2026-09-17 run found two advisories; this one finds four. Nothing in the
+repository changed — the advisory database did. A dated snapshot is the only
+honest form this section can take.
 
 ---
 

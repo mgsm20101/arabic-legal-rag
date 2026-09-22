@@ -12,8 +12,14 @@ INGESTED FILE
   structure   : 7 issuance articles + 49 law articles
   --law value : "قانون حماية البيانات الشخصية"
 
-TEXT OF RECORD (now on disk, still not ingested — no text layer)
-  file        : gazette-28-mukarrar-h-2020-07-15.pdf
+TEXT OF RECORD (on disk, deliberately NOT ingestible — no text layer)
+  file        : data/raw/reference/gazette-28-mukarrar-h-2020-07-15.pdf
+  why there   : `ingest.sources()` globs data/raw/ NON-recursively, so a
+                subfolder keeps this beside the corpus without feeding it
+                in. It has no text layer, and ingest refuses the WHOLE run
+                when any source fails extraction — correctly, since a
+                partial corpus is worse than none. Left directly in
+                data/raw/ it breaks the first ingest on a fresh clone.
   source      : الجريدة الرسمية، العدد 28 مكرر (هـ) — 15 يوليو 2020
   via         : https://manshurat.org/node/66932  (download link carries a
                 per-session token; a bare /file/78585/download returns 403)

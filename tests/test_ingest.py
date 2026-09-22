@@ -157,3 +157,26 @@ def test_an_ordinal_header_in_brackets_is_still_a_header():
     text = "(المادة الأولى)\nيعمل بأحكام هذا القانون\n\n( المادة الثانية )\nتسرى أحكامه\n"
     got = [(a.book, a.number) for a in parse(text, "gazette.txt")]
     assert got == [("issuance", 1), ("issuance", 2)]
+
+
+# --- the short-article check ------------------------------------------------
+# `validate` flagged any article under 40 characters as a "possible bad split",
+# and ingest refused to write. 40 was never measured: law 151's shortest
+# article is 77 characters, so nothing real had ever come near it. Law 174/2025
+# article 286 is one complete sentence of 37 -- read off the page image -- and
+# the check refused the whole statute over it.
+
+
+def test_a_real_one_sentence_article_is_not_a_bad_split():
+    """Law 174/2025 article 286, verbatim from the gazette."""
+    text = ("مادة (1)\nلا يجوز رد الشهود لأي سبب من الأسباب.\n\n"
+            "مادة (2)\nيسمع المدعي بالحقوق المدنية كشاهد ويحلف اليمين.\n")
+    assert validate(parse(text, "law174.txt")) == []
+
+
+def test_a_fragment_too_short_to_be_a_sentence_is_still_flagged():
+    """What the check is for: a header matched where there was none leaves a
+    scrap between it and the next real header."""
+    text = ("مادة (1)\nيلتزم المتحكم بالحصول على الموافقة قبل بدء أي معالجة.\n\n"
+            "مادة (2)\n(الفقرة الأولى)\n")
+    assert any("suspiciously short" in p for p in validate(parse(text, "x.txt")))

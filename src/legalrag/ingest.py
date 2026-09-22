@@ -257,6 +257,15 @@ def parse(text: str, source_file: str, law_name: str = "") -> list[Article]:
     return articles
 
 
+# Shorter than this is a scrap, not an article: a header matched where there was
+# none leaves one between it and the next real header. It was 40, a number no
+# statute had been measured against -- law 151's shortest article is 77 -- and
+# law 174/2025 article 286, «لا يجوز رد الشهود لأي سبب من الأسباب.», is a whole
+# article in 37. A complete legal sentence does not fit in 20 characters; a
+# stray «(الفقرة الأولى)» (15) still does.
+MIN_ARTICLE_CHARS = 20
+
+
 def validate(articles: list[Article]) -> list[str]:
     """Structural checks. Returns a list of human-readable problems."""
     problems: list[str] = []
@@ -274,7 +283,7 @@ def validate(articles: list[Article]) -> list[str]:
         if min(nums) != 1:
             problems.append(f"[{book}] numbering starts at {min(nums)}, expected 1")
 
-    tiny = [a.id for a in articles if a.char_len < 40]
+    tiny = [a.id for a in articles if a.char_len < MIN_ARTICLE_CHARS]
     if tiny:
         problems.append(f"suspiciously short articles (possible bad split): {tiny}")
     return problems

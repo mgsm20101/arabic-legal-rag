@@ -10,7 +10,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from legalrag.normalize import evaluation_normalize, search_normalize  # noqa: E402
+from legalrag.normalize import (  # noqa: E402
+    evaluation_normalize,
+    orthographic_normalize,
+    search_normalize,
+)
 
 
 def test_search_folds_alef_variants():
@@ -60,3 +64,70 @@ def test_evaluation_normalize_does_not_strip_clitics():
     """Scoring must not fold a preposition away — that changes legal meaning."""
     from legalrag.normalize import evaluation_normalize as en
     assert en("البيانات") != en("للبيانات")
+
+
+# ---------------------------------------------------------------------------
+# the middle normalizer (ADR-027)
+# ---------------------------------------------------------------------------
+#
+# It exists to absorb the spellings a keyboard produces without turning the
+# sentence into match keys. Both halves of that matter, so both are pinned:
+# what it MUST fold, and what it MUST leave alone.
+
+
+def test_orthographic_folds_the_forms_a_keyboard_drops():
+    """Each of these is one missing modifier key, not a different word."""
+    assert orthographic_normalize("الأفراد") == orthographic_normalize("الافراد")
+    assert orthographic_normalize("إتاحة") == orthographic_normalize("اتاحه")
+    assert orthographic_normalize("الدعائية") == orthographic_normalize("الدعائيه")
+    assert orthographic_normalize("على") == orthographic_normalize("علي")
+    assert orthographic_normalize("مسؤول") == orthographic_normalize("مسوول")
+
+
+def test_orthographic_keeps_clitics_attached():
+    """The distinction ADR-015 protected: «البيانات» and «للبيانات» are not one word."""
+    assert orthographic_normalize("البيانات") != orthographic_normalize("للبيانات")
+
+
+def test_orthographic_keeps_punctuation():
+    """A transformer reads a sentence. `search_normalize` hands it a bag of keys."""
+    assert "؟" in orthographic_normalize("ما المهلة؟")
+    assert "." in orthographic_normalize("يلتزم المتحكم بالإبلاغ.")
+
+
+def test_orthographic_keeps_word_boundaries_intact():
+    text = "يلتزم المتحكم بإبلاغ المركز خلال اثنتين وسبعين ساعة"
+    assert len(orthographic_normalize(text).split()) == len(text.split())
+
+
+def test_orthographic_still_strips_diacritics_and_tatweel():
+    """Inherited from evaluation_normalize, and needed for the same reason."""
+    assert orthographic_normalize("مــادة") == orthographic_normalize("مادة")
+    assert orthographic_normalize("مَادَة") == orthographic_normalize("مادة")
+
+
+def test_orthographic_is_idempotent():
+    """It runs on every passage and every query; a second pass must not drift."""
+    once = orthographic_normalize("الأفراد على الهيئة؟")
+    assert orthographic_normalize(once) == once
+
+
+def test_search_normalize_is_the_orthographic_fold_plus_more():
+    """Defined on top of it in the code, so the shared folds cannot drift apart."""
+    text = "وبالبيانات الشخصية على الأفراد؟"
+    folded = orthographic_normalize(text)
+    assert search_normalize(text) == search_normalize(folded)
+    assert search_normalize(text) != folded, "the aggressive steps stopped doing anything"
+
+
+def test_the_recorded_cost_of_the_fold_is_real():
+    """ADR-027 accepts that these collapse. Pinned so the cost stays visible
+    rather than being rediscovered as a bug."""
+    assert orthographic_normalize("إذن") == orthographic_normalize("أذن")
+    assert orthographic_normalize("على") == orthographic_normalize("علي")
+
+
+def test_evaluation_normalize_still_keeps_what_the_fold_collapses():
+    """Scoring must not inherit the retrieval fold, or wrong answers score right."""
+    assert evaluation_normalize("إذن") != evaluation_normalize("أذن")
+    assert evaluation_normalize("معالجة") != evaluation_normalize("معالجه")

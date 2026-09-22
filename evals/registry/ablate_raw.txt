@@ -1,0 +1,38 @@
+====================================================================
+  arabic-legal-rag · retrieval ablation · PRD M1/A4
+====================================================================
+
+corpus     : 56 articles · حماية البيانات الشخصية [CONFIRMED]
+questions  : 15 answerable of 20 (5 abstention, not scored on retrieval)
+k          : 5
+
+loading intfloat/multilingual-e5-base …
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/199 [00:00<?, ?it/s]Loading weights:  58%|█████▊    | 115/199 [00:00<00:00, 1117.46it/s]Loading weights: 100%|██████████| 199/199 [00:00<00:00, 1140.03it/s]
+[transformers] Token indices sequence length is longer than the specified maximum sequence length for this model (1093 > 512). Running this sequence through the model will result in indexing errors
+  embeddings from model (212.8s)
+loading cross-encoder/mmarco-mMiniLMv2-L12-H384-v1 …
+Loading weights:   0%|          | 0/201 [00:00<?, ?it/s]Loading weights:  66%|██████▌   | 132/201 [00:00<00:00, 1310.06it/s]Loading weights: 100%|██████████| 201/201 [00:00<00:00, 1564.82it/s]
+  ready (7.6s)
+
+  configuration      recall@5      MRR     sec/q    notes
+  ------------------------------------------------------------------------
+  BM25                0.333    0.289    0.000    lexical only, no model
+  dense               0.767    0.588    0.209    multilingual-e5-base  (+0.433 vs BM25)
+  hybrid (RRF)        0.600    0.530    0.457    BM25 + dense, depth 20  (+0.267 vs BM25)
+  hybrid + rerank     0.667    0.567   12.403    mmarco-mMiniLMv2-L12-H384-v1  (+0.333 vs BM25)
+  ------------------------------------------------------------------------
+
+  candidate ceiling (recall@20 of hybrid) : 0.933
+  The reranker can only reorder those candidates; it cannot exceed this.
+
+  per category (recall@5)
+  configuration       direct  multi_art  colloquial
+  --------------------------------------------------
+  BM25                 0.750      0.333       0.125
+  dense                0.750      0.667       0.812
+  hybrid (RRF)         0.750      0.500       0.562
+  hybrid + rerank      1.000      0.833       0.438
+
+cost: local CPU inference, no API calls. One-time model download (~530 MB e5-base + ~470 MB reranker); offline afterwards.
+Small sample — read the caveat in EVAL.md before quoting any of this.

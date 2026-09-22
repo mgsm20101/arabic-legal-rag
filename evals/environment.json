@@ -1,0 +1,68 @@
+{
+  "environment_ref": "env-001",
+  "generated": "2026-09-23",
+  "generator": "python evals/environment.py",
+  "hardware": {
+    "cpu": "Intel64 Family 6 Model 158 Stepping 10, GenuineIntel",
+    "logical_cores": 12,
+    "total_ram_gb": 15.9,
+    "gpu": null,
+    "note": "CPU-only. Retrieval and reranking run on CPU; no CUDA device present."
+  },
+  "runtime": {
+    "python": "3.14.6",
+    "implementation": "CPython",
+    "os": "Windows-11-10.0.26200-SP0"
+  },
+  "dependency_pins": {
+    "constraints.txt": "bf59c72f91c4da301399dc9d8093aa7e1f965131b8a772feb2502184e8896e18",
+    "requirements.txt": "598e5d94663f48ad40b03c84dd2e08c74dd305e6fb6c463ab8ea656744f3ace5",
+    "requirements-dev.txt": "becc57fdfc76fa19f710c0a1d275aacf371cab14eaf3be11c164baca463d4f2e"
+  },
+  "packages": {
+    "torch": "2.14.0",
+    "sentence-transformers": "6.0.1",
+    "transformers": "5.16.1",
+    "numpy": "2.5.1",
+    "rank-bm25": "0.2.2",
+    "pdfplumber": "0.11.10",
+    "fastapi": "0.141.1",
+    "httpx": "0.28.1",
+    "pytest": "9.1.1"
+  },
+  "models": {
+    "embedding": {
+      "repo_id": "intfloat/multilingual-e5-base",
+      "revision": "d128750597153bb5987e10b1c3493a34e5a4502a",
+      "device": "cpu"
+    },
+    "reranker": {
+      "repo_id": "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
+      "revision": "1427fd652930e4ba29e8149678df786c240d8825",
+      "device": "cpu"
+    }
+  },
+  "generator_models": {
+    "served_by": "ollama @ http://127.0.0.1:11434",
+    "available": [
+      {
+        "name": "qwen2.5-coder:3b",
+        "digest": "f72c60cabf6237b07f6e632b2c48d533cef25eda2efbd34bed21c5e9c01e6225",
+        "parameter_size": "3.1B",
+        "quantization": "Q4_K_M"
+      },
+      {
+        "name": "gemma3:4b",
+        "digest": "a2af6cc3eb7fa8be8504abaf9b04e88f17a119ec3f04a3addf55f92841195f5a",
+        "parameter_size": "4.3B",
+        "quantization": "Q4_K_M"
+      }
+    ]
+  },
+  "decoding": {
+    "note": "Retrieval and reranking are deterministic and take no decoding parameters. Generation decoding is set per run and recorded on that run's row in EVIDENCE.md, not here.",
+    "seed": null,
+    "temperature": null,
+    "top_p": null
+  }
+}

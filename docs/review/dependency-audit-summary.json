@@ -1,0 +1,34 @@
+{
+  "date": "2026-09-17",
+  "input": "constraints.txt",
+  "packages_audited": 61,
+  "raw_vulnerability_records": 4,
+  "unique_advisories": [
+    {
+      "package": "cryptography",
+      "version": "49.0.0",
+      "id": "PYSEC-2026-3552",
+      "aliases": [
+        "GHSA-g6cj-pr64-35w5",
+        "CVE-2026-69247"
+      ],
+      "fix_versions": [
+        "50.0.0"
+      ]
+    },
+    {
+      "package": "setuptools",
+      "version": "82.0.1",
+      "id": "PYSEC-2026-3447",
+      "aliases": [
+        "GHSA-h35f-9h28-mq5c",
+        "CVE-2026-59890",
+        "BIT-setuptools-2026-59890"
+      ],
+      "fix_versions": [
+        "83.0.0"
+      ]
+    }
+  ],
+  "scope": "Package-version matches, not demonstrated application exploitability."
+}

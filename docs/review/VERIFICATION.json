@@ -1,0 +1,88 @@
+{
+  "date": "2026-09-17",
+  "commit": "ed2107e316d7f02f1acdc47eb5c0d5c8d78544ef",
+  "platform": "Windows",
+  "initial_environment": {
+    "python": "3.12.10",
+    "passed": 656,
+    "failed": 2,
+    "skipped": 13,
+    "failure_reason": "pdfplumber not installed; environment deficiency"
+  },
+  "isolated_environment": {
+    "python": "3.14.5",
+    "install": "uv pip install --python <temporary-venv>/Scripts/python.exe -c constraints.txt -r requirements-ci.txt",
+    "test_command": "python -m pytest -q -rs",
+    "passed": 675,
+    "failed": 0,
+    "skipped": 0,
+    "warnings": 1,
+    "seconds": 105.59,
+    "warning": "Starlette TestClient deprecates httpx in favor of httpx2; no runtime failure observed",
+    "matches_ci": "Python minor and pinned dependency requirements; execution platform is Windows, not CI Linux"
+  },
+  "ruff": {
+    "command": "ruff check --isolated --select E4,E7,E9,F src tests tasks.py scripts --output-format concise",
+    "findings": 7,
+    "triage": {
+      "unused_imports": 3,
+      "intended_library_reexports": 3,
+      "ambiguous_variable_name": 1
+    },
+    "inherited_configuration_scan": {
+      "findings": 165,
+      "used_for_project_rating": false
+    }
+  },
+  "bandit": {
+    "command": "bandit -r src -f json",
+    "findings": [
+      {
+        "id": "B615",
+        "severity": "MEDIUM",
+        "file": "src/legalrag/generate.py",
+        "line": 160,
+        "disposition": "model revision not pinned"
+      },
+      {
+        "id": "B615",
+        "severity": "MEDIUM",
+        "file": "src/legalrag/generate.py",
+        "line": 164,
+        "disposition": "model revision not pinned"
+      },
+      {
+        "id": "B104",
+        "severity": "MEDIUM",
+        "file": "src/legalrag/ollama.py",
+        "line": 35,
+        "disposition": "false positive: address normalization map, not a listening socket"
+      }
+    ]
+  },
+  "pip_audit": {
+    "command": "pip-audit --no-deps --disable-pip -r constraints.txt --format json",
+    "packages": 61,
+    "raw_records": 4,
+    "unique_advisories": 2,
+    "application_exploitation_demonstrated": false
+  },
+  "docker": {
+    "server_version": "29.0.1",
+    "compose_config": "passed",
+    "image_build": "not run"
+  },
+  "probes": {
+    "script": "docs/review/reproduce_findings.py",
+    "result": "docs/review/reproductions.json",
+    "real_model_calls": 0,
+    "temporary_data_only": true
+  },
+  "not_verified": [
+    "Real-model retrieval and generation accuracy on current hardware",
+    "Browser end-to-end behavior",
+    "Docker image build and Linux runtime",
+    "Full penetration test or resource exhaustion attack",
+    "Independent legal/source-fidelity review"
+  ]
+}

@@ -1,0 +1,95 @@
+{
+  "citation_is_not_entailment": {
+    "status": "answered",
+    "kept": [
+      {
+        "text": "مدة تقديم الطلب تسعون يوماً.",
+        "sources": [
+          1
+        ],
+        "copied": false
+      }
+    ]
+  },
+  "ocr_missing_page": {
+    "pages": {
+      "p01": {
+        "expected": 1,
+        "found": 1,
+        "correct": 1,
+        "missing": [],
+        "spurious": [],
+        "recall": 1.0,
+        "critical": {
+          "12": true
+        }
+      }
+    },
+    "expected": 1,
+    "correct": 1,
+    "recall": 1.0,
+    "critical_failures": []
+  },
+  "ocr_spurious_digits": {
+    "pages": {
+      "p01": {
+        "expected": 1,
+        "found": 3,
+        "correct": 1,
+        "missing": [],
+        "spurious": [
+          "777",
+          "888"
+        ],
+        "recall": 1.0,
+        "critical": {
+          "12": true
+        }
+      },
+      "p02": {
+        "expected": 1,
+        "found": 1,
+        "correct": 1,
+        "missing": [],
+        "spurious": [],
+        "recall": 1.0,
+        "critical": {
+          "99": true
+        }
+      }
+    },
+    "expected": 2,
+    "correct": 2,
+    "recall": 1.0,
+    "critical_failures": []
+  },
+  "failed_ingest_overwrites_previous_corpus": {
+    "exit_code": 2,
+    "previous_corpus_preserved": false
+  },
+  "query_embeddings_per_search": {
+    "documents": 3,
+    "encoder_query_calls": 3
+  },
+  "valid_metadata_empty_embedding_matrix": {
+    "accepted_as_cache": true,
+    "hits": 0
+  },
+  "latin_only_line_with_keep_latin": "",
+  "schema_accepts_four_empty_claims": 4,
+  "truncated_reply_accepted": {
+    "schema_failure": false,
+    "gate_status": "answered",
+    "calls": [
+      {
+        "truncated": true,
+        "cut": true,
+        "stage": "claims"
+      }
+    ]
+  },
+  "legacy_server_foreign_host": {
+    "status": 200,
+    "body_bytes": 8484
+  }
+}

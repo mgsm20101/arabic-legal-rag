@@ -6,10 +6,13 @@ and every one of them fails *silently*, producing a plausible-looking dense
 number that is simply wrong:
 
 1. Embedding ``search_text`` instead of ``text``. ADR-004's aggressive
-   normalizer strips clitics, hamza forms and diacritics on purpose so BM25 can
+   normalizer strips clitics and shreds punctuation on purpose so BM25 can
    match inflections. A transformer is trained on natural Arabic; feeding it
    the stripped field degrades the vectors and the run ends with the wrong
    conclusion — "dense does not help on Arabic" — attributed to the model.
+   Folding letter forms on both sides was measured as a middle ground and
+   rejected — it cost more on the canonical questions than it bought on
+   misspelled ones (ADR-027). The model gets the corpus's own spelling.
 2. Dropping the E5 ``query:`` / ``passage:`` prefixes. E5 is asymmetric and was
    trained with them; without them retrieval quality drops with no error.
 3. Reading a stale embedding cache after the corpus was re-ingested. That
@@ -25,6 +28,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from legalrag.dense import DenseIndex, QUERY_PREFIX, corpus_fingerprint, encode_query  # noqa: E402
+from legalrag.normalize import orthographic_normalize, search_normalize  # noqa: E402
 from legalrag.fusion import reciprocal_rank_fusion  # noqa: E402
 from legalrag.retrieve import Hit, recall_at_k, reciprocal_rank  # noqa: E402
 
@@ -78,31 +82,65 @@ class StubEncoder:
 # ---------------------------------------------------------------------------
 
 
-def test_dense_embeds_verbatim_text_not_the_search_index():
-    """ADR-015. The search index is lossy by design (ADR-004); the model is not.
-
-    `search_text` here has hamza folded ("مسءول") and clitics stripped
-    ("لتزم"). Handing that to a transformer is not normalization, it is damage.
+def test_dense_embeds_article_text_never_the_lexical_index():
+    """ADR-015. The lexical index is lossy by design (ADR-004): `search_text`
+    here has clitics stripped ("لتزم متحكم") and punctuation shredded. Handing
+    that to a transformer is not normalization, it is damage.
     """
     enc = StubEncoder()
     DenseIndex(DOCS, encoder=enc)
 
     embedded = " ".join(enc.seen)
-    assert "يلتزم المتحكم بإبلاغ المركز" in embedded, "verbatim text was not embedded"
-    assert "مسءول" not in embedded, "the aggressive search_text field was embedded"
-    assert "لتزم متحكم" not in embedded
+    assert DOCS[0]["text"] in embedded, "the article text was not embedded"
+    assert "لتزم متحكم" not in embedded, "the clitic-stripped search_text was embedded"
+    assert "المتحكم" in embedded, "a clitic was stripped from a word the model should see whole"
 
 
-def test_query_is_normalized_for_bm25_but_not_for_dense():
-    """The same query text takes two different paths on purpose."""
+def test_the_query_reaches_the_model_in_its_own_spelling():
+    """ADR-015, and ADR-027's negative result.
+
+    Two wrong paths meet here. `search_normalize` would hand the model BM25
+    keys — clitics gone, punctuation gone — which is the mistake ADR-015 exists
+    to prevent. `orthographic_normalize` would fold letter forms, which is much
+    gentler and was still measured as a net loss (EVAL.md Run 9). So: verbatim.
+
+    The cost is recorded rather than hidden: a query typed "الافراد" does not
+    reach "الأفراد", and this test is where that shows up if it ever changes.
+    """
     enc = StubEncoder()
     idx = DenseIndex(DOCS, encoder=enc)
     enc.seen.clear()
 
-    idx.search("هل الشركة مطالبة بتعيين موظف مسؤول عن الخصوصية؟", k=2)
+    query = "هل الشركة مطالبة بتعيين موظف مسؤول عن الخصوصية؟"
+    idx.search(query, k=2)
 
-    asked = " ".join(enc.seen)
-    assert "مسؤول" in asked, "the query reached the model stripped of its hamza"
+    asked = enc.seen[0].removeprefix(QUERY_PREFIX)
+    assert asked == query, "the query took some other path"
+    assert asked != search_normalize(query), "the query reached the model as BM25 keys"
+    assert asked != orthographic_normalize(query), "the rejected fold is back on the query side"
+
+    # Spelled out, so a future change has to face what the equality above claims.
+    assert "مسؤول" in asked, "a seated hamza was folded"
+    assert "الشركة" in asked, "ta marbuta was folded"
+    assert "؟" in asked, "punctuation was shredded — that is search_normalize"
+
+
+def test_both_sides_of_the_dense_path_get_the_same_fold():
+    """A fold applied to one side only is worse than none: it moves the query
+    away from the passages instead of onto them."""
+    seen_fold = []
+
+    def spy(text: str) -> str:
+        seen_fold.append(text)
+        return text.replace("ة", "ه")
+
+    enc = StubEncoder()
+    idx = DenseIndex(DOCS, encoder=enc, fold=spy)
+    passages_folded = len(seen_fold)
+    assert passages_folded == len(DOCS)
+
+    idx.search("ما مدة الإبلاغ؟", k=1)
+    assert len(seen_fold) == passages_folded + 1, "the query did not go through the same fold"
 
 
 # ---------------------------------------------------------------------------
@@ -209,7 +247,7 @@ def test_encode_query_matches_the_manually_normalized_vector():
 def test_encode_query_honours_a_custom_query_prefix():
     enc = StubEncoder()
     encode_query(enc, "سؤال", query_prefix="")
-    assert enc.seen == ["سؤال"]
+    assert enc.seen == ["سؤال"], "an empty prefix must not change the query itself"
 
 
 def test_search_with_vector_matches_search_on_the_same_query():
@@ -299,12 +337,27 @@ def test_a_stale_cache_is_rejected_not_silently_reused(tmp_path):
 # does not actually describe.
 
 
-def _tamper_embeddings(cache_path, new_embeddings):
+def _tamper_embeddings(cache_path, new_embeddings, rows=None):
     """Rewrite `cache_path`'s embeddings array in place, keeping its metadata
-    (fingerprint/model/passage_prefix) exactly as a legitimate cache wrote it."""
+    (fingerprint/model/passage_prefix/window_overlap) exactly as a legitimate
+    cache wrote it.
+
+    The row map is carried over too, and resized to the new embeddings unless
+    the caller is tampering with it deliberately. Dropping it instead would make
+    every test below pass on a missing-key rebuild rather than on the check it
+    names.
+    """
     with np.load(cache_path, allow_pickle=False) as z:
         meta = str(z["meta"])
-    np.savez(cache_path, embeddings=new_embeddings, meta=np.array(meta))
+        kept = z["rows"]
+    if rows is None:
+        rows = np.arange(new_embeddings.shape[0], dtype="int32") if kept.size else kept
+    np.savez(
+        cache_path,
+        embeddings=new_embeddings,
+        meta=np.array(meta),
+        rows=np.asarray(rows, dtype="int32"),
+    )
 
 
 def test_zero_rows_for_a_nonempty_corpus_is_rejected(tmp_path):

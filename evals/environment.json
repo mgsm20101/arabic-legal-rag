@@ -6,8 +6,11 @@
     "cpu": "Intel64 Family 6 Model 158 Stepping 10, GenuineIntel",
     "logical_cores": 12,
     "total_ram_gb": 15.9,
-    "gpu": null,
-    "note": "CPU-only. Retrieval and reranking run on CPU; no CUDA device present."
+    "gpu": {
+      "device": "NVIDIA GeForce GTX 1050 Ti, 4096 MiB",
+      "visible_to_torch": false,
+      "note": "NVIDIA GeForce GTX 1050 Ti, 4096 MiB present, but the installed torch is a CPU build (torch.cuda.is_available() is False) — retrieval and reranking run on CPU. Ollama reaches the card directly and offloads part of a generator into its VRAM; each generation row records the GPU share its run actually got."
+    }
   },
   "runtime": {
     "python": "3.14.6",

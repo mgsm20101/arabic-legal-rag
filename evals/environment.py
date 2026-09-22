@@ -101,6 +101,52 @@ def _total_ram_gb() -> float | None:
         return None
 
 
+def _gpu() -> dict:
+    """What GPU this machine actually has, and which runtime can reach it.
+
+    Hardcoding `None` here was a real error: this box holds a GTX 1050 Ti, and
+    a "CPU-only" note claimed otherwise for every row that pointed at this
+    file. The distinction that matters is not presence but reach — the torch
+    installed here is the `+cpu` build, so retrieval and reranking run on CPU
+    whatever the machine has, while Ollama offloads part of a generator into
+    the same card's VRAM. Two different answers to "is there a GPU", and a
+    latency number is unreadable without knowing which one applies to it.
+    """
+    device = None
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,memory.total",
+             "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=30,
+        ).stdout.strip().splitlines()
+        if out:
+            device = out[0].strip()
+    except Exception:
+        pass
+
+    torch_cuda = None
+    try:
+        import torch
+
+        torch_cuda = bool(torch.cuda.is_available())
+    except Exception:
+        pass
+
+    if device is None:
+        note = ("No NVIDIA device reported by nvidia-smi. Everything here "
+                "runs on CPU.")
+    elif torch_cuda:
+        note = (f"{device} present and visible to torch.")
+    else:
+        note = (f"{device} present, but the installed torch is a CPU build "
+                "(torch.cuda.is_available() is False) — retrieval and "
+                "reranking run on CPU. Ollama reaches the card directly and "
+                "offloads part of a generator into its VRAM; each generation "
+                "row records the GPU share its run actually got.")
+
+    return {"device": device, "visible_to_torch": torch_cuda, "note": note}
+
+
 def build() -> dict:
     return {
         "environment_ref": "env-001",
@@ -110,8 +156,7 @@ def build() -> dict:
             "cpu": platform.processor(),
             "logical_cores": os.cpu_count(),
             "total_ram_gb": _total_ram_gb(),
-            "gpu": None,
-            "note": "CPU-only. Retrieval and reranking run on CPU; no CUDA device present.",
+            "gpu": _gpu(),
         },
         "runtime": {
             "python": platform.python_version(),

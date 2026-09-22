@@ -1,7 +1,7 @@
 PY ?= python3
 export PYTHONPATH := src
 
-.PHONY: setup ingest eval verify-refs verify-refs-write test all
+.PHONY: setup ingest eval ablate adversarial reindex verify-refs verify-refs-write test all
 
 ## install the app and test dependencies at the pinned versions
 setup:
@@ -15,6 +15,14 @@ ingest:
 ## THE command: load the eval set and print the scoreboard
 ablate:
 	$(PY) tasks.py ablate
+
+## named failure-mode probes on their own split — not a score (ADR-026)
+adversarial:
+	$(PY) tasks.py adversarial
+
+## recompute stored documents' embeddings after the index format changes
+reindex:
+	$(PY) tasks.py reindex
 
 eval:
 	$(PY) -m legalrag.evaluate

@@ -521,3 +521,56 @@ def test_no_compose_service_uses_a_dangerous_option():
     assert services, "no service defined"
     for name, service in services.items():
         assert not _hardening_violations(name, service), _hardening_violations(name, service)
+
+
+# ---------------------------------------------------------------------------
+# the base image
+# ---------------------------------------------------------------------------
+
+# `sha256:` plus 64 lowercase hex, which is the only digest form a FROM takes.
+_DIGEST = re.compile(r"@sha256:[0-9a-f]{64}$")
+
+
+def _base_images(dockerfile: str) -> list[str]:
+    """The image reference each FROM builds on, minus its flags and `AS name`."""
+    bases = []
+    for keyword, arguments in _instructions(dockerfile):
+        if keyword != "FROM":
+            continue
+        words = [w for w in arguments.split() if not w.startswith("--")]
+        bases.append(words[0])
+    return bases
+
+
+def test_every_base_image_is_pinned_to_a_digest():
+    """A tag is a moving target: `python:3.14-slim` is rebuilt whenever a base package
+    gets a CVE fix, so a rebuild of this file without a digest can quietly produce a
+    different image from the one every other test in this file was written against.
+
+    Nothing here builds, so this is the only place that failure could be caught.
+    """
+    bases = _base_images(_read("Dockerfile"))
+    assert bases, "the Dockerfile has no FROM at all"
+    unpinned = [b for b in bases if not _DIGEST.search(b)]
+    assert not unpinned, f"base image(s) not pinned to a digest: {unpinned}"
+
+
+def test_every_base_image_keeps_its_tag_beside_the_digest():
+    """`python@sha256:cad9a2…` is valid and tells a reader nothing — not the language,
+    not the version, not whether it is the slim variant. The tag is the documentation;
+    the digest is what Docker actually resolves."""
+    for base in _base_images(_read("Dockerfile")):
+        name = base.split("@", 1)[0]
+        assert ":" in name, f"{base} is pinned but names no tag"
+
+
+@pytest.mark.parametrize("reference, pinned", [
+    ("python:3.14-slim@sha256:" + "a" * 64, True),
+    ("python:3.14-slim", False),
+    ("python@sha256:" + "b" * 64, True),          # pinned, but the tag test above rejects it
+    ("python:3.14-slim@sha256:" + "A" * 64, False),   # digests are lowercase hex
+    ("python:3.14-slim@sha256:" + "c" * 63, False),   # one character short
+    ("python:sha256-lookalike", False),
+])
+def test_the_digest_pattern_accepts_only_a_real_digest(reference, pinned):
+    assert bool(_DIGEST.search(reference)) is pinned

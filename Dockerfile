@@ -8,9 +8,24 @@
 # host directory mounted at run time; the encoder downloads into the hf-cache
 # volume on first use (docker-compose.yml).
 
-# TODO: pin this tag to a digest (python:3.14-slim@sha256:...) once the image
-# can be pulled, so a rebuild cannot silently pick up a different base.
-FROM python:3.14-slim
+# Pinned by digest, with the tag kept beside it: the tag is for a reader, the
+# digest is what Docker resolves. `python:3.14-slim` is a moving target — it is
+# rebuilt whenever a base package gets a CVE fix — so a rebuild of this file
+# without the digest could quietly produce a different image from the one the
+# tests ran against, which is the one property a container is supposed to have.
+#
+# This is an OCI image index, not a single-platform manifest, so linux/amd64 and
+# linux/arm64 both still resolve from it. Pinning one platform's manifest digest
+# would build on this machine and fail on an Apple Silicon one.
+#
+# Resolved 2026-09-19; holds Python 3.14.7; image built 2026-09-01.
+# To move it, take the new digest and update the date and version above:
+#   docker pull python:3.14-slim && docker inspect --format '{{index .RepoDigests 0}}' python:3.14-slim
+# or, without Docker (what was used here — the daemon was not running):
+#   T=$(curl -s "https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/python:pull" | python -c "import sys,json;print(json.load(sys.stdin)['token'])")
+#   curl -sI -H "Authorization: Bearer $T" -H "Accept: application/vnd.oci.image.index.v1+json" \
+#        https://registry-1.docker.io/v2/library/python/manifests/3.14-slim | grep -i docker-content-digest
+FROM python:3.14-slim@sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6
 
 # A build-time-only guard: if a RUN step ever tried to load a model (it must
 # not — see the no-build-time-download check in tests/test_container_files.py),

@@ -11,6 +11,11 @@ below has a row in **[`EVIDENCE.md`](EVIDENCE.md)** naming the command that
 produced it, the commit it ran at, the environment, the eval set and the raw
 result file. A number with no row there is not quotable.
 
+> **Citing this from somewhere else?** Use the
+> [`portfolio-v1`](https://github.com/mgsm20101/arabic-legal-rag/tree/portfolio-v1)
+> tag, not `main`. The tag pins the numbers to the code that produced them;
+> `main` will move.
+
 ---
 
 ## Problem

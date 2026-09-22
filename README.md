@@ -27,6 +27,8 @@ python tasks.py verify-refs              # check every ground-truth article ref
 python tasks.py eval                     # BM25 scoreboard — fast, no model needed
 python tasks.py ablate                   # 4 configs compared: BM25/dense/hybrid/+rerank
 python tasks.py serve                    # local test page at http://127.0.0.1:8000
+python tasks.py app                      # the document Q&A app (needs Ollama; see below)
+python tasks.py reindex                  # repair stored documents after an upgrade
 python tasks.py test                     # run the test suite
 ```
 
@@ -44,6 +46,44 @@ The demo layer's other settings are listed in `.env.example`.
 `python tasks.py eval` runs from a fresh clone with no corpus present — it
 reports the question set and an empty result column rather than failing. That is
 deliberate: the scoreboard exists before the system does.
+
+## Running the app
+
+`python tasks.py app` serves the document Q&A layer (ADR-023) on
+http://127.0.0.1:8000. It answers only about documents you upload — it never
+reads the ingested statute corpus, which exists for the eval harness and has
+not passed its fidelity check (ADR-018).
+
+It needs a local Ollama serving the generator `.env.example` names:
+
+```bash
+ollama serve                             # in its own terminal
+ollama pull gemma3:4b                    # once; ADR-024 pins this model
+curl -s http://127.0.0.1:11434/api/tags  # confirm the server sees it
+```
+
+Then `curl -s -H 'X-LegalRAG: 1' http://127.0.0.1:8000/api/health` should
+report `"reachable": true`. If `gpu_share` comes back low (under ~0.3), every
+answer runs 3–4× slower; unload the model and let the next request reload it.
+
+### After upgrading
+
+The embedding cache records the format its vectors were written in, and an
+index written by an older version is refused rather than trusted. That is
+deliberate — ADR-026 found the old vectors were silently truncated — but it
+means **documents uploaded before an upgrade stop opening**, and the app
+reports them as damaged, which reads as "my file is broken" when nothing about
+the file changed.
+
+```bash
+python tasks.py reindex --dry-run        # which stored documents are stale
+python tasks.py reindex                  # recompute them from their chunks
+```
+
+It recomputes `embeddings.npz` from `chunks.jsonl`, which is the document as
+the library parsed it, so the answers are unchanged. Restart the app
+afterwards: it holds its indexes in memory. `--all` recomputes everything,
+for when the vectors load but were produced by something since found wrong.
 
 ## The test page
 

@@ -9,6 +9,7 @@ through `_QueriesOnly`, which raises `IndexDamaged`. This file is the one
 test that walks that whole chain end to end instead of trusting the trace.
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -21,7 +22,7 @@ np = pytest.importorskip("numpy")
 
 from legalrag import dense  # noqa: E402
 from legalrag.chunking import Chunk  # noqa: E402
-from legalrag.docindex import IndexDamaged, index_docs, load_index  # noqa: E402
+from legalrag.docindex import IndexDamaged, index_docs, load_index, rebuild_index  # noqa: E402
 from legalrag.docstore import CHUNKS, EMBEDDINGS, write_chunks  # noqa: E402
 from stubs import KeywordEncoder  # noqa: E402
 
@@ -78,3 +79,89 @@ def test_an_intact_stored_document_still_loads_without_touching_the_model(tmp_pa
 
     assert not encoder.seen, "an intact cache should never need the encoder at all"
     assert set(result.chunks) == {c.id for c in chunks}
+
+
+# ---------------------------------------------------------------------------
+# rebuild_index: the repair for a cache the format moved past
+# ---------------------------------------------------------------------------
+#
+# `load_index` may not embed a passage, so a change to the cache format leaves
+# every document stored before it unopenable — and indistinguishable, to the
+# library, from a file the user broke. These pin the way back.
+
+
+def _downgrade_to_pre_window_format(embeddings_path: Path) -> None:
+    """A cache exactly as it was written before ADR-026: no row map, no fold name.
+
+    Not a corruption — this is what a real document uploaded in an earlier version has on
+    disk, and the shape that sent a working library to "damaged" after an upgrade.
+    """
+    with np.load(embeddings_path, allow_pickle=False) as z:
+        embeddings, meta = z["embeddings"], json.loads(str(z["meta"]))
+    for key in ("window_overlap", "windows", "fold"):
+        meta.pop(key, None)
+    np.savez(
+        embeddings_path,
+        embeddings=embeddings,
+        meta=np.array(json.dumps(meta, ensure_ascii=False)),
+    )
+
+
+def test_a_cache_from_before_the_row_map_reads_as_damaged(tmp_path):
+    """The defect this repair exists for, stated first: nothing is wrong with the document."""
+    doc_dir = tmp_path / "doc-3"
+    chunks = _seed_document(doc_dir, KeywordEncoder())
+    _downgrade_to_pre_window_format(doc_dir / EMBEDDINGS)
+
+    with pytest.raises(IndexDamaged):
+        load_index(doc_dir, TITLE, len(chunks), KeywordEncoder(), dense.DEFAULT_MODEL)
+
+
+def test_rebuild_index_makes_such_a_document_load_again(tmp_path):
+    doc_dir = tmp_path / "doc-4"
+    chunks = _seed_document(doc_dir, KeywordEncoder())
+    _downgrade_to_pre_window_format(doc_dir / EMBEDDINGS)
+
+    rows = rebuild_index(doc_dir, TITLE, len(chunks), KeywordEncoder(), dense.DEFAULT_MODEL)
+
+    assert rows == len(chunks)
+    quiet = KeywordEncoder()
+    result = load_index(doc_dir, TITLE, len(chunks), quiet, dense.DEFAULT_MODEL)
+    assert not quiet.seen, "the rebuilt cache was not read back; it was embedded again"
+    assert set(result.chunks) == {c.id for c in chunks}
+
+
+def test_rebuild_index_ranks_the_same_as_the_original(tmp_path):
+    """A repair that quietly changed the answers would be worse than the failure it fixes."""
+    doc_dir = tmp_path / "doc-5"
+    chunks = _seed_document(doc_dir, KeywordEncoder())
+    query = chunks[1].text[:20]
+    before = [h.id for h in load_index(
+        doc_dir, TITLE, len(chunks), KeywordEncoder(), dense.DEFAULT_MODEL).dense.search(query, k=2)]
+
+    _downgrade_to_pre_window_format(doc_dir / EMBEDDINGS)
+    rebuild_index(doc_dir, TITLE, len(chunks), KeywordEncoder(), dense.DEFAULT_MODEL)
+
+    after = [h.id for h in load_index(
+        doc_dir, TITLE, len(chunks), KeywordEncoder(), dense.DEFAULT_MODEL).dense.search(query, k=2)]
+    assert after == before
+
+
+def test_rebuild_index_refuses_when_the_chunks_are_the_damaged_part(tmp_path):
+    """chunks.jsonl is the document; embeddings.npz is derived from it. Lose the first and
+    there is nothing to derive from — re-uploading the file is the only repair, and saying so
+    is more use than a rebuilt index over the wrong text."""
+    doc_dir = tmp_path / "doc-6"
+    chunks = _seed_document(doc_dir, KeywordEncoder())
+    (doc_dir / CHUNKS).write_text("{not json at all\n", encoding="utf-8")
+
+    with pytest.raises(IndexDamaged):
+        rebuild_index(doc_dir, TITLE, len(chunks), KeywordEncoder(), dense.DEFAULT_MODEL)
+
+
+def test_rebuild_index_refuses_a_chunk_count_that_does_not_match_the_metadata(tmp_path):
+    doc_dir = tmp_path / "doc-7"
+    chunks = _seed_document(doc_dir, KeywordEncoder())
+
+    with pytest.raises(IndexDamaged, match="not 99"):
+        rebuild_index(doc_dir, TITLE, 99, KeywordEncoder(), dense.DEFAULT_MODEL)

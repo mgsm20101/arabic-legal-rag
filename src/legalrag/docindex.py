@@ -71,6 +71,33 @@ def load_index(doc_dir: Path, title: str, chunk_count: int, encoder: Encoder, mo
     return DocumentIndex(dense=index, chunks={c.id: c for c in chunks})
 
 
+def rebuild_index(doc_dir: Path, title: str, chunk_count: int, encoder: Encoder, model_name: str) -> int:
+    """Recompute a stored document's embeddings.npz from its chunks, and return how many rows.
+
+    The counterpart to `load_index`, and deliberately a separate call rather than a fallback inside
+    it. `load_index` may never embed a passage: a search that quietly paid for a full re-encode
+    would be a surprise measured in minutes, and a cache that will not load is exactly the signal
+    that its vectors should stop being trusted. But that leaves stored documents stranded whenever
+    the cache format changes — every index written before ADR-026 added the window row map, or
+    before ADR-027 recorded which spelling the vectors are in, is refused on load and reads to the
+    caller as damage. It is not damage: chunks.jsonl is the document, embeddings.npz is derived
+    from it, and deriving it again is always correct while the chunks are intact.
+
+    So: the operator asks for this explicitly, knowing it loads the model and costs what a fresh
+    upload costs. IndexDamaged when chunks.jsonl is not what the library wrote — that one cannot be
+    recovered here, and re-uploading the file is the only repair.
+    """
+    with _reading(CHUNKS):
+        chunks = read_chunks(doc_dir / CHUNKS)
+    if len(chunks) != chunk_count:
+        raise IndexDamaged(f"chunks.jsonl holds {len(chunks)} chunks, not {chunk_count}")
+    index = DenseIndex(
+        index_docs(chunks, title), encoder=encoder, cache_path=doc_dir / EMBEDDINGS, model_name=model_name
+    )
+    index.save()
+    return len(index.rows)
+
+
 @contextmanager
 def _reading(name: str) -> Iterator[None]:
     """A failure to read the stored file `name`, sorted into damage or a read that failed just now."""
@@ -106,10 +133,22 @@ class LazyEncoder:
         self._model = None
         self._lock = threading.Lock()
 
-    def encode(self, texts, **kwargs):
+    def warm(self) -> None:
+        """Load the model now, so nothing else has to wait for it later.
+
+        Lazy loading keeps `Library(...)` cheap, but it hands the whole cost
+        to whoever encodes first -- 244.9s in the container's first run, all
+        of it inside one user's request. Calling this off the request path at
+        startup moves the cost where it belongs. Idempotent, and safe to call
+        while another thread is already loading: both take the same lock, and
+        the second one finds the model there.
+        """
         with self._lock:
             if self._model is None:
                 self._model = _load_model(self.model_name)
+
+    def encode(self, texts, **kwargs):
+        self.warm()
         return self._model.encode(texts, **kwargs)
 
 

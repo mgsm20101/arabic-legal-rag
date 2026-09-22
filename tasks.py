@@ -5,6 +5,7 @@
     python tasks.py verify-refs [--write] check ground-truth article references
     python tasks.py eval                  load the eval set, print the scoreboard
     python tasks.py ablate                4 retrieval configs compared (M1/A4)
+    python tasks.py adversarial           named failure-mode probes (not a score)
     python tasks.py broken-words          find words split by a stray space (ADR-018)
     python tasks.py ocr-gate <json>       score an OCR engine on digit accuracy (ADR-019)
     python tasks.py ocr-to-raw <in> <out> OCR pages -> raw text for ingest (ADR-020)
@@ -62,11 +63,17 @@ def _run_module(module: str, *args: str) -> int:
     if module == "legalrag.ablate":
         from legalrag.ablate import main
         return main(list(args))
+    if module == "legalrag.adversarial":
+        from legalrag.adversarial import main
+        return main(list(args))
     if module == "legalrag.server":
         from legalrag.server import main
         return main(list(args))
     if module == "legalrag.webapp":
         from legalrag.webapp import main
+        return main(list(args))
+    if module == "legalrag.reindex":
+        from legalrag.reindex import main
         return main(list(args))
     raise ValueError(module)
 
@@ -80,6 +87,7 @@ def _subprocess(*cmd: str) -> int:
 TASKS = {
     "eval": lambda a: _run_module("legalrag.evaluate"),
     "ablate": lambda a: _run_module("legalrag.ablate", *a),
+    "adversarial": lambda a: _run_module("legalrag.adversarial", *a),
     "broken-words": lambda a: _run_module("legalrag.broken_words", *a),
     "ocr-gate": lambda a: _run_module("legalrag.ocr_gate", *a),
     "ocr-to-raw": lambda a: _run_module("legalrag.ocr_text", *a),
@@ -88,6 +96,7 @@ TASKS = {
     "ingest": lambda a: _run_module("legalrag.ingest", *a),
     "serve": lambda a: _run_module("legalrag.server", *a),
     "app": lambda a: _run_module("legalrag.webapp", *a),
+    "reindex": lambda a: _run_module("legalrag.reindex", *a),
     "verify-refs": lambda a: _run_module("legalrag.verify_refs", *a),
     "test": lambda a: _subprocess(sys.executable, "-m", "pytest", "-q"),
     "setup": lambda a: _subprocess(

@@ -36,14 +36,18 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from legalrag.answer_eval import TOP_K, rows_path  # noqa: E402
+from legalrag.answer_eval import TOP_K, _read_run_meta, rows_path  # noqa: E402
 from legalrag.answer_report import (  # noqa: E402
     B2_MIN,
     CITED_EXPECTED_MIN,
     FABRICATED_MAX,
 )
 from legalrag.dense import CORPUS_PATH, load_docs  # noqa: E402
-from legalrag.evaluate import load_meta  # noqa: E402
+from legalrag.evaluate import (  # noqa: E402
+    load_meta,
+    load_questions,
+    question_set_fingerprint,
+)
 from legalrag.generate import MAX_NEW_TOKENS, TEMPERATURE, parse_model_spec  # noqa: E402
 
 REGISTRY = ROOT / "evals" / "registry"
@@ -191,6 +195,71 @@ def summarise(rows: list[dict], spec: str, contract: str) -> dict:
     }
 
 
+def _stale_against_current_questions(model_spec: str, contract: str) -> str | None:
+    """Refuse to stamp the current commit onto answers from a different eval set.
+
+    This promoter does not run anything: it reads whatever rows are sitting in
+    the git-ignored `runs/` directory and writes them into the registry under
+    HEAD. That separation is deliberate — a measurement and its promotion are
+    different commits — but it means the rows' provenance was assumed rather
+    than checked, and the assumption broke the first time the question set
+    grew. The promoter published a row reading `questions_total: 20` beside
+    `split: {dev: 40}`, under a commit that had never produced those answers.
+
+    A missing fingerprint is refused too, not waved through. Rows saved before
+    the fingerprint existed are indistinguishable from rows saved against a
+    question set that has since changed, and "indistinguishable" is precisely
+    the case this guard exists for.
+    """
+    questions, errors = load_questions()
+    if errors:
+        return "question set does not load; fix that before promoting:\n  - " + (
+            "\n  - ".join(errors)
+        )
+
+    meta = _read_run_meta(model_spec, contract) or {}
+    recorded = meta.get("question_set")
+    rerun = (
+        f"re-run it:  python tasks.py answer-eval --model {model_spec} "
+        f"--contract {contract} --overwrite"
+    )
+    if not recorded or not recorded.get("fingerprint"):
+        return (
+            "the saved run carries no question-set fingerprint, so which questions\n"
+            "produced it cannot be established. It predates the fingerprint or was\n"
+            "written by hand; either way it cannot back a registry row.\n"
+            f"  {rerun}"
+        )
+
+    if recorded["fingerprint"] == question_set_fingerprint(questions):
+        return None
+
+    saved_ids = set(recorded.get("ids") or [])
+    now_ids = {q.id for q in questions}
+    added = sorted(now_ids - saved_ids)
+    dropped = sorted(saved_ids - now_ids)
+
+    def _names(ids: list[str]) -> str:
+        return ", ".join(ids[:6]) + (" …" if len(ids) > 6 else "")
+
+    detail = []
+    if added:
+        detail.append(f"  {len(added)} added since that run: {_names(added)}")
+    if dropped:
+        detail.append(f"  {len(dropped)} no longer present: {_names(dropped)}")
+    if not detail:
+        detail.append("  same ids, but wording or expected articles changed")
+
+    return (
+        f"the saved run scored a different question set "
+        f"({recorded.get('n', '?')} questions) from the one on disk "
+        f"({len(questions)} questions).\n"
+        + "\n".join(detail)
+        + "\nPromoting it would stamp HEAD onto answers HEAD never produced.\n"
+        + f"  {rerun}"
+    )
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--model", default="ollama:gemma3:4b")
@@ -201,6 +270,11 @@ def main() -> int:
     if not saved.exists():
         print(f"no saved run at {saved} — run `python tasks.py answer-eval "
               f"--model {a.model}` first.")
+        return 2
+
+    stale = _stale_against_current_questions(a.model, a.contract)
+    if stale is not None:
+        print(stale)
         return 2
 
     rows = json.loads(saved.read_text(encoding="utf-8"))

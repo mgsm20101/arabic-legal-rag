@@ -11,6 +11,7 @@ Run: ``python tasks.py eval``  (alias: ``make eval``)
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections import Counter
 from dataclasses import dataclass
@@ -179,6 +180,34 @@ def load_questions(
         questions.append(Question(**{k: raw[k] for k in Question.__annotations__ if k in raw}))
 
     return questions, errors
+
+
+def question_set_fingerprint(questions) -> str:
+    """Identify the exact eval set a run scored, so a result cannot outlive it.
+
+    Covers what a saved answer is only interpretable against: which questions
+    were asked, what each one expects, and whether it was answerable at all.
+    Wording is deliberately included — a reworded question under the same id is
+    a different question, and re-using an old answer for it would be silent.
+
+    Not a security hash; it exists so that promoting a stale run into the
+    registry fails loudly instead of stamping today's commit onto answers
+    generated against a question set that no longer exists.
+    """
+    parts = [
+        "|".join(
+            [
+                q.id,
+                q.category,
+                q.split,
+                "1" if q.answerable else "0",
+                ",".join(sorted(q.expected_articles)),
+                q.question.strip(),
+            ]
+        )
+        for q in sorted(questions, key=lambda q: q.id)
+    ]
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
 
 
 def corpus_size(path: Path = CORPUS_PATH) -> int | None:

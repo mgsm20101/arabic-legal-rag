@@ -10,9 +10,9 @@ It adds one thing the printed table does not have: 95% intervals on Recall@5
 and on MRR. MRR needs one as much as recall does — once the recall intervals
 overlap, MRR is the metric a decision would actually rest on, and an unqualified
 MRR gap is exactly the kind of number this repository refuses to publish.
-With 15 scored questions the intervals are wide enough to overlap, and that is
+At 30 scored questions every interval still overlaps every other, and that is
 the point. `0.767` written alone reads like three significant figures of
-precision that 15 questions cannot support.
+precision this eval set cannot support.
 
 The interval is a percentile bootstrap over the per-question recall values, not
 a Wilson interval: recall is fractional on `multi_article` questions (two
@@ -43,7 +43,6 @@ from legalrag.ablate import (  # noqa: E402
 from legalrag.dense import load_docs  # noqa: E402
 from legalrag.evaluate import binding_problem, corpus_laws, load_meta, load_questions  # noqa: E402
 from legalrag.rerank import CANDIDATE_DEPTH  # noqa: E402
-from legalrag.retrieve import recall_at_k, reciprocal_rank  # noqa: E402
 
 
 def _git(*args: str) -> str:
@@ -104,14 +103,12 @@ def main(out: Path | None, resamples: int, seed: int) -> int:
     results = []
     for cfg in configs:
         cfg.run(answerable, EVAL_K)
-        # One search per question, both metrics from the same hits. This used to
-        # search a second time just to collect the per-question recall, which on
-        # the reranked configuration meant paying its ~6 s per question twice.
-        hits = [cfg.search(q.question, EVAL_K) for q in answerable]
-        per_q = [recall_at_k(q.expected_articles, h) for q, h in zip(answerable, hits)]
-        per_q_rr = [
-            reciprocal_rank(q.expected_articles, h) for q, h in zip(answerable, hits)
-        ]
+        # `cfg.run` already scored every question; it just used to throw the
+        # per-question values away, so this loop searched the whole set again to
+        # get them back — about six seconds per question on the reranked
+        # configuration, for numbers that had already been computed.
+        per_q = [r for r, _ in cfg.per_question]
+        per_q_rr = [m for _, m in cfg.per_question]
         results.append(
             {
                 "configuration": cfg.name,
@@ -154,9 +151,17 @@ def main(out: Path | None, resamples: int, seed: int) -> int:
         "results": results,
         "candidate_ceiling_recall_at_20": round(ceiling, 3) if ceiling else None,
         "reading": (
-            "Differences here are a direction, not a magnitude. With 15 scored "
-            "questions the intervals overlap; 'dense leads' is supported, "
-            "'dense leads by 0.433' is not."
+            "No ordering between these configurations is supported by this eval "
+            "set. At 30 scored questions every Recall@5 interval overlaps every "
+            "other, and so does every MRR interval — including BM25 against "
+            "dense, which was the one comparison that survived at 15 questions. "
+            "Doubling the question count did not narrow the gaps because BM25's "
+            "point estimate rose faster than the intervals shrank. Per-category "
+            "differences are much larger than the aggregate ones and are where "
+            "this table is actually informative. These are unpaired marginal "
+            "intervals, which is conservative: every configuration answers the "
+            "same questions, so a paired test would have more power and is the "
+            "next experiment."
         ),
         "measured_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }

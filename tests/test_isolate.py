@@ -74,7 +74,16 @@ def test_a_worker_that_hangs_is_killed_within_roughly_the_timeout_not_the_full_s
 # not that it died on schedule (the test above owns that), so widening the gap from
 # 2-against-5 to 8-against-60 strengthens "well before the full sleep" while giving
 # start-up room it demonstrably needed. It costs ~6s of suite time, once.
-SPAWN_HEADROOM_SECONDS = 8.0
+#
+# Later: the same flake reappeared in three more tests during a heavy run, including
+# one whose worker only returns a string — a trivial worker timed out at 5.0s, which
+# can only be start-up. Those tests were making the same mistake in a quieter way:
+# each picked its own comfortable-looking timeout, and every one of them was really
+# a bet on how fast a fresh Windows interpreter starts on a loaded machine. None of
+# them is a timing test. `SPAWN_HEADROOM_SECONDS` is now the single place that bet
+# is made, so raising it once fixes all of them, and no test asserts speed unless
+# that is the behaviour it exists to check.
+SPAWN_HEADROOM_SECONDS = 20.0
 UNREACHABLE_SLEEP = 60.0
 
 
@@ -113,12 +122,12 @@ def test_a_worker_that_hangs_leaves_no_process_still_alive_afterward():
 
 
 def test_a_worker_that_returns_quickly_returns_its_value():
-    assert run_isolated(_returns_this, ("hello",), timeout_seconds=5.0) == "hello"
+    assert run_isolated(_returns_this, ("hello",), timeout_seconds=SPAWN_HEADROOM_SECONDS) == "hello"
 
 
 def test_a_worker_that_raises_surfaces_as_a_crash_chaining_the_original_exception():
     with pytest.raises(IsolationCrash) as failed:
-        run_isolated(_raises_this, ("boom",), timeout_seconds=5.0)
+        run_isolated(_raises_this, ("boom",), timeout_seconds=SPAWN_HEADROOM_SECONDS)
 
     assert "boom" in str(failed.value)
     assert isinstance(failed.value.__cause__, ValueError)
@@ -127,14 +136,14 @@ def test_a_worker_that_raises_surfaces_as_a_crash_chaining_the_original_exceptio
 
 def test_a_worker_that_exits_hard_is_a_crash_not_a_silent_hang_or_queue_empty():
     with pytest.raises(IsolationCrash) as failed:
-        run_isolated(_crashes_hard, (), timeout_seconds=5.0)
+        run_isolated(_crashes_hard, (), timeout_seconds=SPAWN_HEADROOM_SECONDS)
 
     assert "without producing a result" in str(failed.value)
 
 
 def test_a_moderately_large_result_round_trips_through_the_queue():
     size = 2_000_000
-    result = run_isolated(_returns_a_lot_of_data, (size,), timeout_seconds=15.0)
+    result = run_isolated(_returns_a_lot_of_data, (size,), timeout_seconds=SPAWN_HEADROOM_SECONDS + 10.0)
     assert result == "x" * size
 
 
@@ -144,7 +153,7 @@ def test_two_concurrent_isolated_calls_do_not_interfere_with_each_others_results
 
     def _run(key, value):
         try:
-            results[key] = run_isolated(_returns_this, (value,), timeout_seconds=10.0)
+            results[key] = run_isolated(_returns_this, (value,), timeout_seconds=SPAWN_HEADROOM_SECONDS)
         except BaseException as e:  # noqa: BLE001 - surfaced to the main thread via `errors`
             errors.append(e)
 

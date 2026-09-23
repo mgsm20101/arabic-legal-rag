@@ -48,6 +48,11 @@ class Config:
         self.mrr: float | None = None
         self.seconds = 0.0
         self.per_category: dict[str, tuple[float | None, float | None]] = {}
+        # Per-question (recall, RR), in the order the questions were scored.
+        # Kept because callers that want intervals need the individual values,
+        # and re-deriving them meant searching the whole set a second time —
+        # about six seconds per question on the reranked configuration.
+        self.per_question: list[tuple[float, float]] = []
 
     def run(self, questions, k: int = EVAL_K) -> None:
         rows: list[tuple[str, float, float]] = []
@@ -62,6 +67,7 @@ class Config:
                 )
             )
         self.seconds = time.perf_counter() - start
+        self.per_question = [(r, m) for _, r, m in rows]
         self.recall = _avg(r for _, r, _ in rows)
         self.mrr = _avg(m for _, _, m in rows)
         for cat in ("direct", "multi_article", "colloquial"):

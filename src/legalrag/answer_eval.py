@@ -37,7 +37,13 @@ from .answer_report import report, report_claims
 from .cite import audit, gate
 from .claims import ClaimsGenerator, build_generators
 from .dense import CACHE_PATH, CORPUS_PATH, DenseIndex, corpus_fingerprint, load_docs
-from .evaluate import binding_problem, corpus_laws, load_meta, load_questions
+from .evaluate import (
+    binding_problem,
+    corpus_laws,
+    load_meta,
+    load_questions,
+    question_set_fingerprint,
+)
 from .generate import DEFAULT_MODEL, Generator, model_source, parse_model_spec, resolve_model
 from .ollama import GeneratorUnavailable, run_metadata
 
@@ -291,21 +297,36 @@ def _weights_line(model_spec: str) -> str | None:
     return f"weights    : {model_source(repo)}"
 
 
-def _write_ollama_meta(model_spec: str, chat, rows_file: Path) -> Path:
-    """Record what actually served an `ollama:` run alongside its answers.
+def _write_run_meta(
+    model_spec: str, rows_file: Path, questions, ollama_meta: dict | None = None
+) -> Path:
+    """Record what served the run and which eval set it scored.
 
-    `run_metadata` looks the loaded model up by name from `/api/ps` rather
-    than trusting anything the request itself claimed: whether a candidate
-    model fit on a 4 GB card, and which build's digest answered, are facts
-    about the server at run time, not something the client can assert.
+    `run_metadata` (passed in as `ollama_meta`) looks the loaded model up by
+    name from `/api/ps` rather than trusting anything the request itself
+    claimed: whether a candidate model fit on a 4 GB card, and which build's
+    digest answered, are facts about the server at run time, not something the
+    client can assert.
+
+    `question_set` is the half that was missing. Saved rows record the model
+    that produced them but said nothing about what was asked, so a promotion
+    run could read rows generated days earlier against a 20-question set and
+    stamp the current commit onto them — which is exactly what happened, and
+    produced a registry row reading `questions_total: 20` beside
+    `split: {dev: 40}`. The fingerprint makes that mismatch detectable.
     """
-    meta = run_metadata(chat)
+    meta = dict(ollama_meta or {})
     meta["model"] = model_spec  # the full spec, consistent with rows' "model"
     meta["date"] = date.today().isoformat()
+    meta["question_set"] = {
+        "fingerprint": question_set_fingerprint(questions),
+        "n": len(questions),
+        "ids": [q.id for q in sorted(questions, key=lambda q: q.id)],
+    }
     meta_path = RUNS / f"{rows_file.stem}.meta.json"
     meta_path.write_text(
         json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
-    print(f"model metadata saved to {meta_path}")
+    print(f"run metadata saved to {meta_path}")
     return meta_path
 
 
@@ -757,13 +778,19 @@ def main(argv: list[str] | None = None) -> int:
         json.dumps(rows, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"\nanswers saved to {rows_file} ({len(rows)} rows)")
 
+    # The metadata is written for every backend, not just `ollama:`, because
+    # the question-set fingerprint it carries is what stops these rows being
+    # promoted into the registry after the eval set has moved on. An `hf:` run
+    # needs that guard exactly as much as an Ollama one does.
+    ollama_meta = None
     if model_spec.startswith("ollama:"):
         # `generator.model` is the claims chat for every contract — "gated"'s
         # relevance chat talks to the same Ollama server and the same model
         # name (EVAL.md, "Run 6": relevance and claims are the same model,
         # different token caps only), so its GPU share/digest/quantization
         # are identical and do not need their own separate metadata file.
-        _write_ollama_meta(model_spec, generator.model, rows_file)
+        ollama_meta = run_metadata(generator.model)
+    _write_run_meta(model_spec, rows_file, questions, ollama_meta)
 
     return handlers.report(rows, _meta_for_rows(rows, contract))
 

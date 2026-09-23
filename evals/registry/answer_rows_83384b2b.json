@@ -1,0 +1,2083 @@
+[
+ {
+  "id": "Q001",
+  "category": "direct",
+  "answerable": true,
+  "model": "ollama:gemma3:4b",
+  "text": "في حال علم المتحكم أو المعالج بخرق أو انتهاك للبيانات الشخصية، يجب إبلاغ المركز خلال اثنين وسبعين ساعة [مادة 7]. وفي حال كان الخرق متعلقا باعتبارات حماية الأمن القومي، يجب الإبلاغ فوريا [مادة 7].",
+  "seconds": 112.3228356000036,
+  "retrieved": [
+   7,
+   32,
+   33,
+   41,
+   42
+  ],
+  "retrieved_ids": [
+   "law-7",
+   "law-42",
+   "law-33",
+   "law-41",
+   "law-32"
+  ],
+  "expected": [
+   7
+  ],
+  "cited_expected": true,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": false,
+  "cited": [
+   7
+  ],
+  "copied": [],
+  "strict": [
+   7,
+   7
+  ],
+  "fabricated": [],
+  "ungrounded": [],
+  "uncited": [],
+  "grounded": true,
+  "stats": [
+   {
+    "prompt_tokens": 1026,
+    "output_tokens": 67,
+    "total_s": 112.1594768,
+    "load_s": 56.4697698,
+    "prompt_s": 10.5099762,
+    "output_s": 43.1104311,
+    "done_reason": "stop",
+    "truncated": false,
+    "cut": false
+   }
+  ]
+ },
+ {
+  "id": "Q002",
+  "category": "colloquial",
+  "answerable": true,
+  "model": "ollama:gemma3:4b",
+  "text": "نعم، الشركة مطالبة بتعيين موظف مختص بمسؤولية حماية البيانات الشخصية [مادة 8].",
+  "seconds": 29.25756550001097,
+  "retrieved": [
+   7,
+   8,
+   9,
+   13,
+   40
+  ],
+  "retrieved_ids": [
+   "law-9",
+   "law-13",
+   "law-8",
+   "law-7",
+   "law-40"
+  ],
+  "expected": [
+   8
+  ],
+  "cited_expected": true,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": false,
+  "cited": [
+   8
+  ],
+  "copied": [],
+  "strict": [
+   8
+  ],
+  "fabricated": [],
+  "ungrounded": [],
+  "uncited": [],
+  "grounded": true,
+  "stats": [
+   {
+    "prompt_tokens": 1245,
+    "output_tokens": 30,
+    "total_s": 29.2407654,
+    "load_s": 5.880854,
+    "prompt_s": 8.0845825,
+    "output_s": 15.0057794,
+    "done_reason": "stop",
+    "truncated": false,
+    "cut": false
+   }
+  ]
+ },
+ {
+  "id": "Q003",
+  "category": "colloquial",
+  "answerable": true,
+  "model": "ollama:gemma3:4b",
+  "text": "يجوز في حالة الموافقة الصريحة للشخص المعني بالبيانات أو من ينوب عنه، نقل أو مشاركة أو تداول أو معالجة البيانات الشخصية إلى دولة لا يتوفر فيها مستوى الحماية المشار إليها في المادة السابقة، وذلك في ا لحالات الآتية : .1 المحافظة على حياة الشخص المعني بالبيانات، وتوفير الرعاية الطبية أو العلاج أو إدارة الخدمات الصحية له . .2 تنفيذ التزامات بما يضمن اثبات حق أو ممارسته أمام العدالة أو الدفاع عنه . .3 إبرام عقد، أو تنفيذ عقد مبر",
+  "seconds": 91.11186980002094,
+  "retrieved": [
+   1,
+   14,
+   15,
+   16
+  ],
+  "retrieved_ids": [
+   "law-14",
+   "law-15",
+   "law-16",
+   "law-1"
+  ],
+  "expected": [
+   14
+  ],
+  "cited_expected": false,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": false,
+  "cited": [],
+  "copied": [],
+  "strict": [],
+  "fabricated": [],
+  "ungrounded": [],
+  "uncited": [
+   "يجوز في حالة الموافقة الصريحة للشخص المعني بالبيانات أو من ينوب عنه، نقل أو مشاركة أو تداول أو معالجة البيانات الشخصية إلى دولة لا يتوفر فيها مستوى الحماية المشار إليها في المادة السابقة، وذلك في ا لحالات الآتية :",
+   "1 المحافظة على حياة الشخص المعني بالبيانات، وتوفير الرعاية الطبية أو العلاج أو إدارة الخدمات الصحية له",
+   "2 تنفيذ التزامات بما يضمن اثبات حق أو ممارسته أمام العدالة أو الدفاع عنه",
+   "3 إبرام عقد، أو تنفيذ عقد مبر"
+  ],
+  "grounded": false,
+  "stats": [
+   {
+    "prompt_tokens": 2024,
+    "output_tokens": 128,
+    "total_s": 90.635566,
+    "load_s": 2.7570477,
+    "prompt_s": 11.8005107,
+    "output_s": 75.271006,
+    "done_reason": "length",
+    "truncated": false,
+    "cut": true
+   }
+  ]
+ },
+ {
+  "id": "Q004",
+  "category": "direct",
+  "answerable": true,
+  "model": "ollama:gemma3:4b",
+  "text": "البيانات الشخصية الحساسة [مادة 12]، بما في ذلك بيانات الصحة النفسية أو العقلية أو البدنية أو الجينية، وبيانات القياسات الحيوية \" البيومترية\"، وبيانات الأطفال [مادة 12].",
+  "seconds": 45.24591309999232,
+  "retrieved": [
+   1,
+   2,
+   12,
+   14,
+   24
+  ],
+  "retrieved_ids": [
+   "law-12",
+   "law-1",
+   "law-14",
+   "law-2",
+   "law-24"
+  ],
+  "expected": [
+   12
+  ],
+  "cited_expected": true,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": false,
+  "cited": [
+   12
+  ],
+  "copied": [],
+  "strict": [
+   12,
+   12
+  ],
+  "fabricated": [],
+  "ungrounded": [],
+  "uncited": [],
+  "grounded": true,
+  "stats": [
+   {
+    "prompt_tokens": 2147,
+    "output_tokens": 59,
+    "total_s": 45.2293985,
+    "load_s": 5.4296895,
+    "prompt_s": 12.469101,
+    "output_s": 26.8633912,
+    "done_reason": "stop",
+    "truncated": false,
+    "cut": false
+   }
+  ]
+ },
+ {
+  "id": "Q005",
+  "category": "direct",
+  "answerable": true,
+  "model": "ollama:gemma3:4b",
+  "text": "خلال ستة أيام عمل من تاريخ تقديمه إليه [مادة 10].",
+  "seconds": 18.263447400007863,
+  "retrieved": [
+   7,
+   10,
+   27,
+   32,
+   33
+  ],
+  "retrieved_ids": [
+   "law-32",
+   "law-10",
+   "law-33",
+   "law-27",
+   "law-7"
+  ],
+  "expected": [
+   10
+  ],
+  "cited_expected": true,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": false,
+  "cited": [
+   10
+  ],
+  "copied": [],
+  "strict": [
+   10
+  ],
+  "fabricated": [],
+  "ungrounded": [],
+  "uncited": [],
+  "grounded": true,
+  "stats": [
+   {
+    "prompt_tokens": 1182,
+    "output_tokens": 19,
+    "total_s": 18.2518497,
+    "load_s": 3.7021903,
+    "prompt_s": 7.0231227,
+    "output_s": 7.3832941,
+    "done_reason": "stop",
+    "truncated": false,
+    "cut": false
+   }
+  ]
+ },
+ {
+  "id": "Q006",
+  "category": "direct",
+  "answerable": true,
+  "model": "ollama:gemma3:4b",
+  "text": "المرکز",
+  "seconds": 14.497642200003611,
+  "retrieved": [
+   1,
+   4,
+   32,
+   34
+  ],
+  "retrieved_ids": [
+   "law-4",
+   "law-1",
+   "law-34",
+   "law-32"
+  ],
+  "expected": [
+   19
+  ],
+  "cited_expected": false,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": false,
+  "cited": [],
+  "copied": [],
+  "strict": [],
+  "fabricated": [],
+  "ungrounded": [],
+  "uncited": [],
+  "grounded": true,
+  "stats": [
+   {
+    "prompt_tokens": 2212,
+    "output_tokens": 4,
+    "total_s": 14.4880547,
+    "load_s": 1.4123383,
+    "prompt_s": 11.8792271,
+    "output_s": 1.1264434,
+    "done_reason": "stop",
+    "truncated": false,
+    "cut": false
+   }
+  ]
+ },
+ {
+  "id": "Q007",
+  "category": "colloquial",
+  "answerable": true,
+  "model": "ollama:gemma3:4b",
+  "text": "يحظر إجراء أي اتصال إلكتروني بغرض التسويق المباشر إلا بتوفر موافقة الشخص المعني بالبيانات [مادة 17]. يجب أن يتضمن الاتصال هوية منشئه ومرسله وأن يتيح للشخص المعني بالبيانات رفض الاتصال [مادة 17].",
+  "seconds": 39.928392100002384,
+  "retrieved": [
+   17,
+   18,
+   32,
+   36,
+   48
+  ],
+  "retrieved_ids": [
+   "law-17",
+   "law-32",
+   "law-18",
+   "law-48",
+   "law-36"
+  ],
+  "expected": [
+   17
+  ],
+  "cited_expected": true,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": false,
+  "cited": [
+   17
+  ],
+  "copied": [],
+  "strict": [
+   17,
+   17
+  ],
+  "fabricated": [],
+  "ungrounded": [],
+  "uncited": [],
+  "grounded": true,
+  "stats": [
+   {
+    "prompt_tokens": 862,
+    "output_tokens": 72,
+    "total_s": 39.9101413,
+    "load_s": 1.075718,
+    "prompt_s": 4.9021925,
+    "output_s": 33.4637905,
+    "done_reason": "stop",
+    "truncated": false,
+    "cut": false
+   }
+  ]
+ },
+ {
+  "id": "Q008",
+  "category": "multi_article",
+  "answerable": true,
+  "model": "ollama:gemma3:4b",
+  "text": "وفقًا للمادة 2، يلتزم المتحكم بالحصول على البيانات الشخصية والتأكد من صحتها واتفاقها مع الغرض المحدد، بالإضافة إلى وضع طريقة المعالجة. بينما يلتزم المعالج بمعالجة البيانات الشخصية لصالحه أو لصالح المتحكم وفقًا لتعليماته.",
+  "seconds": 45.70052539999597,
+  "retrieved": [
+   1,
+   2,
+   4,
+   13,
+   15
+  ],
+  "retrieved_ids": [
+   "law-2",
+   "law-1",
+   "law-15",
+   "law-13",
+   "law-4"
+  ],
+  "expected": [
+   4,
+   5
+  ],
+  "cited_expected": false,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": false,
+  "cited": [
+   2
+  ],
+  "copied": [],
+  "strict": [],
+  "fabricated": [],
+  "ungrounded": [],
+  "uncited": [
+   "بينما يلتزم المعالج بمعالجة البيانات الشخصية لصالحه أو لصالح المتحكم وفقًا لتعليماته"
+  ],
+  "grounded": false,
+  "stats": [
+   {
+    "prompt_tokens": 2712,
+    "output_tokens": 68,
+    "total_s": 45.6855677,
+    "load_s": 3.9851512,
+    "prompt_s": 13.5926866,
+    "output_s": 27.549079,
+    "done_reason": "stop",
+    "truncated": false,
+    "cut": false
+   }
+  ]
+ },
+ {
+  "id": "Q009",
+  "category": "multi_article",
+  "answerable": true,
+  "model": "ollama:gemma3:4b",
+  "text": "نعم، توجد استثناءات تسمح بإرسال البيانات للخارج في حالات طارئة. [مادة 15]",
+  "seconds": 24.13309940000181,
+  "retrieved": [
+   1,
+   13,
+   14,
+   15,
+   16
+  ],
+  "retrieved_ids": [
+   "law-14",
+   "law-15",
+   "law-16",
+   "law-13",
+   "law-1"
+  ],
+  "expected": [
+   14,
+   15
+  ],
+  "cited_expected": true,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": false,
+  "cited": [
+   15
+  ],
+  "copied": [],
+  "strict": [
+   15
+  ],
+  "fabricated": [],
+  "ungrounded": [],
+  "uncited": [
+   "نعم، توجد استثناءات تسمح بإرسال البيانات للخارج في حالات طارئة"
+  ],
+  "grounded": false,
+  "stats": [
+   {
+    "prompt_tokens": 2115,
+    "output_tokens": 30,
+    "total_s": 24.1168078,
+    "load_s": 1.1960942,
+    "prompt_s": 11.183246,
+    "output_s": 11.4619236,
+    "done_reason": "stop",
+    "truncated": false,
+    "cut": false
+   }
+  ]
+ },
+ {
+  "id": "Q010",
+  "category": "colloquial",
+  "answerable": true,
+  "model": "ollama:gemma3:4b",
+  "text": "البيانات الشخصية الحساسة هي البيانات التي تفصح عن الصحة النفسية أو العقلية أو البدنية أو الجينية، أو بيانات القياسات الحيوية \" البيومترية \" أو البيانات المالية أو المعتقدات الدينية أو الآراء السياسية أو الحالة الأمنية [مادة 1]. يجب تأمين هذه البيانات باتباع السياسات والإجراءات التأمينية اللازمة لعدم خرق البيانات الشخصية الحساسة أو انتهاكها [مادة 13].",
+  "seconds": 49.2098435999942,
+  "retrieved": [
+   1,
+   3,
+   13,
+   19
+  ],
+  "retrieved_ids": [
+   "law-1",
+   "law-3",
+   "law-13",
+   "law-19"
+  ],
+  "expected": [
+   12,
+   13
+  ],
+  "cited_expected": false,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": false,
+  "cited": [],
+  "copied": [
+   1,
+   13
+  ],
+  "strict": [
+   1,
+   13
+  ],
+  "fabricated": [],
+  "ungrounded": [],
+  "uncited": [
+   "البيانات الشخصية الحساسة هي البيانات التي تفصح عن الصحة النفسية أو العقلية أو البدنية أو الجينية، أو بيانات القياسات الحيوية \" البيومترية \" أو البيانات المالية أو المعتقدات الدينية أو الآراء السياسية أو الحالة الأمنية [مادة 1]",
+   "يجب تأمين هذه البيانات باتباع السياسات والإجراءات التأمينية اللازمة لعدم خرق البيانات الشخصية الحساسة أو انتهاكها [مادة 13]"
+  ],
+  "grounded": false,
+  "stats": [
+   {
+    "prompt_tokens": 2350,
+    "output_tokens": 109,
+    "total_s": 49.1884605,
+    "load_s": 1.6052211,
+    "prompt_s": 12.9661232,
+    "output_s": 34.1161041,
+    "done_reason": "stop",
+    "truncated": false,
+    "cut": false
+   }
+  ]
+ },
+ {
+  "id": "Q011",
+  "category": "multi_article",
+  "answerable": true,
+  "model": "ollama:gemma3:4b",
+  "text": "يجوز استخدام بياناتك قانونياً بموافقة صريحة من الشخص المعني بالبيانات أو في الأحوال المصرح بها قانوناً [مادة 2]. ويحق للشخص المعني بالبيانات أن يعلم بالبيانات الشخصية الخاصة به والاطلاع عليها والوصول إليها أو الحصول عليها [مادة 2].",
+  "seconds": 37.60267500000191,
+  "retrieved": [
+   1,
+   2,
+   10,
+   16,
+   32
+  ],
+  "retrieved_ids": [
+   "law-32",
+   "law-1",
+   "law-16",
+   "law-10",
+   "law-2"
+  ],
+  "expected": [
+   2,
+   6
+  ],
+  "cited_expected": true,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": false,
+  "cited": [
+   2
+  ],
+  "copied": [],
+  "strict": [
+   2,
+   2
+  ],
+  "fabricated": [],
+  "ungrounded": [],
+  "uncited": [
+   "يجوز استخدام بياناتك قانونياً بموافقة صريحة من الشخص المعني بالبيانات أو في الأحوال المصرح بها قانوناً [مادة 2]"
+  ],
+  "grounded": false,
+  "stats": [
+   {
+    "prompt_tokens": 2153,
+    "output_tokens": 72,
+    "total_s": 37.595331,
+    "load_s": 1.5681072,
+    "prompt_s": 11.6820012,
+    "output_s": 24.002116,
+    "done_reason": "stop",
+    "truncated": false,
+    "cut": false
+   }
+  ]
+ },
+ {
+  "id": "Q012",
+  "category": "colloquial",
+  "answerable": true,
+  "model": "ollama:gemma3:4b",
+  "text": "يلتزم المرسل لأي اتصال إلكتروني بغرض التسويق المباشر بالالتزامات الآتية: .1 الغرض التسويقي المحدد . .2 عدم الإفصاح عن بيانات الاتصال للشخص المعني بالبيانات [مادة 18]\nيجب الحصول على موافقة من الشخص المعني بالبيانات . .2 أن يتضمن الاتصال هوية منشئه ومرسله . .2 أن يكون للمرسل عنوان صحيح وكاف للوصول إليه . .2 الإشارة بأن الاتصال الإلكتروني مرسل لأغراض التسويق الم",
+  "seconds": 80.68232299998635,
+  "retrieved": [
+   1,
+   10,
+   13,
+   17,
+   18
+  ],
+  "retrieved_ids": [
+   "law-18",
+   "law-17",
+   "law-10",
+   "law-1",
+   "law-13"
+  ],
+  "expected": [
+   17,
+   18
+  ],
+  "cited_expected": true,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": false,
+  "cited": [
+   18
+  ],
+  "copied": [],
+  "strict": [
+   18
+  ],
+  "fabricated": [],
+  "ungrounded": [],
+  "uncited": [
+   "يلتزم المرسل لأي اتصال إلكتروني بغرض التسويق المباشر بالالتزامات الآتية:",
+   "يجب الحصول على موافقة من الشخص المعني بالبيانات",
+   "2 أن يتضمن الاتصال هوية منشئه ومرسله",
+   "2 أن يكون للمرسل عنوان صحيح وكاف للوصول إليه",
+   "2 الإشارة بأن الاتصال الإلكتروني مرسل لأغراض التسويق الم"
+  ],
+  "grounded": false,
+  "stats": [
+   {
+    "prompt_tokens": 1975,
+    "output_tokens": 128,
+    "total_s": 80.6619907,
+    "load_s": 1.3760933,
+    "prompt_s": 11.2862127,
+    "output_s": 67.037772,
+    "done_reason": "length",
+    "truncated": false,
+    "cut": true
+   }
+  ]
+ },
+ {
+  "id": "Q013",
+  "category": "colloquial",
+  "answerable": true,
+  "model": "ollama:gemma3:4b",
+  "text": "يجب على المتحكم أو المعالج إبلاغ المركز خلال اثنين وسبعين ساعة من علمه بخرق أو انتهاك للبيانات الشخصية [مادة 7]. ويجب على المركز إخطار جهات الأمن القومي فوراً، وإخطار الشخص المعني بالبيانات خلال ثلاثة أيام عمل من الإبلاغ [مادة 7]. [مادة 30] تنص على أن الرئيس التنفيذي للمركز يمكنه إنذار المخالف بالتوقف عن المخالفة وإزالة أسبابها أو آثارها خلال فترة زمنية محددة، وإذا انق",
+  "seconds": 82.10872570000356,
+  "retrieved": [
+   1,
+   7,
+   9,
+   16,
+   30
+  ],
+  "retrieved_ids": [
+   "law-7",
+   "law-1",
+   "law-30",
+   "law-9",
+   "law-16"
+  ],
+  "expected": [
+   7
+  ],
+  "cited_expected": true,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": false,
+  "cited": [
+   7
+  ],
+  "copied": [
+   30
+  ],
+  "strict": [
+   7,
+   7,
+   30
+  ],
+  "fabricated": [],
+  "ungrounded": [],
+  "uncited": [
+   "[مادة 30] تنص على أن الرئيس التنفيذي للمركز يمكنه إنذار المخالف بالتوقف عن المخالفة وإزالة أسبابها أو آثارها خلال فترة زمنية محددة، وإذا انق"
+  ],
+  "grounded": false,
+  "stats": [
+   {
+    "prompt_tokens": 2626,
+    "output_tokens": 128,
+    "total_s": 82.0927094,
+    "load_s": 3.1776126,
+    "prompt_s": 12.9023592,
+    "output_s": 64.9729579,
+    "done_reason": "length",
+    "truncated": false,
+    "cut": true
+   }
+  ]
+ },
+ {
+  "id": "Q014",
+  "category": "colloquial",
+  "answerable": true,
+  "model": "ollama:gemma3:4b",
+  "text": "لا أستطيع الإجابة من المواد المتاحة",
+  "seconds": 22.903726499993354,
+  "retrieved": [
+   1,
+   2,
+   13,
+   16,
+   40
+  ],
+  "retrieved_ids": [
+   "law-13",
+   "law-2",
+   "law-1",
+   "law-40",
+   "law-16"
+  ],
+  "expected": [
+   8
+  ],
+  "cited_expected": false,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": true,
+  "fabricated": [],
+  "ungrounded": [],
+  "copied": [],
+  "uncited": [],
+  "cited": [],
+  "strict": [],
+  "grounded": true,
+  "stats": [
+   {
+    "prompt_tokens": 2117,
+    "output_tokens": 13,
+    "total_s": 22.8924194,
+    "load_s": 4.5646795,
+    "prompt_s": 13.0396984,
+    "output_s": 5.0766207,
+    "done_reason": "stop",
+    "truncated": false,
+    "cut": false
+   }
+  ]
+ },
+ {
+  "id": "Q015",
+  "category": "colloquial",
+  "answerable": true,
+  "model": "ollama:gemma3:4b",
+  "text": "يجب أن يحصل على موافقة من الشخص المعني بالبيانات [مادة 17].\nيجب أن يتضمن الاتصال هوية منشئه ومرسله [مادة 17].",
+  "seconds": 28.823909900005674,
+  "retrieved": [
+   1,
+   17,
+   18,
+   43
+  ],
+  "retrieved_ids": [
+   "law-18",
+   "law-43",
+   "law-17",
+   "law-1"
+  ],
+  "expected": [
+   17
+  ],
+  "cited_expected": true,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": false,
+  "cited": [
+   17
+  ],
+  "copied": [],
+  "strict": [
+   17,
+   17
+  ],
+  "fabricated": [],
+  "ungrounded": [],
+  "uncited": [],
+  "grounded": true,
+  "stats": [
+   {
+    "prompt_tokens": 1801,
+    "output_tokens": 48,
+    "total_s": 28.8158812,
+    "load_s": 1.522163,
+    "prompt_s": 9.8458673,
+    "output_s": 17.2451254,
+    "done_reason": "stop",
+    "truncated": false,
+    "cut": false
+   }
+  ]
+ },
+ {
+  "id": "Q016",
+  "category": "out_of_corpus",
+  "answerable": false,
+  "model": "ollama:gemma3:4b",
+  "text": "لا أستطيع الإجابة من المواد المتاحة",
+  "seconds": 11.699306800001068,
+  "retrieved": [
+   4,
+   38,
+   39,
+   44,
+   45
+  ],
+  "retrieved_ids": [
+   "law-38",
+   "law-44",
+   "law-45",
+   "law-39",
+   "law-4"
+  ],
+  "expected": [],
+  "cited_expected": false,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": true,
+  "fabricated": [],
+  "ungrounded": [],
+  "copied": [],
+  "uncited": [],
+  "cited": [],
+  "strict": [],
+  "grounded": true,
+  "stats": [
+   {
+    "prompt_tokens": 1064,
+    "output_tokens": 13,
+    "total_s": 11.6874858,
+    "load_s": 1.1199854,
+    "prompt_s": 5.9118325,
+    "output_s": 4.5521799,
+    "done_reason": "stop",
+    "truncated": false,
+    "cut": false
+   }
+  ]
+ },
+ {
+  "id": "Q017",
+  "category": "out_of_corpus",
+  "answerable": false,
+  "model": "ollama:gemma3:4b",
+  "text": "لا أستطيع الإجابة من المواد المتاحة",
+  "seconds": 24.063547199999448,
+  "retrieved": [
+   1,
+   4,
+   15,
+   16,
+   19
+  ],
+  "retrieved_ids": [
+   "law-16",
+   "law-1",
+   "law-4",
+   "law-15",
+   "law-19"
+  ],
+  "expected": [],
+  "cited_expected": false,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": true,
+  "fabricated": [],
+  "ungrounded": [],
+  "copied": [],
+  "uncited": [],
+  "cited": [],
+  "strict": [],
+  "grounded": true,
+  "stats": [
+   {
+    "prompt_tokens": 3187,
+    "output_tokens": 13,
+    "total_s": 24.0524414,
+    "load_s": 1.2159111,
+    "prompt_s": 18.3463159,
+    "output_s": 4.3705031,
+    "done_reason": "stop",
+    "truncated": false,
+    "cut": false
+   }
+  ]
+ },
+ {
+  "id": "Q018",
+  "category": "out_of_corpus",
+  "answerable": false,
+  "model": "ollama:gemma3:4b",
+  "text": "لا أستطيع الإجابة من المواد المتاحة",
+  "seconds": 14.920566599990707,
+  "retrieved": [
+   4,
+   9,
+   34,
+   40,
+   46
+  ],
+  "retrieved_ids": [
+   "law-40",
+   "law-34",
+   "law-46",
+   "law-4",
+   "law-9"
+  ],
+  "expected": [],
+  "cited_expected": false,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": true,
+  "fabricated": [],
+  "ungrounded": [],
+  "copied": [],
+  "uncited": [],
+  "cited": [],
+  "strict": [],
+  "grounded": true,
+  "stats": [
+   {
+    "prompt_tokens": 1436,
+    "output_tokens": 13,
+    "total_s": 14.9059925,
+    "load_s": 1.2344251,
+    "prompt_s": 8.6049472,
+    "output_s": 4.9661116,
+    "done_reason": "stop",
+    "truncated": false,
+    "cut": false
+   }
+  ]
+ },
+ {
+  "id": "Q019",
+  "category": "out_of_corpus",
+  "answerable": false,
+  "model": "ollama:gemma3:4b",
+  "text": "لا أستطيع الإجابة من المواد المتاحة",
+  "seconds": 10.485245799995027,
+  "retrieved": [
+   14,
+   48
+  ],
+  "retrieved_ids": [
+   "law-48",
+   "law-14"
+  ],
+  "expected": [],
+  "cited_expected": false,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": true,
+  "fabricated": [],
+  "ungrounded": [],
+  "copied": [],
+  "uncited": [],
+  "cited": [],
+  "strict": [],
+  "grounded": true,
+  "stats": [
+   {
+    "prompt_tokens": 428,
+    "output_tokens": 13,
+    "total_s": 10.446441,
+    "load_s": 2.3547798,
+    "prompt_s": 2.6598953,
+    "output_s": 5.3405331,
+    "done_reason": "stop",
+    "truncated": false,
+    "cut": false
+   }
+  ]
+ },
+ {
+  "id": "Q020",
+  "category": "out_of_corpus",
+  "answerable": false,
+  "model": "ollama:gemma3:4b",
+  "text": "لا أستطيع الإجابة من المواد المتاحة",
+  "seconds": 7.782268200011458,
+  "retrieved": [
+   32,
+   38,
+   40,
+   45,
+   46
+  ],
+  "retrieved_ids": [
+   "law-32",
+   "law-45",
+   "law-38",
+   "law-40",
+   "law-46"
+  ],
+  "expected": [],
+  "cited_expected": false,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": true,
+  "fabricated": [],
+  "ungrounded": [],
+  "copied": [],
+  "uncited": [],
+  "cited": [],
+  "strict": [],
+  "grounded": true,
+  "stats": [
+   {
+    "prompt_tokens": 558,
+    "output_tokens": 13,
+    "total_s": 7.764894,
+    "load_s": 1.4775746,
+    "prompt_s": 2.4604748,
+    "output_s": 3.7664256,
+    "done_reason": "stop",
+    "truncated": false,
+    "cut": false
+   }
+  ]
+ },
+ {
+  "id": "Q023",
+  "category": "direct",
+  "answerable": true,
+  "model": "ollama:gemma3:4b",
+  "text": "يجب على المتحكم توفير الإمكانيات اللازمة لإثبات التزامه بتطبيق أحكام هذا القانون [مادة 12].\nيجب الرد على الطلب خلال ستة أيام عمل من تاريخ تقديمه إليه [مادة 32].",
+  "seconds": 27.177003099990543,
+  "retrieved": [
+   3,
+   4,
+   32
+  ],
+  "retrieved_ids": [
+   "law-4",
+   "law-32",
+   "law-3"
+  ],
+  "expected": [],
+  "cited_expected": false,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": false,
+  "cited": [
+   12,
+   32
+  ],
+  "copied": [],
+  "strict": [
+   12,
+   32
+  ],
+  "fabricated": [],
+  "ungrounded": [
+   12
+  ],
+  "uncited": [],
+  "grounded": false,
+  "stats": [
+   {
+    "prompt_tokens": 1076,
+    "output_tokens": 59,
+    "total_s": 27.1641633,
+    "load_s": 1.1834329,
+    "prompt_s": 5.3206463,
+    "output_s": 20.4059461,
+    "done_reason": "stop",
+    "truncated": false,
+    "cut": false
+   }
+  ]
+ },
+ {
+  "id": "Q025",
+  "category": "direct",
+  "answerable": true,
+  "model": "ollama:gemma3:4b",
+  "text": "يجعل حفظ معلومات شخص ما أمراً سليماً قانوناً إذا تم ذلك وفقاً لأحكام المادة 9 من هذا القانون [مادة 9].",
+  "seconds": 32.021791600011056,
+  "retrieved": [
+   1,
+   9,
+   13,
+   14
+  ],
+  "retrieved_ids": [
+   "law-1",
+   "law-9",
+   "law-13",
+   "law-14"
+  ],
+  "expected": [
+   3
+  ],
+  "cited_expected": false,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": false,
+  "cited": [
+   9
+  ],
+  "copied": [],
+  "strict": [
+   9
+  ],
+  "fabricated": [],
+  "ungrounded": [],
+  "uncited": [],
+  "grounded": true,
+  "stats": [
+   {
+    "prompt_tokens": 2015,
+    "output_tokens": 34,
+    "total_s": 32.0077206,
+    "load_s": 2.1291805,
+    "prompt_s": 11.4497614,
+    "output_s": 18.1434974,
+    "done_reason": "stop",
+    "truncated": false,
+    "cut": false
+   }
+  ]
+ },
+ {
+  "id": "Q027",
+  "category": "direct",
+  "answerable": true,
+  "model": "ollama:gemma3:4b",
+  "text": "يكون الدليل الرقمي المستمد من البيانات الشخصية قابلاً للاستخدام كدليل أمام المحكمة [مادة 11]. يجب أن يستوفي المعايير والشروط الفنية الواردة في اللائحة التنفيذية لهذا القانون [مادة 11].",
+  "seconds": 35.54651089999243,
+  "retrieved": [
+   11,
+   24,
+   32,
+   33,
+   48
+  ],
+  "retrieved_ids": [
+   "law-11",
+   "law-32",
+   "law-33",
+   "law-24",
+   "law-48"
+  ],
+  "expected": [
+   11
+  ],
+  "cited_expected": true,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": false,
+  "cited": [
+   11
+  ],
+  "copied": [],
+  "strict": [
+   11,
+   11
+  ],
+  "fabricated": [],
+  "ungrounded": [],
+  "uncited": [],
+  "grounded": true,
+  "stats": [
+   {
+    "prompt_tokens": 821,
+    "output_tokens": 60,
+    "total_s": 35.5298645,
+    "load_s": 2.9581012,
+    "prompt_s": 4.9517014,
+    "output_s": 27.2157438,
+    "done_reason": "stop",
+    "truncated": false,
+    "cut": false
+   }
+  ]
+ },
+ {
+  "id": "Q031",
+  "category": "direct",
+  "answerable": true,
+  "model": "ollama:gemma3:4b",
+  "text": "يتم تعيين الرئيس التنفيذي من قبل رئيس مجلس الوزراء بناء على اقتراح الوزير المختص [مادة 23].",
+  "seconds": 19.782525899994653,
+  "retrieved": [
+   20,
+   21,
+   22,
+   23,
+   30
+  ],
+  "retrieved_ids": [
+   "law-23",
+   "law-20",
+   "law-21",
+   "law-22",
+   "law-30"
+  ],
+  "expected": [
+   23
+  ],
+  "cited_expected": true,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": false,
+  "cited": [
+   23
+  ],
+  "copied": [],
+  "strict": [
+   23
+  ],
+  "fabricated": [],
+  "ungrounded": [],
+  "uncited": [],
+  "grounded": true,
+  "stats": [
+   {
+    "prompt_tokens": 1280,
+    "output_tokens": 29,
+    "total_s": 19.7710997,
+    "load_s": 2.8923401,
+    "prompt_s": 6.6613101,
+    "output_s": 9.9820987,
+    "done_reason": "stop",
+    "truncated": false,
+    "cut": false
+   }
+  ]
+ },
+ {
+  "id": "Q033",
+  "category": "direct",
+  "answerable": true,
+  "model": "ollama:gemma3:4b",
+  "text": "يجوز للمركز سحب الترخيص أو التصريح أو الاعتماد جزئياً أو كلياً [مادة 30]. يجوز للمركز إلغاء الترخيص أو التصريح أو الاعتماد بعد إصداره في حالات معينة [مادة 29].",
+  "seconds": 28.863087799982168,
+  "retrieved": [
+   24,
+   27,
+   28,
+   29,
+   30
+  ],
+  "retrieved_ids": [
+   "law-30",
+   "law-29",
+   "law-27",
+   "law-28",
+   "law-24"
+  ],
+  "expected": [
+   29
+  ],
+  "cited_expected": false,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": false,
+  "cited": [
+   30
+  ],
+  "copied": [
+   29
+  ],
+  "strict": [
+   30,
+   29
+  ],
+  "fabricated": [],
+  "ungrounded": [],
+  "uncited": [
+   "يجوز للمركز إلغاء الترخيص أو التصريح أو الاعتماد بعد إصداره في حالات معينة [مادة 29]"
+  ],
+  "grounded": false,
+  "stats": [
+   {
+    "prompt_tokens": 1062,
+    "output_tokens": 61,
+    "total_s": 28.8548976,
+    "load_s": 1.2579863,
+    "prompt_s": 5.8191735,
+    "output_s": 21.5032297,
+    "done_reason": "stop",
+    "truncated": false,
+    "cut": false
+   }
+  ]
+ },
+ {
+  "id": "Q035",
+  "category": "direct",
+  "answerable": true,
+  "model": "ollama:gemma3:4b",
+  "text": "يمكن تقديم الشكوى إلى المركز في الحالات المنصوص عليها في المادة 33.\nيجب أن تتضمن الشكوى انتهاك حق حماية البيانات الشخصية أو الإخلال به، أو الامتناع عن تمكين الشخص المعني بالبيانات من استيفاء حقوقه.\nيجب أن تُقدم الشكوى خلال ثلاثين يوماً من تاريخ تقديمها إلى المركز [مادة 33].",
+  "seconds": 47.386040000012144,
+  "retrieved": [
+   27,
+   30,
+   32,
+   33,
+   49
+  ],
+  "retrieved_ids": [
+   "law-33",
+   "law-32",
+   "law-27",
+   "law-49",
+   "law-30"
+  ],
+  "expected": [
+   33
+  ],
+  "cited_expected": true,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": false,
+  "cited": [
+   33
+  ],
+  "copied": [],
+  "strict": [
+   33
+  ],
+  "fabricated": [],
+  "ungrounded": [],
+  "uncited": [
+   "يجب أن تتضمن الشكوى انتهاك حق حماية البيانات الشخصية أو الإخلال به، أو الامتناع عن تمكين الشخص المعني بالبيانات من استيفاء حقوقه"
+  ],
+  "grounded": false,
+  "stats": [
+   {
+    "prompt_tokens": 1271,
+    "output_tokens": 93,
+    "total_s": 47.369103,
+    "load_s": 1.4609325,
+    "prompt_s": 8.0174051,
+    "output_s": 37.4663968,
+    "done_reason": "stop",
+    "truncated": false,
+    "cut": false
+   }
+  ]
+ },
+ {
+  "id": "Q037",
+  "category": "direct",
+  "answerable": true,
+  "model": "ollama:gemma3:4b",
+  "text": "يعاقب بالحبس مدة لا تقل عن ثلاثة شهور وبغرامة لا تقل عن خمسمائة ألف جنيه ولا تجاوز خمسة ملايين جنيه أو بإحدى هاتين العقوبتين، كل حائز أو متحكم أو معالج جمع أو أتاح أو تداول أو عالج أو أفش ى أو خزن أو نقل أو حفظ بيانات شخصية حساسة بدون موافقة الشخص المعنى بالبيانات أو في غير الأحوال المصرح بها قانونا [مادة 41].",
+  "seconds": 43.116908500000136,
+  "retrieved": [
+   14,
+   15,
+   24,
+   37,
+   41
+  ],
+  "retrieved_ids": [
+   "law-15",
+   "law-24",
+   "law-41",
+   "law-37",
+   "law-14"
+  ],
+  "expected": [
+   36
+  ],
+  "cited_expected": false,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": false,
+  "cited": [],
+  "copied": [
+   41
+  ],
+  "strict": [
+   41
+  ],
+  "fabricated": [],
+  "ungrounded": [],
+  "uncited": [
+   "يعاقب بالحبس مدة لا تقل عن ثلاثة شهور وبغرامة لا تقل عن خمسمائة ألف جنيه ولا تجاوز خمسة ملايين جنيه أو بإحدى هاتين العقوبتين، كل حائز أو متحكم أو معالج جمع أو أتاح أو تداول أو عالج أو أفش ى أو خزن أو نقل أو حفظ بيانات شخصية حساسة بدون موافقة الشخص المعنى بالبيانات أو في غير الأحوال المصرح بها قانونا [مادة 41]"
+  ],
+  "grounded": false,
+  "stats": [
+   {
+    "prompt_tokens": 930,
+    "output_tokens": 107,
+    "total_s": 43.0977508,
+    "load_s": 2.3410882,
+    "prompt_s": 4.6019702,
+    "output_s": 35.654583,
+    "done_reason": "stop",
+    "truncated": false,
+    "cut": false
+   }
+  ]
+ },
+ {
+  "id": "Q039",
+  "category": "direct",
+  "answerable": true,
+  "model": "ollama:gemma3:4b",
+  "text": "يعاقب بالحبس مدة لا تقل عن ستة أشهر وبغرامة لا تقل عن مائتي ألف جنيه ولا تجاوز مليوني جنيه أو بأحدي هاتين العقوبتين، كل من منع أحد العاملين بالمركز ممن يتمتعون بصفة الضبطية القضائية من أداء عمله [مادة 46]. لا توجد عقوبة محددة في المواد المعطاة على تعطيل موظف من أداء مهامه [مادة 46].",
+  "seconds": 53.028996300010476,
+  "retrieved": [
+   24,
+   30,
+   34,
+   44,
+   46
+  ],
+  "retrieved_ids": [
+   "law-46",
+   "law-30",
+   "law-44",
+   "law-24",
+   "law-34"
+  ],
+  "expected": [
+   46
+  ],
+  "cited_expected": true,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": false,
+  "cited": [
+   46
+  ],
+  "copied": [],
+  "strict": [
+   46,
+   46
+  ],
+  "fabricated": [],
+  "ungrounded": [],
+  "uncited": [
+   "يعاقب بالحبس مدة لا تقل عن ستة أشهر وبغرامة لا تقل عن مائتي ألف جنيه ولا تجاوز مليوني جنيه أو بأحدي هاتين العقوبتين، كل من منع أحد العاملين بالمركز ممن يتمتعون بصفة الضبطية القضائية من أداء عمله [مادة 46]"
+  ],
+  "grounded": false,
+  "stats": [
+   {
+    "prompt_tokens": 796,
+    "output_tokens": 105,
+    "total_s": 53.0195551,
+    "load_s": 1.0647011,
+    "prompt_s": 4.205024,
+    "output_s": 47.0648586,
+    "done_reason": "stop",
+    "truncated": false,
+    "cut": false
+   }
+  ]
+ },
+ {
+  "id": "Q045",
+  "category": "multi_article",
+  "answerable": true,
+  "model": "ollama:gemma3:4b",
+  "text": "يمثل في تشكيل مجلس الإدارة: .1 ممثل عن وزارة الدفاع يختاره وزير الدفاع . .2 ممثل عن وزارة الداخلية يختاره وزير الداخلية . .3 ممثل عن جهاز المخابرات العامة يختاره رئيس الجهاز . .4 ممثل عن هيئة الرقابة الإدارية يختاره رئيس الهيئة . .5 ممثل عن هيئة تنمية صناعة تكنولوجيا المعلومات يختاره رئيس مجلس إدارة الهيئة . .6 ممثل عن الجهاز القومي لتنظيم الاتصالات يختاره رئيس مجلس إدارة الجهاز . .7 الرئيس التنفيذي للمركز . .8",
+  "seconds": 53.316043500002706,
+  "retrieved": [
+   20,
+   21,
+   22,
+   23,
+   30
+  ],
+  "retrieved_ids": [
+   "law-22",
+   "law-20",
+   "law-21",
+   "law-23",
+   "law-30"
+  ],
+  "expected": [
+   20,
+   22
+  ],
+  "cited_expected": false,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": false,
+  "cited": [],
+  "copied": [],
+  "strict": [],
+  "fabricated": [],
+  "ungrounded": [],
+  "uncited": [
+   "يمثل في تشكيل مجلس الإدارة:",
+   "1 ممثل عن وزارة الدفاع يختاره وزير الدفاع",
+   "2 ممثل عن وزارة الداخلية يختاره وزير الداخلية",
+   "3 ممثل عن جهاز المخابرات العامة يختاره رئيس الجهاز",
+   "4 ممثل عن هيئة الرقابة الإدارية يختاره رئيس الهيئة",
+   "5 ممثل عن هيئة تنمية صناعة تكنولوجيا المعلومات يختاره رئيس مجلس إدارة الهيئة",
+   "6 ممثل عن الجهاز القومي لتنظيم الاتصالات يختاره رئيس مجلس إدارة الجهاز"
+  ],
+  "grounded": false,
+  "stats": [
+   {
+    "prompt_tokens": 1283,
+    "output_tokens": 128,
+    "total_s": 53.3042115,
+    "load_s": 1.7467806,
+    "prompt_s": 5.7682784,
+    "output_s": 45.2835606,
+    "done_reason": "length",
+    "truncated": false,
+    "cut": true
+   }
+  ]
+ },
+ {
+  "id": "Q047",
+  "category": "multi_article",
+  "answerable": true,
+  "model": "ollama:gemma3:4b",
+  "text": "يلتزم مسئول حماية البيانات الشخصية وتابعوه لدى المتحكم أو المعالج باتباع و استيفاء السياسات والإجراءات التأمينية اللازمة لعدم خرق البيانات الشخصية الحساسة أو انتهاكها [مادة 9].4 ويخطر المركز في حال وجود أي خرق أو انتهاك للبيانات الشخصية لديه [مادة 9].4",
+  "seconds": 45.261153500003275,
+  "retrieved": [
+   1,
+   7,
+   9,
+   13,
+   30
+  ],
+  "retrieved_ids": [
+   "law-7",
+   "law-13",
+   "law-9",
+   "law-1",
+   "law-30"
+  ],
+  "expected": [
+   9,
+   13
+  ],
+  "cited_expected": true,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": false,
+  "cited": [
+   9
+  ],
+  "copied": [],
+  "strict": [
+   9,
+   9
+  ],
+  "fabricated": [],
+  "ungrounded": [],
+  "uncited": [
+   "يلتزم مسئول حماية البيانات الشخصية وتابعوه لدى المتحكم أو المعالج باتباع و استيفاء السياسات والإجراءات التأمينية اللازمة لعدم خرق البيانات الشخصية الحساسة أو انتهاكها [مادة 9]"
+  ],
+  "grounded": false,
+  "stats": [
+   {
+    "prompt_tokens": 2518,
+    "output_tokens": 88,
+    "total_s": 45.245008,
+    "load_s": 1.7025396,
+    "prompt_s": 13.9153348,
+    "output_s": 29.2596904,
+    "done_reason": "stop",
+    "truncated": false,
+    "cut": false
+   }
+  ]
+ },
+ {
+  "id": "Q049",
+  "category": "multi_article",
+  "answerable": true,
+  "model": "ollama:gemma3:4b",
+  "text": "يجوز للمتهم في أية حالة كانت عليها الدعوى الجنائية، اثبات الصلح مع المجني عليه أو وكيله الخاص أو خلفه العام [مادة 49]. ويكون التصالح مع المركز في الجنح المنصوص عليها بالمواد 42 و 44 [مادة 49].",
+  "seconds": 39.14178560001892,
+  "retrieved": [
+   41,
+   42,
+   47,
+   49
+  ],
+  "retrieved_ids": [
+   "law-49",
+   "law-47",
+   "law-41",
+   "law-42"
+  ],
+  "expected": [
+   30,
+   35
+  ],
+  "cited_expected": false,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": false,
+  "cited": [
+   49,
+   42,
+   44
+  ],
+  "copied": [],
+  "strict": [
+   49,
+   49
+  ],
+  "fabricated": [],
+  "ungrounded": [
+   44
+  ],
+  "uncited": [],
+  "grounded": false,
+  "stats": [
+   {
+    "prompt_tokens": 822,
+    "output_tokens": 69,
+    "total_s": 39.1331385,
+    "load_s": 0.7801897,
+    "prompt_s": 4.4707353,
+    "output_s": 33.4291459,
+    "done_reason": "stop",
+    "truncated": false,
+    "cut": false
+   }
+  ]
+ },
+ {
+  "id": "Q051",
+  "category": "multi_article",
+  "answerable": true,
+  "model": "ollama:gemma3:4b",
+  "text": "يلزم الحصول على موافقة كتابية وصريحة من الشخص المعني، وفيما عدا الأحوال المصرح بها قانونا [مادة 12].\nيجب ألا تكون مشاركة الطفل في لعبة، أو مسابقة، أو أي نشاط أخر، مشروطة بتقديم بيانات شخصية للطفل تزيد على ما هو ضروري للمشاركة في ذلك [مادة 12].\nالشخص المعني بالبيانات : أي شخص طبيعي تنسب إليه بيانات شخصية معالجة إلكترونيا تدل عليه قانونا أو فعلا، وتمكن من تمييز",
+  "seconds": 61.43903879998834,
+  "retrieved": [
+   1,
+   12,
+   34,
+   35
+  ],
+  "retrieved_ids": [
+   "law-1",
+   "law-35",
+   "law-12",
+   "law-34"
+  ],
+  "expected": [
+   1
+  ],
+  "cited_expected": false,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": false,
+  "cited": [
+   12
+  ],
+  "copied": [],
+  "strict": [
+   12,
+   12
+  ],
+  "fabricated": [],
+  "ungrounded": [],
+  "uncited": [
+   "يجب ألا تكون مشاركة الطفل في لعبة، أو مسابقة، أو أي نشاط أخر، مشروطة بتقديم بيانات شخصية للطفل تزيد على ما هو ضروري للمشاركة في ذلك [مادة 12]",
+   "الشخص المعني بالبيانات : أي شخص طبيعي تنسب إليه بيانات شخصية معالجة إلكترونيا تدل عليه قانونا أو فعلا، وتمكن من تمييز"
+  ],
+  "grounded": false,
+  "stats": [
+   {
+    "prompt_tokens": 1749,
+    "output_tokens": 128,
+    "total_s": 61.4276502,
+    "load_s": 3.1080582,
+    "prompt_s": 9.9169133,
+    "output_s": 47.7341367,
+    "done_reason": "length",
+    "truncated": false,
+    "cut": true
+   }
+  ]
+ },
+ {
+  "id": "Q052",
+  "category": "multi_article",
+  "answerable": true,
+  "model": "ollama:gemma3:4b",
+  "text": "يعاقب المسئول عن الإدارة الفعلية للشخص الاعتباري المخالف بذات العقوبات المقررة عن الأفعال التي ترتكب بالمخالفة لأحكام هذا القانون [مادة 47]. وفي حالة الإدانة، تقض ي المحكمة بنشر حكم الإدانة في جريدتين واسعتي الانتشار، وعلى شبكات المعلومات الإلكترونية المفتوحة [مادة 48].",
+  "seconds": 46.677736299985554,
+  "retrieved": [
+   30,
+   34,
+   44,
+   47,
+   48
+  ],
+  "retrieved_ids": [
+   "law-30",
+   "law-48",
+   "law-47",
+   "law-44",
+   "law-34"
+  ],
+  "expected": [
+   47,
+   48
+  ],
+  "cited_expected": false,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": false,
+  "cited": [],
+  "copied": [
+   47,
+   48
+  ],
+  "strict": [
+   47,
+   48
+  ],
+  "fabricated": [],
+  "ungrounded": [],
+  "uncited": [
+   "يعاقب المسئول عن الإدارة الفعلية للشخص الاعتباري المخالف بذات العقوبات المقررة عن الأفعال التي ترتكب بالمخالفة لأحكام هذا القانون [مادة 47]",
+   "وفي حالة الإدانة، تقض ي المحكمة بنشر حكم الإدانة في جريدتين واسعتي الانتشار، وعلى شبكات المعلومات الإلكترونية المفتوحة [مادة 48]"
+  ],
+  "grounded": false,
+  "stats": [
+   {
+    "prompt_tokens": 852,
+    "output_tokens": 93,
+    "total_s": 46.6699848,
+    "load_s": 4.8672796,
+    "prompt_s": 5.0322449,
+    "output_s": 36.1827516,
+    "done_reason": "stop",
+    "truncated": false,
+    "cut": false
+   }
+  ]
+ },
+ {
+  "id": "Q053",
+  "category": "multi_article",
+  "answerable": true,
+  "model": "ollama:gemma3:4b",
+  "text": "يجوز للشخص المعني بالبيانات ولكل ذي صفة أن يتقدم بطلب يتعلق بممارسة حقوقه المنصوص عليها في هذا القانون [مادة 1].\nيلتزم المقدم إليه الطلب بالرد عليه خلال ستة أيام عمل من تاريخ تقديمه إليه [مادة 32].",
+  "seconds": 42.686068900016835,
+  "retrieved": [
+   1,
+   9,
+   13,
+   32
+  ],
+  "retrieved_ids": [
+   "law-9",
+   "law-13",
+   "law-1",
+   "law-32"
+  ],
+  "expected": [
+   2,
+   32
+  ],
+  "cited_expected": false,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": false,
+  "cited": [
+   1
+  ],
+  "copied": [
+   32
+  ],
+  "strict": [
+   1,
+   32
+  ],
+  "fabricated": [],
+  "ungrounded": [],
+  "uncited": [
+   "يلتزم المقدم إليه الطلب بالرد عليه خلال ستة أيام عمل من تاريخ تقديمه إليه [مادة 32]"
+  ],
+  "grounded": false,
+  "stats": [
+   {
+    "prompt_tokens": 1983,
+    "output_tokens": 66,
+    "total_s": 42.6745386,
+    "load_s": 1.2395967,
+    "prompt_s": 10.6129624,
+    "output_s": 30.5113318,
+    "done_reason": "stop",
+    "truncated": false,
+    "cut": false
+   }
+  ]
+ },
+ {
+  "id": "Q056",
+  "category": "colloquial",
+  "answerable": true,
+  "model": "ollama:gemma3:4b",
+  "text": "تقدم الشكوى إلى المركز [مادة 33]. يجب تقديم الشكوى خلال ثلاثين يومًا من تاريخ تقديمها إلى المركز [مادة 33].",
+  "seconds": 20.45737439999357,
+  "retrieved": [
+   2,
+   7,
+   10,
+   33,
+   37
+  ],
+  "retrieved_ids": [
+   "law-37",
+   "law-10",
+   "law-33",
+   "law-7",
+   "law-2"
+  ],
+  "expected": [
+   33
+  ],
+  "cited_expected": true,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": false,
+  "cited": [
+   33
+  ],
+  "copied": [],
+  "strict": [
+   33,
+   33
+  ],
+  "fabricated": [],
+  "ungrounded": [],
+  "uncited": [],
+  "grounded": true,
+  "stats": [
+   {
+    "prompt_tokens": 1302,
+    "output_tokens": 37,
+    "total_s": 20.4452156,
+    "load_s": 1.7580728,
+    "prompt_s": 6.4960783,
+    "output_s": 12.038029,
+    "done_reason": "stop",
+    "truncated": false,
+    "cut": false
+   }
+  ]
+ },
+ {
+  "id": "Q057",
+  "category": "out_of_corpus",
+  "answerable": false,
+  "model": "ollama:gemma3:4b",
+  "text": "يحدد بند 6 من المادة 26 قيمة الرسوم المقررة لاستخراج ترخيص معالجة البيانات الحساسة. وتحدد اللائحة التنفيذية لهذا القانون أنواع هذه التراخيص والتصاريح والاعتمادات وفئاتها ومستوياتها، وإجراءات وشروط إصدارها وتجديدها ونماذجها المستخدمة، وذلك بمقابل رسوم لا تتجاوز مليوني جنيه بالنسبة إلى الترخيص [مادة 26].",
+  "seconds": 70.39178169998922,
+  "retrieved": [
+   1,
+   2,
+   26,
+   36,
+   37
+  ],
+  "retrieved_ids": [
+   "law-26",
+   "law-2",
+   "law-37",
+   "law-36",
+   "law-1"
+  ],
+  "expected": [],
+  "cited_expected": false,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": false,
+  "cited": [
+   26
+  ],
+  "copied": [],
+  "strict": [
+   26
+  ],
+  "fabricated": [],
+  "ungrounded": [],
+  "uncited": [
+   "وتحدد اللائحة التنفيذية لهذا القانون أنواع هذه التراخيص والتصاريح والاعتمادات وفئاتها ومستوياتها، وإجراءات وشروط إصدارها وتجديدها ونماذجها المستخدمة، وذلك بمقابل رسوم لا تتجاوز مليوني جنيه بالنسبة إلى الترخيص [مادة 26]"
+  ],
+  "grounded": false,
+  "stats": [
+   {
+    "prompt_tokens": 2406,
+    "output_tokens": 103,
+    "total_s": 70.3752714,
+    "load_s": 1.0285471,
+    "prompt_s": 14.9316588,
+    "output_s": 53.5353299,
+    "done_reason": "stop",
+    "truncated": false,
+    "cut": false
+   }
+  ]
+ },
+ {
+  "id": "Q059",
+  "category": "out_of_corpus",
+  "answerable": false,
+  "model": "ollama:gemma3:4b",
+  "text": "لا أستطيع الإجابة من المواد المتاحة",
+  "seconds": 13.641543799982173,
+  "retrieved": [
+   5,
+   37,
+   38,
+   43,
+   45
+  ],
+  "retrieved_ids": [
+   "law-45",
+   "law-43",
+   "law-37",
+   "law-5",
+   "law-38"
+  ],
+  "expected": [],
+  "cited_expected": false,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": true,
+  "fabricated": [],
+  "ungrounded": [],
+  "copied": [],
+  "uncited": [],
+  "cited": [],
+  "strict": [],
+  "grounded": true,
+  "stats": [
+   {
+    "prompt_tokens": 1153,
+    "output_tokens": 13,
+    "total_s": 13.6284335,
+    "load_s": 2.1428775,
+    "prompt_s": 6.5708905,
+    "output_s": 4.6975806,
+    "done_reason": "stop",
+    "truncated": false,
+    "cut": false
+   }
+  ]
+ },
+ {
+  "id": "Q061",
+  "category": "out_of_corpus",
+  "answerable": false,
+  "model": "ollama:gemma3:4b",
+  "text": "لا أستطيع الإجابة من المواد المتاحة",
+  "seconds": 21.1983382999897,
+  "retrieved": [
+   1,
+   19,
+   25,
+   27,
+   31
+  ],
+  "retrieved_ids": [
+   "law-25",
+   "law-27",
+   "law-19",
+   "law-31",
+   "law-1"
+  ],
+  "expected": [],
+  "cited_expected": false,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": true,
+  "fabricated": [],
+  "ungrounded": [],
+  "copied": [],
+  "uncited": [],
+  "cited": [],
+  "strict": [],
+  "grounded": true,
+  "stats": [
+   {
+    "prompt_tokens": 2798,
+    "output_tokens": 13,
+    "total_s": 21.1890799,
+    "load_s": 1.8353317,
+    "prompt_s": 15.3983001,
+    "output_s": 3.8257663,
+    "done_reason": "stop",
+    "truncated": false,
+    "cut": false
+   }
+  ]
+ },
+ {
+  "id": "Q063",
+  "category": "out_of_corpus",
+  "answerable": false,
+  "model": "ollama:gemma3:4b",
+  "text": "لا أستطيع الإجابة من المواد المتاحة",
+  "seconds": 8.587198699999135,
+  "retrieved": [
+   35,
+   37,
+   39,
+   45,
+   48
+  ],
+  "retrieved_ids": [
+   "law-48",
+   "law-45",
+   "law-35",
+   "law-39",
+   "law-37"
+  ],
+  "expected": [],
+  "cited_expected": false,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": true,
+  "fabricated": [],
+  "ungrounded": [],
+  "copied": [],
+  "uncited": [],
+  "cited": [],
+  "strict": [],
+  "grounded": true,
+  "stats": [
+   {
+    "prompt_tokens": 613,
+    "output_tokens": 13,
+    "total_s": 8.5727495,
+    "load_s": 0.9590498,
+    "prompt_s": 3.6842635,
+    "output_s": 3.8892275,
+    "done_reason": "stop",
+    "truncated": false,
+    "cut": false
+   }
+  ]
+ },
+ {
+  "id": "Q065",
+  "category": "out_of_corpus",
+  "answerable": false,
+  "model": "ollama:gemma3:4b",
+  "text": "يعاقب بغرامة لا تقل عن ثلاثمائة ألف جنيه ولا تجاوز ثلاثة ملايين جنيه كل عضو مجلس إدارة أو أي من العاملين بالمركز خالف الالتزامات المنصوص عليها في المادة (24) من هذا القانون [مادة 44].\nيعاقب بغرامة لا تقل عن خمسمائة ألف جنيه ولا تجاوز خمسة ملايين جنيه كل من خالف أحكام التراخيص أو التصاريح أو الاعتمادات المنصوص عليها في هذا القانون [مادة 45].",
+  "seconds": 46.69023129998823,
+  "retrieved": [
+   26,
+   39,
+   43,
+   44,
+   45
+  ],
+  "retrieved_ids": [
+   "law-45",
+   "law-43",
+   "law-39",
+   "law-44",
+   "law-26"
+  ],
+  "expected": [],
+  "cited_expected": false,
+  "corpus_fingerprint": "498155cd96f12f6b7e21d6550805668bf3356271703f5593902a04c99a773ef2",
+  "abstained": false,
+  "cited": [],
+  "copied": [
+   44,
+   24,
+   45
+  ],
+  "strict": [
+   44,
+   45
+  ],
+  "fabricated": [],
+  "ungrounded": [],
+  "uncited": [
+   "يعاقب بغرامة لا تقل عن ثلاثمائة ألف جنيه ولا تجاوز ثلاثة ملايين جنيه كل عضو مجلس إدارة أو أي من العاملين بالمركز خالف الالتزامات المنصوص عليها في المادة (24) من هذا القانون [مادة 44]",
+   "يعاقب بغرامة لا تقل عن خمسمائة ألف جنيه ولا تجاوز خمسة ملايين جنيه كل من خالف أحكام التراخيص أو التصاريح أو الاعتمادات المنصوص عليها في هذا القانون [مادة 45]"
+  ],
+  "grounded": false,
+  "stats": [
+   {
+    "prompt_tokens": 821,
+    "output_tokens": 112,
+    "total_s": 46.6752613,
+    "load_s": 1.0404449,
+    "prompt_s": 4.3761407,
+    "output_s": 40.563592,
+    "done_reason": "stop",
+    "truncated": false,
+    "cut": false
+   }
+  ]
+ }
+]

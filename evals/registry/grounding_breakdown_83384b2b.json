@@ -1,0 +1,50 @@
+{
+  "check": "where-the-grounding-drop-came-from",
+  "question": "Fully-grounded answers fell from 9/15 (60.0%) at 15 answerable questions to 11/29 (37.9%) at 30. Did the generator get worse, did the 128-token cap start biting, or did the question mix change?",
+  "source_rows": "evals/registry/answer_rows_83384b2b.json",
+  "compared_against": "evals/registry/answer_eval_46797bef.json",
+  "by_category": {
+    "direct": {
+      "n": 12,
+      "grounded": 7,
+      "uncited": 4,
+      "cut_by_token_cap": 0
+    },
+    "multi_article": {
+      "n": 9,
+      "grounded": 0,
+      "uncited": 8,
+      "cut_by_token_cap": 2
+    },
+    "colloquial": {
+      "n": 9,
+      "grounded": 5,
+      "uncited": 4,
+      "cut_by_token_cap": 3
+    }
+  },
+  "by_batch": {
+    "batch_1_Q001_Q020": {
+      "n": 15,
+      "grounded": 8,
+      "uncited": 7,
+      "cut_by_token_cap": 3
+    },
+    "batch_2_Q021_plus": {
+      "n": 15,
+      "grounded": 4,
+      "uncited": 9,
+      "cut_by_token_cap": 2
+    }
+  },
+  "token_cap": {
+    "max_new_tokens": 128,
+    "answers_cut": 5,
+    "cut_and_uncited": 5,
+    "uncited_total": 16
+  },
+  "finding": "The generator did not change. The 15 batch-1 questions scored 8/15 grounded here against 9/15 in the earlier run — the same behaviour within one answer. The drop is entirely in the questions added: batch 2 scored 4/15. And within batch 2 it is one category: multi_article scored 0 grounded out of 9, with 8 of 9 answers carrying no citation at all. direct scored 7/12 and colloquial 5/9. The earlier run had only 3 multi_article questions; this one has 9.",
+  "token_cap_is_a_contributor_not_the_cause": "All 5 answers cut by the 128-token cap were uncited, so the cap does cost citations — a truncated Arabic answer loses its trailing [مادة N]. But 11 of the 16 uncited answers were never truncated, and only 2 of the 9 multi_article failures were. Raising the cap would recover at most 5 and would not touch the multi_article result.",
+  "next_experiment": "Re-run with a larger max_new_tokens to separate the cap's contribution from the model's, and try the `gated` claims contract on multi_article specifically — an answer that must name its articles before writing prose is the intervention aimed at exactly this failure.",
+  "unchanged": "Zero fabricated citations, at twice the questions. That is the claim this project rests on and it did not move."
+}

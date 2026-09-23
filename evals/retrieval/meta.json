@@ -1,14 +1,18 @@
 {
-  "split": "dev",
+  "split": {
+    "dev": 40,
+    "test": 20
+  },
   "corpus_law": "حماية البيانات الشخصية",
   "corpus_law_status": "CONFIRMED",
-  "authored_from": "secondary web sources (paraphrased); all 20 article references machine-verified against the ingested corpus on 2026-09-08",
+  "authored_from": "mixed — see provenance; batch 1 from secondary sources, batch 2 with the corpus visible under a measured containment guard",
   "max_lexical_overlap": 0.55,
   "notes": [
     "corpus_law is a substring matched against law_name in data/processed/articles.jsonl; law_name comes from the mandatory --law flag on ingest.",
     "Scoring is refused when the ingested corpus is a different law: 151/2020 questions run against قانون المرافعات would look like bad retrieval, not like a mismatched eval set.",
     "corpus_law_status must become CONFIRMED (the official PDF is in data/raw/ and ingested) before any number is published.",
-    "overlap_band caps AND floors how much of a question's wording is shared with the article that answers it (ADR-009). Too high = BM25 wins for free. Too low in a `direct` question = BM25 has nothing to match and the lexical baseline is unfairly crushed; that belongs in the `colloquial` category, which is where paraphrase robustness is tested on purpose."
+    "overlap_band caps AND floors how much of a question's wording is shared with the article that answers it (ADR-009). Too high = BM25 wins for free. Too low in a `direct` question = BM25 has nothing to match and the lexical baseline is unfairly crushed; that belongs in the `colloquial` category, which is where paraphrase robustness is tested on purpose.",
+    "split=test is held out: load_questions() returns dev unless a caller names the split, so the test rows stay unrun. They exist to check later whether a configuration chosen on dev survives questions that never informed it — an answer worth nothing once they have been scored against. verify-refs is the one caller that reads both, because it validates article references against the corpus text and touches no retrieval output."
   ],
   "overlap_band": {
     "direct": [
@@ -23,5 +27,21 @@
       0.0,
       0.35
     ]
+  },
+  "provenance": {
+    "batch_1": {
+      "ids": "Q001-Q020",
+      "split": "dev",
+      "authored_from": "secondary web sources (paraphrased); all 20 article references machine-verified against the ingested corpus on 2026-09-08",
+      "corpus_visible_while_authoring": false
+    },
+    "batch_2": {
+      "ids": "Q021-Q066 (40 of 46 drafts kept)",
+      "split": "20 dev / 20 test",
+      "authored_from": "written against the ingested corpus with the article text visible, 2026-09-23",
+      "corpus_visible_while_authoring": true,
+      "why_this_is_weaker": "A question written while looking at its own answer tends to reuse the answer's wording, which hands BM25 a match it did not earn and inflates every lexical baseline it appears in.",
+      "mitigation": "The containment band is measured, not asserted: 22 of the first 40 drafts were rejected by it (19 above band, 3 below) and rewritten before anything was committed. Six further drafts were dropped for redundant article coverage. verify-refs re-checks every surviving row at scoring time, so a leaky question cannot reach a number."
+    }
   }
 }

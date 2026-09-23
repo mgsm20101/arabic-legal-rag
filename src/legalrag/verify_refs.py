@@ -52,7 +52,7 @@ def load_corpus() -> dict[str, dict]:
 def main(argv: list[str]) -> int:
     write = "--write" in argv
     corpus = load_corpus()
-    questions, errors = load_questions()
+    questions, errors = load_questions(split=None)  # validates held-out rows too
     if errors:
         for e in errors:
             print(f"  - {e}")

@@ -95,9 +95,11 @@ def score_questions(questions, k: int = EVAL_K) -> list[tuple[str, float, float]
 
 
 CATEGORIES = {"direct", "multi_article", "out_of_corpus", "colloquial"}
+SPLITS = {"dev", "test"}
+DEFAULT_SPLIT = "dev"
 REQUIRED_FIELDS = {
     "id", "category", "question", "expected_articles",
-    "expected_keywords", "answerable", "ref_status",
+    "expected_keywords", "answerable", "ref_status", "split",
 }
 
 
@@ -110,10 +112,30 @@ class Question:
     expected_keywords: list[str]
     answerable: bool
     ref_status: str
+    # Required in the FILE (see REQUIRED_FIELDS) so no row defaults into `dev`
+    # silently; defaulted on the object so constructing one ad hoc stays cheap.
+    split: str = DEFAULT_SPLIT
     notes: str = ""
 
 
-def load_questions(path: Path = QUESTIONS_PATH) -> tuple[list[Question], list[str]]:
+def load_questions(
+    path: Path = QUESTIONS_PATH, split: str | None = DEFAULT_SPLIT
+) -> tuple[list[Question], list[str]]:
+    """Load the question set, returning only `split` (None returns every row).
+
+    The default is `dev` on purpose, and every caller in this repo takes it.
+    The `test` rows exist to answer one question later — does a configuration
+    chosen on `dev` hold on questions that never informed it — and that answer
+    is only worth having if the rows stayed unseen. A held-out split kept by
+    convention is not held out; making it invisible unless a caller names it
+    means forgetting to exclude it is not a way to leak it.
+
+    `verify-refs` is the one caller that passes None, because a row it never
+    validates is a row with no `ref_status` — and that check reads the article
+    text, not any retrieval or generation output.
+    """
+    if split is not None and split not in SPLITS:
+        return [], [f"unknown split {split!r}; expected one of {sorted(SPLITS)}"]
     if not path.exists():
         return [], [f"missing question file: {path}"]
 
@@ -138,6 +160,9 @@ def load_questions(path: Path = QUESTIONS_PATH) -> tuple[list[Question], list[st
         if raw["category"] not in CATEGORIES:
             errors.append(f"{raw['id']}: unknown category {raw['category']!r}")
             continue
+        if raw["split"] not in SPLITS:
+            errors.append(f"{raw['id']}: unknown split {raw['split']!r}")
+            continue
         if raw["id"] in seen:
             errors.append(f"{raw['id']}: duplicate id")
             continue
@@ -149,6 +174,8 @@ def load_questions(path: Path = QUESTIONS_PATH) -> tuple[list[Question], list[st
             continue
 
         seen.add(raw["id"])
+        if split is not None and raw["split"] != split:
+            continue  # after validation: a malformed held-out row is still an error
         questions.append(Question(**{k: raw[k] for k in Question.__annotations__ if k in raw}))
 
     return questions, errors

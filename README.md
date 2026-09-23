@@ -12,7 +12,7 @@ produced it, the commit it ran at, the environment, the eval set and the raw
 result file. A number with no row there is not quotable.
 
 > **Citing this from somewhere else?** Use the
-> [`portfolio-v1`](https://github.com/mgsm20101/arabic-legal-rag/tree/portfolio-v1)
+> [`portfolio-v3`](https://github.com/mgsm20101/arabic-legal-rag/tree/portfolio-v3)
 > tag, not `main`. The tag pins the numbers to the code that produced them;
 > `main` will move.
 
@@ -219,35 +219,45 @@ below before quoting any row.
 
 | Configuration | Median | p95 |
 |---|---:|---:|
-| BM25 | 1.5 ms | 3.9 ms |
-| dense | 125.5 ms | 469.8 ms |
-| hybrid (RRF) | 124.8 ms | 346.3 ms |
-| hybrid + rerank | 7 710.0 ms | 14 161.2 ms |
+| BM25 | 1.3 ms | 3.3 ms |
+| dense | 145.1 ms | 331.7 ms |
+| hybrid (RRF) | 136.3 ms | 311.6 ms |
+| hybrid + rerank | 7 994.2 ms | 13 137.8 ms |
 
-The reranker costs about **61× dense**. Unlike the quality numbers, this did
-not move when the eval set doubled (it was 64× at 15 questions).
+The reranker costs about **55× dense** at the median. Earlier runs on the same
+machine gave 61× and 64×: the multiple drifts by a few between runs on an
+unisolated desktop, the order of magnitude does not. Read it as roughly 55–65×.
 
 ### Generation — gemma3:4b, greedy, over dense top-5
 
 Scored by `cite.audit`, a program: it resolves every citation against the corpus
 and against the exact articles the retriever returned. No judge model.
 
-| | 15 answerable (prev) | 30 answerable (now) |
+Two runs of the same code and model digest, 30 answerable + 10 out-of-corpus
+questions each, separated by an Ollama server restart:
+
+| | run A | run B |
 |---|---:|---:|
-| Fully grounded | 9/15 = 60.0% | 11/29 = 37.9% |
+| Fully grounded (of answered) | 12/30 = 40.0% | 11/29 = 37.9% |
 | Cited an article not in the law | **0** | **0** |
-| Cited a real article it was not given | 1 | 2 |
-| Made a claim with no citation | 5 | 16 |
-| Cited the expected article | 10/15 = 66.7% | 16/29 = 55.2% |
-| Used the requested `[مادة N]` form | 15/15 = 100% | 25/29 = 86.2% |
-| Abstained on `out_of_corpus` | 4/5 = 80.0% | 8/10 = 80.0% |
-| Falsely abstained on answerable | 0/15 = 0.0% | 1/30 = 3.3% |
+| Cited a real article it was not given | 3 | 2 |
+| Made a claim with no citation | 15 | 16 |
+| Cited the expected article | 14/30 = 46.7% | 16/29 = 55.2% |
+| Abstained on `out_of_corpus` | 7/10 = 70.0% | 8/10 = 80.0% |
+| Falsely abstained on answerable | 0/30 = 0.0% | 1/30 = 3.3% |
+| B1 grounding (pre-registered) | FAIL | FAIL |
+| B2 abstention ≥ 80% (pre-registered) | **FAIL** | **PASS** |
 
-Zero fabricated citations, at twice the questions. The grounding fall is
-explained below and is **not** the model getting worse.
+**Zero fabricated citations in both runs — 0 of 59 answers.** That is the claim
+that holds. The failure is attribution, not invention: the model omits the
+reference; it does not invent law.
 
-Against thresholds pre-registered in [`EVAL.md`](EVAL.md) before the run:
-**B1 (grounding) FAIL · B2 (abstention) PASS**.
+**The abstention verdict is not stable.** Retrieval was identical on all 40
+questions in both runs; the generated text differed on 26. Inside one server
+session the same run repeats exactly (40/40); across a restart it does not, and
+B2 — one question from its pre-registered floor — passed once and failed once.
+Read abstention as *70–80% at 0–3% false abstention*, not as a pass.
+[`EVIDENCE.md`](EVIDENCE.md) E3c.
 
 ### An eval set overturned this repo's own headline — the interesting part
 
@@ -277,7 +287,12 @@ come back:
 | hybrid + rerank | 0.667 | **0.767** | **0.641** |
 | BM25 | 0.333 | 0.467 | 0.348 |
 
-It does. `evals/registry/reweighting_check_618693ef.json`.
+It does at both ends — dense first, BM25 last — and **not in the middle**:
+re-weighted hybrid (0.704) lands above hybrid+rerank (0.641), where the
+15-question run had them the other way round. So the mix explains dense losing
+first place, not every position. `python evals/reweighting_check.py` prints the
+match position by position:
+[`reweighting_check_4fe53a93.json`](evals/registry/reweighting_check_4fe53a93.json).
 
 **What the numbers now support.** Per-category, the two stages still fail in
 opposite places, and those gaps are large enough to be worth something:
@@ -312,7 +327,7 @@ split, not on dev.
 **The decision this supports:** ship dense, but for a different reason than
 before. It is no longer "the reranker is worse" — that claim is dead. It is
 that the aggregate difference is unresolvable while the cost is certain at
-**61×**, and that the reranker's advantage is concentrated in `direct`
+**roughly 55–65×**, and that the reranker's advantage is concentrated in `direct`
 questions while its deficit is concentrated in `colloquial` ones, which is the
 register real users actually write in. Routing to the reranker by question
 shape is the obvious follow-up and has not been tried.
@@ -328,10 +343,15 @@ Every limitation here carries *why* and *what would settle it*.
   with machine-verified references, bought at the cost of volume. *Next:* a
   paired comparison, which has the power four marginal intervals lack; then the
   20 held-out questions.
-* **Generation latency is not measured.** The two generation runs recorded
-  38.7 s and 17.9 s per answer for the same model at the same quantization,
-  because GPU share on a shared 4 GB card was 9% and 55%. Neither is a
-  benchmark and neither is quoted as one. Retrieval latency (E2) is the row
+* **Generation is not reproducible across server sessions.** Greedy decoding
+  on the same model digest repeated exactly within one Ollama session and
+  differed on 26 of 40 answers across a restart. Two sessions show the variance
+  exists; they cannot size it. *Next:* five runs, each after a restart, every
+  metric reported as a range; and pinning GPU layer placement to test whether
+  that is the source.
+* **Generation latency is not measured.** Runs recorded 17.9–38.7 s per answer
+  for the same model at the same quantization, depending on GPU share on a
+  shared 4 GB card. None is a benchmark and none is quoted as one. Retrieval latency (E2) is the row
   with a real timing protocol behind it. *Next:* an idle machine, if a
   generation number is ever needed.
 * **The corpus failed its fidelity check.** The ingested PDF is a third-party
@@ -351,7 +371,7 @@ Every limitation here carries *why* and *what would settle it*.
   attached to. ADR-022. *Next:* that needs a judge model with its own
   validation, or human adjudication.
 * **One corpus, one jurisdiction, one machine.** No GPU retrieval numbers, no
-  production-scale numbers, no held-out split.
+  production-scale numbers, and the 20-question held-out split is still unrun.
 * **Not suitable for legal use.** Outputs are not legal advice and are not
   validated by a lawyer.
 
@@ -375,7 +395,7 @@ instrument and is not redistributed here.
 ```bash
 python tasks.py ingest --law "قانون حماية البيانات الشخصية"
 python tasks.py verify-refs          # every ground-truth reference re-checked
-python tasks.py test                 # 911 tests, no model needed (2 skip on a
+python tasks.py test                 # 916 tests, no model needed (2 skip on a
                                      # fresh clone — they read the ignored corpus)
 
 python evals/environment.py          # regenerate the environment record

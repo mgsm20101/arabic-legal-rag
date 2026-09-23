@@ -1,0 +1,110 @@
+{
+  "check": "category-reweighting",
+  "command": "python evals/reweighting_check.py",
+  "source_commit_sha": "4fe53a93653d8929c866598cf84fe2969885c370",
+  "worktree_clean": true,
+  "old_run": "evals/registry/ablation_bd04e8e8.json",
+  "new_run": "evals/registry/ablation_4fe53a93.json",
+  "old_mix": {
+    "colloquial": 0.533,
+    "direct": 0.267,
+    "multi_article": 0.2
+  },
+  "new_mix": {
+    "colloquial": 0.3,
+    "direct": 0.4,
+    "multi_article": 0.3
+  },
+  "rows": [
+    {
+      "configuration": "BM25",
+      "old_actual": 0.333,
+      "new_actual": 0.467,
+      "new_rates_under_old_mix": 0.348,
+      "per_category_new": {
+        "direct": 0.667,
+        "multi_article": 0.556,
+        "colloquial": 0.111
+      }
+    },
+    {
+      "configuration": "dense",
+      "old_actual": 0.767,
+      "new_actual": 0.75,
+      "new_rates_under_old_mix": 0.778,
+      "per_category_new": {
+        "direct": 0.75,
+        "multi_article": 0.667,
+        "colloquial": 0.833
+      }
+    },
+    {
+      "configuration": "hybrid (RRF)",
+      "old_actual": 0.6,
+      "new_actual": 0.75,
+      "new_rates_under_old_mix": 0.704,
+      "per_category_new": {
+        "direct": 0.833,
+        "multi_article": 0.778,
+        "colloquial": 0.611
+      }
+    },
+    {
+      "configuration": "hybrid + rerank",
+      "old_actual": 0.667,
+      "new_actual": 0.767,
+      "new_rates_under_old_mix": 0.641,
+      "per_category_new": {
+        "direct": 1.0,
+        "multi_article": 0.833,
+        "colloquial": 0.389
+      }
+    }
+  ],
+  "ordering": {
+    "old": [
+      "dense",
+      "hybrid + rerank",
+      "hybrid (RRF)",
+      "BM25"
+    ],
+    "new_rates_under_old_mix": [
+      "dense",
+      "hybrid (RRF)",
+      "hybrid + rerank",
+      "BM25"
+    ],
+    "positions": [
+      {
+        "position": 1,
+        "old": "dense",
+        "reweighted": "dense",
+        "match": true
+      },
+      {
+        "position": 2,
+        "old": "hybrid + rerank",
+        "reweighted": "hybrid (RRF)",
+        "match": false
+      },
+      {
+        "position": 3,
+        "old": "hybrid (RRF)",
+        "reweighted": "hybrid + rerank",
+        "match": false
+      },
+      {
+        "position": 4,
+        "old": "BM25",
+        "reweighted": "BM25",
+        "match": true
+      }
+    ],
+    "all_positions_match": false
+  },
+  "supersedes": {
+    "file": "evals/registry/reweighting_check_618693ef.json",
+    "why": "hand-computed with no script, bound to a commit that is not on the public main branch, and read as reproducing the old ordering when only the first and last positions match"
+  },
+  "measured_at": "2026-09-23T16:03:07+00:00"
+}

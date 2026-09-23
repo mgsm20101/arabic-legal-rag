@@ -1,0 +1,81 @@
+{
+  "check": "where-the-grounding-drop-came-from",
+  "command": "python evals/grounding_breakdown.py",
+  "source_commit_sha": "5c76fa468d144f7fe3ecd5d683a167d554fed494",
+  "worktree_clean": true,
+  "rows": "evals/registry/answer_rows_4fe53a93.json",
+  "rows_produced_at": "4fe53a93",
+  "baseline_rows": "evals/registry/answer_rows_46797bef.json",
+  "denominator": "answered questions; an answerable question the model declined is a false_abstention, never a grounded answer",
+  "headline": {
+    "answerable": 30,
+    "answered": 30,
+    "grounded": 12
+  },
+  "by_category": {
+    "colloquial": {
+      "answerable": 9,
+      "answered": 9,
+      "grounded": 5,
+      "uncited": 4,
+      "cut_by_token_cap": 1,
+      "false_abstention": 0
+    },
+    "direct": {
+      "answerable": 12,
+      "answered": 12,
+      "grounded": 4,
+      "uncited": 6,
+      "cut_by_token_cap": 0,
+      "false_abstention": 0
+    },
+    "multi_article": {
+      "answerable": 9,
+      "answered": 9,
+      "grounded": 3,
+      "uncited": 5,
+      "cut_by_token_cap": 2,
+      "false_abstention": 0
+    }
+  },
+  "by_batch": {
+    "batch_1_Q001_Q020": {
+      "answerable": 15,
+      "answered": 15,
+      "grounded": 9,
+      "uncited": 5,
+      "cut_by_token_cap": 2,
+      "false_abstention": 0
+    },
+    "batch_2_Q021_plus": {
+      "answerable": 15,
+      "answered": 15,
+      "grounded": 3,
+      "uncited": 10,
+      "cut_by_token_cap": 1,
+      "false_abstention": 0
+    }
+  },
+  "batch_1_against_baseline": {
+    "baseline": {
+      "answered": 15,
+      "grounded": 9,
+      "false_abstention": 0
+    },
+    "now": {
+      "answered": 15,
+      "grounded": 9,
+      "false_abstention": 0
+    }
+  },
+  "token_cap": {
+    "answers_cut": 3,
+    "cut_and_uncited": 3,
+    "uncited_total": 15
+  },
+  "supersedes": {
+    "file": "evals/registry/grounding_breakdown_83384b2b.json",
+    "why": "hand-computed with no script, and counted the one false abstention (Q014) as grounded: colloquial read 5/9 and batch 1 read 8/15 where the answered counts are 4/8 and 7/14. multi_article (0/9) and the token-cap figures are unaffected."
+  },
+  "measured_at": "2026-09-23T17:09:42+00:00"
+}

@@ -1,0 +1,141 @@
+{
+  "metric": "retrieval quality — four-configuration ablation",
+  "source_commit_sha": "4fe53a93653d8929c866598cf84fe2969885c370",
+  "worktree_clean": true,
+  "environment_ref": "env-001",
+  "runtime_observed": {
+    "python": "3.14.6",
+    "packages": {
+      "torch": "2.14.0",
+      "sentence-transformers": "6.0.1",
+      "transformers": "5.16.1",
+      "numpy": "2.5.1"
+    },
+    "torch_sees_gpu": false
+  },
+  "dataset": {
+    "corpus_articles": 56,
+    "questions_written": 40,
+    "questions_scored": 30,
+    "questions_abstention": 10,
+    "split": {
+      "dev": 40,
+      "test": 20
+    },
+    "k": 5,
+    "candidate_depth": 20
+  },
+  "results": [
+    {
+      "configuration": "BM25",
+      "note": "lexical only, no model",
+      "recall_at_5": 0.467,
+      "mrr": 0.403,
+      "recall_at_5_interval": {
+        "point": 0.467,
+        "ci95_low": 0.3,
+        "ci95_high": 0.633,
+        "method": "percentile bootstrap over per-question values",
+        "resamples": 10000,
+        "seed": 20260923
+      },
+      "mrr_interval": {
+        "point": 0.403,
+        "ci95_low": 0.25,
+        "ci95_high": 0.561,
+        "method": "percentile bootstrap over per-question values",
+        "resamples": 10000,
+        "seed": 20260923
+      },
+      "per_category_recall_at_5": {
+        "direct": 0.667,
+        "multi_article": 0.556,
+        "colloquial": 0.111
+      }
+    },
+    {
+      "configuration": "dense",
+      "note": "multilingual-e5-base",
+      "recall_at_5": 0.75,
+      "mrr": 0.562,
+      "recall_at_5_interval": {
+        "point": 0.75,
+        "ci95_low": 0.617,
+        "ci95_high": 0.883,
+        "method": "percentile bootstrap over per-question values",
+        "resamples": 10000,
+        "seed": 20260923
+      },
+      "mrr_interval": {
+        "point": 0.562,
+        "ci95_low": 0.423,
+        "ci95_high": 0.699,
+        "method": "percentile bootstrap over per-question values",
+        "resamples": 10000,
+        "seed": 20260923
+      },
+      "per_category_recall_at_5": {
+        "direct": 0.75,
+        "multi_article": 0.667,
+        "colloquial": 0.833
+      }
+    },
+    {
+      "configuration": "hybrid (RRF)",
+      "note": "BM25 + dense, depth 20",
+      "recall_at_5": 0.75,
+      "mrr": 0.591,
+      "recall_at_5_interval": {
+        "point": 0.75,
+        "ci95_low": 0.6,
+        "ci95_high": 0.883,
+        "method": "percentile bootstrap over per-question values",
+        "resamples": 10000,
+        "seed": 20260923
+      },
+      "mrr_interval": {
+        "point": 0.591,
+        "ci95_low": 0.449,
+        "ci95_high": 0.726,
+        "method": "percentile bootstrap over per-question values",
+        "resamples": 10000,
+        "seed": 20260923
+      },
+      "per_category_recall_at_5": {
+        "direct": 0.833,
+        "multi_article": 0.778,
+        "colloquial": 0.611
+      }
+    },
+    {
+      "configuration": "hybrid + rerank",
+      "note": "mmarco-mMiniLMv2-L12-H384-v1",
+      "recall_at_5": 0.767,
+      "mrr": 0.668,
+      "recall_at_5_interval": {
+        "point": 0.767,
+        "ci95_low": 0.617,
+        "ci95_high": 0.9,
+        "method": "percentile bootstrap over per-question values",
+        "resamples": 10000,
+        "seed": 20260923
+      },
+      "mrr_interval": {
+        "point": 0.668,
+        "ci95_low": 0.512,
+        "ci95_high": 0.811,
+        "method": "percentile bootstrap over per-question values",
+        "resamples": 10000,
+        "seed": 20260923
+      },
+      "per_category_recall_at_5": {
+        "direct": 1.0,
+        "multi_article": 0.833,
+        "colloquial": 0.389
+      }
+    }
+  ],
+  "candidate_ceiling_recall_at_20": 0.967,
+  "reading": "No ordering between these configurations is supported by this eval set. At 30 scored questions every Recall@5 interval overlaps every other, and so does every MRR interval — including BM25 against dense, which was the one comparison that survived at 15 questions. Doubling the question count did not narrow the gaps because BM25's point estimate rose faster than the intervals shrank. Per-category differences are much larger than the aggregate ones and are where this table is actually informative. These are unpaired marginal intervals, which is conservative: every configuration answers the same questions, so a paired test would have more power and is the next experiment.",
+  "measured_at": "2026-09-23T16:02:56+00:00"
+}

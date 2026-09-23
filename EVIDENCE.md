@@ -29,8 +29,9 @@ the code that ran, the environment, the data, and the raw result file.
 Each harness checks step 2 itself and stamps `worktree_clean` into its output,
 so a result produced from an edited tree says so in the file. It has fired in
 anger: a generation run was discarded and repeated because documentation edits
-landed while it was going. The re-run reproduced it exactly, which is the
-outcome that makes the discipline cheap.
+landed while it was going. The re-run matched it — inside the same Ollama server
+session. Across a server restart it does not (E3c), which is a limit of greedy
+decoding on this stack rather than of the discipline.
 
 ---
 
@@ -58,15 +59,44 @@ Regenerate with `python evals/environment.py` →
 
 ---
 
+## Corrections to this registry — 2026-09-23
+
+Three things were wrong with the rows below as they were first published, and
+all of them were found by re-running rather than by reading.
+
+1. **Their commits could not be opened.** E1, E2 and E3 named
+   `618693ef`, `318ba702` and `83384b2b`. Those were real commits when the
+   measurements ran, and were then rewritten before they were pushed, so none
+   of them is on `origin/main`. E2's row named `170c906a`, which exists
+   nowhere. A row whose commit cannot be checked out is a claim that only looks
+   documented. Every row now names a commit on `origin/main`; the old result
+   files stay in `evals/registry/`, read for their history only.
+2. **"env-001" was a string, not an observation.** The harnesses wrote it into
+   every result unconditionally. A re-run started from a shell whose `python`
+   was a different interpreter — Python 3.12, CUDA torch that could see the GPU
+   — was stamped env-001 like any other. Retrieval quality came out identical;
+   latency came out 5–11× faster. None of it was pushed. `legalrag.envcheck`
+   now compares the running interpreter with `evals/environment.json`, stops
+   before any model loads on a mismatch, and writes what actually ran into each
+   result as `runtime_observed`.
+3. **"The re-run reproduced it exactly" was true of one server session.**
+   See E3c: across an Ollama restart, the same model digest under greedy
+   decoding produced different text on 26 of 40 questions.
+
+Every row below was re-measured on 2026-09-23 at a commit on `origin/main`,
+with the environment checked rather than asserted.
+
+---
+
 ## E1 · Retrieval quality — four-configuration ablation
 
 | | |
 |---|---|
 | **Command** | `python evals/ablation_result.py` |
-| **source_commit_sha** | `618693ef` · worktree clean |
-| **environment_ref** | `env-001` |
-| **Dataset** | 56 articles (Egypt Law 151/2020) · 60 questions written, **30 scored**, 10 abstention · dev split · k=5 |
-| **Raw result** | [`evals/registry/ablation_618693ef.json`](evals/registry/ablation_618693ef.json) |
+| **source_commit_sha** | `4fe53a93` · worktree clean |
+| **environment_ref** | `env-001` — checked by the harness, recorded in the file as `runtime_observed` |
+| **Dataset** | 56 articles (Egypt Law 151/2020) · 60 questions written — 40 `dev`, 20 `test` held out and unrun · **30 scored**, 10 abstention · k=5 |
+| **Raw result** | [`evals/registry/ablation_4fe53a93.json`](evals/registry/ablation_4fe53a93.json) |
 | **Date** | 2026-09-23 |
 
 | Configuration | Recall@5 | 95% CI | MRR | 95% CI |
@@ -79,6 +109,10 @@ Regenerate with `python evals/environment.py` →
 Candidate ceiling — Recall@20 of the hybrid stage: **0.967**. The reranker can
 reorder those candidates; it cannot exceed them.
 
+This is the third time these numbers have been produced — at `618693ef`, on the
+wrong interpreter, and here — and they have been identical every time.
+Retrieval is deterministic; that is what lets a registry row stand for it.
+
 Intervals are a percentile bootstrap over per-question values (10 000 resamples,
 seed `20260923`). Not Wilson: recall is fractional on `multi_article` questions,
 so the Bernoulli assumption does not hold. MRR carries an interval too, because
@@ -90,27 +124,50 @@ dense, which was the one comparison that survived at 15 questions. Doubling the
 question count did not narrow the gaps: BM25's point estimate rose faster
 (0.333 → 0.467) than the intervals shrank.
 
-#### E1b · Why the earlier run looked different — `reweighting_check_618693ef.json`
+Per category the gaps are large, and this is where the table is informative:
 
-The 15-question run put **dense on top at 0.767** and hybrid+rerank fourth at
+| | direct (12) | multi_article (9) | colloquial (9) |
+|---|---:|---:|---:|
+| BM25 | 0.667 | 0.556 | 0.111 |
+| dense | 0.750 | 0.667 | **0.833** |
+| hybrid (RRF) | 0.833 | 0.778 | 0.611 |
+| hybrid + rerank | **1.000** | 0.833 | 0.389 |
+
+#### E1b · Why the 15-question run looked different — `reweighting_check_4fe53a93.json`
+
+| | |
+|---|---|
+| **Command** | `python evals/reweighting_check.py` — reads two ablation files, no model |
+| **source_commit_sha** | `4fe53a93` · worktree clean |
+| **Raw result** | [`evals/registry/reweighting_check_4fe53a93.json`](evals/registry/reweighting_check_4fe53a93.json) |
+
+The 15-question run put **dense on top at 0.767** and hybrid+rerank third at
 0.667, and this repository published a section titled *"The reranker did not
 help"* on the strength of it. At 30 questions that ordering inverts. The
-retrievers did not change:
-
-| | direct | multi_article | colloquial |
-|---|---:|---:|---:|
-| hybrid + rerank @ n=15 | 1.000 | 0.833 | 0.438 |
-| hybrid + rerank @ n=30 | 1.000 | 0.833 | 0.389 |
+retrievers did not change — hybrid+rerank scores 1.000 / 0.833 on `direct` /
+`multi_article` in both runs, and 0.438 → 0.389 on `colloquial`.
 
 What changed is that `colloquial` — the one category the reranker is bad at —
-fell from **53% of the scored set to 30%**. Taking the n=30 per-category rates
-and re-weighting them by the n=15 category mix reproduces the old ordering
-(dense 0.778, hybrid+rerank 0.641, BM25 0.348). The old aggregate was a
-statement about the question mix, not about retrieval.
+fell from **53% of the scored set to 30%**. The script takes the n=30
+per-category rates, re-weights them by the n=15 category mix (both mixes
+computed from `questions.jsonl`, not typed), and reports every rank position:
 
-The per-category gaps are large and are where this table is informative:
-BM25 scores 0.111 on `colloquial` against dense's 0.833; hybrid+rerank scores
-1.000 on `direct` against BM25's 0.667.
+| Position | 15-question run | n=30 rates at the n=15 mix | |
+|---|---|---|---|
+| 1 | dense 0.767 | dense 0.778 | match |
+| 2 | hybrid + rerank 0.667 | hybrid (RRF) 0.704 | **differs** |
+| 3 | hybrid (RRF) 0.600 | hybrid + rerank 0.641 | **differs** |
+| 4 | BM25 0.333 | BM25 0.348 | match |
+
+So the mix explains the headline reversal — dense losing first place — and
+both ends, but not the middle, and at these interval widths the middle two were
+never separable anyway.
+
+> **Correction.** This row previously said the re-weighting "reproduces the old
+> ordering". It restores both ends and not the middle. The first version of the
+> check was computed by hand with no command; the script replaces it and prints
+> the position-by-position match so the sentence cannot be written again
+> without the file contradicting it.
 
 > **Limitations.** 30 scored questions, and no aggregate comparison survives its
 > interval. A 56-article corpus also puts top-5 at roughly 9% of the corpus,
@@ -123,10 +180,13 @@ BM25 scores 0.111 on `colloquial` against dense's 0.833; hybrid+rerank scores
 > questions, still unrun, to check whether any choice made on `dev` survives
 > questions that never informed it.
 
-> The 15-question run is kept at
-> [`ablation_bd04e8e8.json`](evals/registry/ablation_bd04e8e8.json). It is
-> superseded, not deleted — a registry that removes its own overturned rows
-> cannot be used to check whether anyone was ever wrong.
+> Superseded, kept: the 15-question run
+> [`ablation_bd04e8e8.json`](evals/registry/ablation_bd04e8e8.json); the first
+> 30-question run [`ablation_618693ef.json`](evals/registry/ablation_618693ef.json)
+> (unreachable SHA, and a `reading` field written before the harness's prose was
+> corrected); [`reweighting_check_618693ef.json`](evals/registry/reweighting_check_618693ef.json)
+> (hand-computed). A registry that removes its overturned rows cannot be used
+> to check whether anyone was ever wrong.
 
 ---
 
@@ -134,23 +194,25 @@ BM25 scores 0.111 on `colloquial` against dense's 0.833; hybrid+rerank scores
 
 | | |
 |---|---|
-| **Command** | `python evals/retrieval_latency.py --reps 3 --warmup 3` |
-| **source_commit_sha** | `170c906a` · worktree clean |
-| **environment_ref** | `env-001` |
+| **Command** | `python evals/retrieval_latency.py --reps 3 --warmup 3` — Ollama stopped |
+| **source_commit_sha** | `4fe53a93` · worktree clean |
+| **environment_ref** | `env-001` — checked; `torch_sees_gpu: false` in `runtime_observed` |
 | **Dataset** | Same corpus and 30 scored questions · k=5 |
-| **Raw result** | [`evals/registry/latency_318ba702.json`](evals/registry/latency_318ba702.json) |
+| **Raw result** | [`evals/registry/latency_4fe53a93.json`](evals/registry/latency_4fe53a93.json) |
 | **Date** | 2026-09-23 |
 
 | Configuration | Median | p95 | n |
 |---|---:|---:|---:|
-| BM25 | 1.5 ms | 3.9 ms | 90 |
-| dense | 125.5 ms | 469.8 ms | 90 |
-| hybrid (RRF) | 124.8 ms | 346.3 ms | 90 |
-| **hybrid + rerank** | **7 710.0 ms** | 14 161.2 ms | 90 |
+| BM25 | 1.3 ms | 3.3 ms | 90 |
+| dense | 145.1 ms | 331.7 ms | 90 |
+| hybrid (RRF) | 136.3 ms | 311.6 ms | 90 |
+| **hybrid + rerank** | **7 994.2 ms** | 13 137.8 ms | 90 |
 
-The reranker costs about **61× dense** at the median. The 15-question run put
-that at 64×, so unlike the quality side, the cost side did not move when the
-eval set doubled.
+The reranker costs about **55× dense** at the median. Earlier runs on the same
+machine and interpreter put it at 64× (15 questions) and 61× (30 questions,
+unreachable SHA, [`latency_318ba702.json`](evals/registry/latency_318ba702.json)).
+The ratio moves by a few multiples between runs of an unisolated desktop; the
+order of magnitude does not. Quote it as "roughly 55–65×", not as one number.
 
 **Protocol.** CPU, single process, warm. Model load and 3 warm-up queries per
 configuration excluded. 3 repetitions × 30 questions = 90 samples per
@@ -167,7 +229,7 @@ be running.
 
 > **Limitations.** p95 over 90 samples is coarse; read it next to `n`, never
 > alone. Interleaving spreads drift, it does not remove it. Hybrid comes out
-> **0.7 ms faster than dense**, which is impossible — hybrid calls dense and
+> **8.8 ms faster than dense**, which is impossible — hybrid calls dense and
 > then does more — so that gap is noise and the two are indistinguishable here:
 > the fusion step is effectively free and the cost is the dense encode. *Why
 > this limit:* one machine, one process, no isolation from the desktop it runs
@@ -180,19 +242,20 @@ be running.
 
 | | |
 |---|---|
-| **Command** | `python tasks.py answer-eval --model ollama:gemma3:4b` then `python evals/answer_eval_result.py` |
-| **source_commit_sha** | `83384b2b` · worktree clean |
-| **environment_ref** | `env-001` |
+| **Command** | `python tasks.py answer-eval --model ollama:gemma3:4b --overwrite` then `python evals/answer_eval_result.py` |
+| **source_commit_sha** | `4fe53a93` · worktree clean |
+| **environment_ref** | `env-001` — the run's own metadata records its interpreter; the promoter refuses one that differs |
 | **Dataset** | 40 dev questions — 30 answerable, 10 `out_of_corpus` · corpus fingerprint `498155cd96f12f6b` |
-| **Raw judgments** | [`evals/registry/answer_rows_83384b2b.json`](evals/registry/answer_rows_83384b2b.json) — every answer, citation and verdict |
-| **Summary** | [`evals/registry/answer_eval_83384b2b.json`](evals/registry/answer_eval_83384b2b.json) |
+| **Raw judgments** | [`evals/registry/answer_rows_4fe53a93.json`](evals/registry/answer_rows_4fe53a93.json) — every answer, citation and verdict |
+| **Summary** | [`evals/registry/answer_eval_4fe53a93.json`](evals/registry/answer_eval_4fe53a93.json) |
 | **Date** | 2026-09-23 |
 
-**Generation protocol.** `gemma3:4b` through a local Ollama (digest
-`a2af6cc3eb7f`, Q4_K_M), greedy — temperature 0.0, seed 0 — capped at 128 new
-tokens, free-text contract, over the dense retriever's top-5. The Arabic system
-and user prompts are fixed in `src/legalrag/generate.py`; nothing is templated
-per question beyond the retrieved articles.
+**Generation protocol.** `gemma3:4b` through a local Ollama 0.20.3 (digest
+`a2af6cc3eb7f`, Q4_K_M, GPU share 55% on the GTX 1050 Ti), greedy — temperature
+0.0, seed 0 — capped at 128 new tokens, free-text contract, over the dense
+retriever's top-5. The Arabic system and user prompts are fixed in
+`src/legalrag/generate.py`; nothing is templated per question beyond the
+retrieved articles.
 
 **Scoring is a program, not a judge.** `legalrag.cite.audit` resolves every
 citation against the corpus and against the exact article set the retriever
@@ -200,81 +263,113 @@ handed over. There is no LLM in the loop, so there is no judge model, judge
 prompt or judge temperature to report, and the verdicts replay from the saved
 rows with `answer-eval --report-only`.
 
-| Metric | 15 answerable (prev) | **30 answerable (now)** |
+| Metric | this run (`4fe53a93`) | earlier run (`83384b2b`) |
 |---|---:|---:|
-| Answered | 15/15 | 29/30 |
-| Fully grounded | 9/15 = 60.0% | **11/29 = 37.9%** |
+| Answered | 30/30 | 29/30 |
+| Fully grounded (of answered) | **12/30 = 40.0%** | 11/29 = 37.9% |
 | Cited an article not in the law (fabricated) | **0** | **0** |
-| Cited a real article it was not given | 1 | 2 |
-| Made a claim with no citation | 5 | 16 |
-| Cited the article the eval set names | 10/15 = 66.7% | 16/29 = 55.2% |
-| Used the requested `[مادة N]` form | 15/15 = 100% | 25/29 = 86.2% |
-| Abstained on `out_of_corpus` | 4/5 = 80.0% | 8/10 = 80.0% |
-| Falsely abstained on answerable | 0/15 = 0.0% | 1/30 = 3.3% |
+| Cited a real article it was not given | 3 | 2 |
+| Made a claim with no citation | 15 | 16 |
+| Cited the article the eval set names | 14/30 = 46.7% | 16/29 = 55.2% |
+| Used the requested `[مادة N]` form | 30/30 = 100% | 25/29 = 86.2% |
+| Abstained on `out_of_corpus` | **7/10 = 70.0%** | 8/10 = 80.0% |
+| Falsely abstained on answerable | 0/30 = 0.0% | 1/30 = 3.3% |
+| **B1** grounding (pre-registered) | **FAIL** | FAIL |
+| **B2** abstention ≥ 80% (pre-registered) | **FAIL** | PASS |
 
-**Verdicts against thresholds pre-registered in `EVAL.md` before the run:**
-B1 (grounding) **FAIL** · B2 (abstention) **PASS** — the same verdicts as the
-earlier run.
+**The one claim that holds in every run: zero fabricated citations** — 0 of 59
+answers across the two runs above, and 0 in every earlier run. The failure is
+attribution, not invention: the model omits the reference far more than it
+misplaces one, and it never cites an article the law does not have.
 
-**Zero fabricated citations, at twice the questions.** That is the claim this
-project rests on and it did not move. The failure is attribution, not
-invention: the model is not making up law, it is omitting the reference.
+**B2 is not a stable verdict.** It sits one question from the pre-registered
+floor, and which side it lands on changed between two runs of the same code.
+Read it beside the false-abstention line, always — a model that abstained on
+everything would score 100% on the first and be useless — and read the pair as
+"abstains on 70–80% of out-of-corpus questions, at 0–3% false abstention", not
+as a pass or a fail.
 
-#### E3b · Where the 22-point grounding drop came from — `grounding_breakdown_83384b2b.json`
+#### E3b · Grounding by category — `grounding_breakdown_5c76fa46.json`
 
-"The model got worse" is the reading that would be wrong.
+| | |
+|---|---|
+| **Command** | `python evals/grounding_breakdown.py --rows evals/registry/answer_rows_4fe53a93.json` — reads saved rows only, no model |
+| **source_commit_sha** | `5c76fa46` · worktree clean |
+| **Raw result** | [`evals/registry/grounding_breakdown_5c76fa46.json`](evals/registry/grounding_breakdown_5c76fa46.json) |
 
-| | n | grounded | uncited | cut by 128-token cap |
-|---|---:|---:|---:|---:|
-| `direct` | 12 | 7 | 4 | 0 |
-| **`multi_article`** | 9 | **0** | **8** | 2 |
-| `colloquial` | 9 | 5 | 4 | 3 |
+The denominator is **answered** questions. A declined answerable question
+carries `grounded: true` in its row because it made no claim; it is a false
+abstention, reported in its own column, never counted as grounded.
 
-The generator did not change: the 15 batch-1 questions scored **8/15** here
-against **9/15** before — the same behaviour, within one answer. The whole fall
-is in the questions added, and within those it is one category. The earlier run
-had 3 `multi_article` questions; this one has 9, and the model grounded **none**
-of them.
+| | answered | grounded — this run | grounded — `83384b2b` | uncited | cut by 128-token cap |
+|---|---:|---:|---:|---:|---:|
+| `direct` | 12 | 4 | 7 | 6 | 0 |
+| `multi_article` | 9 | 3 | **0** | 5 | 2 |
+| `colloquial` | 9 | 5 | 4 (of 8) | 4 | 1 |
+| **total** | **30** | **12** | 11 (of 29) | 15 | 3 |
 
-The 128-token cap contributes but does not explain it. All 5 answers it cut
-were uncited — a truncated Arabic answer loses its trailing `[مادة N]` — but 11
-of the 16 uncited answers were never truncated, and only 2 of the 9
-`multi_article` failures were. Raising the cap recovers at most 5 and would not
-touch the `multi_article` result.
+The totals barely moved between runs; the categories under them did. The
+earlier run grounded **no** `multi_article` question and this repository
+attributed the grounding drop to that category. This run grounds 3 of 9, and
+loses the difference on `direct` instead. With nine questions a category, a
+category-level finding from one generation run is not a finding. What both runs
+agree on is the shape of the failure: uncited answers, not fabricated ones.
 
-> This is the **second** aggregate in this run that moved because the question
-> mix changed rather than the system — E1b is the same shape from the retrieval
-> side. Neither was visible until the numbers were split by category, which is
-> the argument for recording per-category rates even when nobody asks for them.
+The token cap contributes and does not explain it: 3 answers were cut here, and
+12 of the 15 uncited answers were never truncated.
 
-**Read B2 only beside the line under it.** 80.0% is 8 of 10 — exactly the
-pre-registered floor again. It sits next to the false-abstention rate on
-purpose: a model that abstained on everything would score 100% on the first
-line and be useless. That rate is no longer zero (1/30), which is the cost of
-the abstention behaviour becoming visible at a larger sample.
+> **Correction.** The first breakdown, `grounding_breakdown_83384b2b.json`, was
+> computed by hand and counted the one false abstention (Q014) as grounded,
+> which is how its two tables summed to 12 against a headline of 11/29. The
+> script replaced it, with a test holding that run to 11/29. Its
+> `multi_article 0/9` stood as computed — and is now shown by E3c to be one
+> sample, not a property of the system.
+
+#### E3c · Does the generation run repeat? — `generation_repeat_5250b8b0.json`
+
+| | |
+|---|---|
+| **Command** | `python evals/generation_repeat.py --rows …83384b2b.json --rows …4fe53a93.json --rows runs/answer_eval-ollama-gemma3-4b.json` |
+| **source_commit_sha** | `5250b8b0` · worktree clean |
+| **Raw result** | [`evals/registry/generation_repeat_5250b8b0.json`](evals/registry/generation_repeat_5250b8b0.json) — embeds the third run's rows, since `runs/` is not tracked |
+
+Three runs of the same 40 questions, same model digest, greedy decoding:
+
+| Pair | same retrieval | same generated text | verdict flips |
+|---|---:|---:|---|
+| `83384b2b` vs `4fe53a93` — **across an Ollama restart** | 40/40 | **14/40** | grounded on 9 questions; abstained on Q014, Q016 |
+| `4fe53a93` vs a repeat — **same server session** | 40/40 | **40/40** | none |
+
+Retrieval is identical in every run. Generation is identical **within** one
+Ollama server session and differs on 26 of 40 questions **across** one. The two
+sessions also ran at different speeds (prompt evaluation 10.5 s against 2.7 s
+on the same first question), which is consistent with a different placement of
+work between CPU and GPU changing floating-point results enough to change an
+argmax — a hypothesis, not established here.
+
+This retracts a sentence that stood at the top of this file: that a generation
+run discarded and repeated "reproduced it exactly". It did, inside one server
+session. That is the weaker property, and the one that was tested.
+
+> **Limitations.** Two server sessions is the smallest sample that can show
+> variance and far too small to size it. *Why this limit:* each run is ~15–25
+> minutes of a shared desktop. *Next experiment:* five runs, each after a server
+> restart, reporting every metric as a range; and pinning `num_gpu` so layer
+> placement is not left to Ollama, to test whether that removes the variance.
 
 **Hypotheses** — consistent with these numbers, *not established by them*: the
-free-text contract leaves citation optional in practice, and `multi_article`
-questions are where that bites hardest because the answer has to attribute
-several claims rather than one.
+free-text contract leaves citation optional in practice, so whether a given
+answer carries its reference is close to a coin toss that decoding noise can
+flip. *Next experiment:* the `gated` claims contract, where an answer must name
+its articles before writing prose — aimed at exactly this failure, and one that
+should make grounding far less sensitive to run-to-run variance if it works.
 
-> **Limitations.** 30 answerable and 10 abstention questions; B2 moves 10 points
-> per question. The audit checks that a citation is *mechanically* valid — real
-> article, actually retrieved — not that it *supports* the sentence it is
-> attached to (ADR-022). *Why this limit:* semantic support needs either a judge
-> model, which would need its own validation, or human adjudication. *Next
-> experiments:* raise `max_new_tokens` to separate the cap's contribution from
-> the model's; then run the `gated` claims contract on `multi_article`
-> specifically — an answer that must name its articles before writing prose is
-> the intervention aimed at exactly this failure.
+> **Timing is not a benchmark.** Median 20.7 s per answer here, on a desktop,
+> with GPU share left to Ollama. E2 is the row with a real timing protocol.
 
-> **Timing is not comparable between the two runs and neither is a benchmark.**
-> GPU share was **9%** here against **55%** before — another process held the
-> 4 GB card — so mean 38.7 s/answer against the earlier 17.9 s median says
-> nothing about the model. Quantization (`Q4_K_M`) and digest (`a2af6cc3eb7f`)
-> are identical, so the quality numbers above are unaffected. Generation latency
-> on a shared desktop is not measured here; E2 is the row with a real timing
-> protocol behind it.
+> Superseded, kept: `answer_eval_83384b2b.json` and `answer_rows_83384b2b.json`
+> (unreachable SHA, interpreter not recorded; still the second sample in E3c),
+> and `grounding_breakdown_83384b2b.json` (hand-computed).
 
 ---
 
@@ -319,8 +414,8 @@ stands.
 | | |
 |---|---|
 | **Command** | `python tasks.py test` |
-| **source_commit_sha** | `83384b2b` |
-| **Result** | **911 passed** locally · **909 passed, 2 skipped** from a clone of this repository |
+| **source_commit_sha** | `7b0f461f` |
+| **Result** | **916 passed** locally · **914 passed, 2 skipped** from a clone of this repository |
 
 A test count is not a quality metric and is not presented as one. It is here so
 that the number quoted elsewhere is the *passing* count, taken from a run,
@@ -328,7 +423,7 @@ rather than the collected count taken from `--collect-only`.
 
 The two numbers differ for a reason worth stating: the statute corpus is
 git-ignored, so the two tests that read it skip on any machine that has not run
-`ingest`. CI reports the same 909/2. A reader who clones this and sees 909
+`ingest`. CI reports the same split. A reader who clones this and sees 914
 should see it explained here rather than wonder which number was inflated.
 
 ---
@@ -337,9 +432,10 @@ should see it explained here rather than wonder which number was inflated.
 
 | Claim someone might expect | Status |
 |---|---|
+| Run-to-run variance of generation, sized | **Not measured.** E3c shows it exists (2 server sessions); sizing it needs more runs. |
 | Whether a citation *supports* the sentence it is attached to | **Not measured.** The audit is mechanical (ADR-022). |
 | Cost per 1 000 queries against a hosted API | Not measured. Everything here is local; there are no API calls to price. Any cost figure would be an assumed rate multiplied by a latency, which is the latency restated. |
-| Held-out test-split results | **There is no test split yet.** The eval set is 20 questions, all dev (`evals/retrieval/meta.json`). A 60-question set with a locked test split is the design in `PRD.md`; it is not built, and nothing here has been validated out of sample. |
+| Held-out test-split results | **Not run.** The 60-question set has a locked `test` split of 20 questions that no measurement here has touched. Nothing in this file has been validated out of sample. |
 | Anything about laws other than 151/2020 | Out of scope — one corpus, one jurisdiction. |
 | GPU or production-scale retrieval latency | Not measured. Retrieval ran on CPU on one desktop. |
 | `qwen2.5-coder:3b` as a generator, or tool-calling behaviour | Not measured in any run recorded here. |

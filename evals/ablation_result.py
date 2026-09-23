@@ -6,7 +6,10 @@
 same `build_configs`, same `Config.run`, not a reimplementation — as a file a
 registry row can point at, stamped with the commit that produced it.
 
-It adds one thing the printed table does not have: a 95% interval on Recall@5.
+It adds one thing the printed table does not have: 95% intervals on Recall@5
+and on MRR. MRR needs one as much as recall does — once the recall intervals
+overlap, MRR is the metric a decision would actually rest on, and an unqualified
+MRR gap is exactly the kind of number this repository refuses to publish.
 With 15 scored questions the intervals are wide enough to overlap, and that is
 the point. `0.767` written alone reads like three significant figures of
 precision that 15 questions cannot support.
@@ -40,7 +43,7 @@ from legalrag.ablate import (  # noqa: E402
 from legalrag.dense import load_docs  # noqa: E402
 from legalrag.evaluate import binding_problem, corpus_laws, load_meta, load_questions  # noqa: E402
 from legalrag.rerank import CANDIDATE_DEPTH  # noqa: E402
-from legalrag.retrieve import recall_at_k  # noqa: E402
+from legalrag.retrieve import recall_at_k, reciprocal_rank  # noqa: E402
 
 
 def _git(*args: str) -> str:
@@ -101,9 +104,13 @@ def main(out: Path | None, resamples: int, seed: int) -> int:
     results = []
     for cfg in configs:
         cfg.run(answerable, EVAL_K)
-        per_q = [
-            recall_at_k(q.expected_articles, cfg.search(q.question, EVAL_K))
-            for q in answerable
+        # One search per question, both metrics from the same hits. This used to
+        # search a second time just to collect the per-question recall, which on
+        # the reranked configuration meant paying its ~6 s per question twice.
+        hits = [cfg.search(q.question, EVAL_K) for q in answerable]
+        per_q = [recall_at_k(q.expected_articles, h) for q, h in zip(answerable, hits)]
+        per_q_rr = [
+            reciprocal_rank(q.expected_articles, h) for q, h in zip(answerable, hits)
         ]
         results.append(
             {
@@ -112,6 +119,7 @@ def main(out: Path | None, resamples: int, seed: int) -> int:
                 "recall_at_5": round(cfg.recall, 3) if cfg.recall is not None else None,
                 "mrr": round(cfg.mrr, 3) if cfg.mrr is not None else None,
                 "recall_at_5_interval": _bootstrap_ci(per_q, resamples, seed),
+                "mrr_interval": _bootstrap_ci(per_q_rr, resamples, seed),
                 "per_category_recall_at_5": {
                     cat: (round(v[0], 3) if v[0] is not None else None)
                     for cat, v in cfg.per_category.items()

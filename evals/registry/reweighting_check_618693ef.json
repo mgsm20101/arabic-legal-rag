@@ -1,0 +1,69 @@
+{
+  "check": "category-reweighting",
+  "question": "Did the retrievers change between the 15- and 30-question runs, or did the question mix?",
+  "method": "Take the per-category Recall@5 measured on the 30-question set and re-weight it by the CATEGORY MIX of the 15-question set. If that reproduces the old aggregate ordering, the reversal is a composition effect and not a change in retrieval behaviour.",
+  "old_mix": {
+    "direct": 0.267,
+    "multi_article": 0.2,
+    "colloquial": 0.533
+  },
+  "new_mix": {
+    "direct": 0.4,
+    "multi_article": 0.3,
+    "colloquial": 0.3
+  },
+  "rows": [
+    {
+      "configuration": "BM25",
+      "old_n15_actual": 0.333,
+      "new_n30_actual": 0.467,
+      "new_rates_under_old_mix": 0.348,
+      "per_category_n30": {
+        "direct": 0.667,
+        "multi_article": 0.556,
+        "colloquial": 0.111
+      }
+    },
+    {
+      "configuration": "dense",
+      "old_n15_actual": 0.767,
+      "new_n30_actual": 0.75,
+      "new_rates_under_old_mix": 0.778,
+      "per_category_n30": {
+        "direct": 0.75,
+        "multi_article": 0.667,
+        "colloquial": 0.833
+      }
+    },
+    {
+      "configuration": "hybrid (RRF)",
+      "old_n15_actual": 0.6,
+      "new_n30_actual": 0.75,
+      "new_rates_under_old_mix": 0.704,
+      "per_category_n30": {
+        "direct": 0.833,
+        "multi_article": 0.778,
+        "colloquial": 0.611
+      }
+    },
+    {
+      "configuration": "hybrid + rerank",
+      "old_n15_actual": 0.667,
+      "new_n30_actual": 0.767,
+      "new_rates_under_old_mix": 0.641,
+      "per_category_n30": {
+        "direct": 1.0,
+        "multi_article": 0.833,
+        "colloquial": 0.389
+      }
+    }
+  ],
+  "ranking_old_actual": "dense > hybrid + rerank > hybrid (RRF) > BM25",
+  "ranking_new_actual": "hybrid + rerank > dense > hybrid (RRF) > BM25",
+  "ranking_reweighted": "dense > hybrid (RRF) > hybrid + rerank > BM25",
+  "finding": "Re-weighting reproduces the old ordering: dense on top (0.778 vs 0.767 measured) and hybrid+rerank near the bottom (0.641 vs 0.667 measured). The per-category rates barely moved between runs — hybrid+rerank scored direct 1.000 / multi 0.833 / colloquial 0.438 at n=15 and 1.000 / 0.833 / 0.389 at n=30. What moved was the share of colloquial questions, from 53% to 30%. The published conclusion 'the reranker did not help' was therefore a statement about the question mix, not about the reranker.",
+  "source_ablations": {
+    "n15": "ablation_bd04e8e8.json",
+    "n30": "ablation_618693ef.json"
+  }
+}

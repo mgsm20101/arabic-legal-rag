@@ -30,6 +30,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from legalrag.ablate import CORPUS_PATH, EVAL_K, build_configs  # noqa: E402
 from legalrag.dense import load_docs  # noqa: E402
+from legalrag.envcheck import require as require_environment  # noqa: E402
 from legalrag.evaluate import load_questions  # noqa: E402
 
 
@@ -80,6 +81,7 @@ def _percentile(sorted_values: list[float], q: float) -> float:
 
 
 def measure(reps: int, warmup: int) -> dict:
+    environment = require_environment()  # before any model loads
     questions, errors = load_questions()
     if errors:
         raise SystemExit("question set did not load: " + "; ".join(errors))
@@ -141,7 +143,7 @@ def measure(reps: int, warmup: int) -> dict:
         "metric": "retrieval latency per query",
         "source_commit_sha": _git("rev-parse", "HEAD"),
         "worktree_clean": _source_is_clean(),
-        "environment_ref": "env-001",
+        **environment,
         "dataset": {
             "corpus": _repo_relative(CORPUS_PATH),
             "articles": len(docs),

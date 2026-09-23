@@ -44,6 +44,7 @@ from .evaluate import (
     load_questions,
     question_set_fingerprint,
 )
+from .envcheck import observed as observed_environment
 from .generate import DEFAULT_MODEL, Generator, model_source, parse_model_spec, resolve_model
 from .ollama import GeneratorUnavailable, run_metadata
 
@@ -318,6 +319,10 @@ def _write_run_meta(
     meta = dict(ollama_meta or {})
     meta["model"] = model_spec  # the full spec, consistent with rows' "model"
     meta["date"] = date.today().isoformat()
+    # The interpreter that retrieved and scored these rows. The promoter runs
+    # later, possibly from another shell, so checking only its own process
+    # would say nothing about the run it is about to stamp.
+    meta["runtime"] = observed_environment()
     meta["question_set"] = {
         "fingerprint": question_set_fingerprint(questions),
         "n": len(questions),

@@ -42,6 +42,7 @@ from legalrag.ablate import (  # noqa: E402
 )
 from legalrag.dense import load_docs  # noqa: E402
 from legalrag.evaluate import binding_problem, corpus_laws, load_meta, load_questions  # noqa: E402
+from legalrag.envcheck import require as require_environment  # noqa: E402
 from legalrag.rerank import CANDIDATE_DEPTH  # noqa: E402
 
 
@@ -81,6 +82,7 @@ def _bootstrap_ci(values: list[float], resamples: int, seed: int) -> dict:
 
 
 def main(out: Path | None, resamples: int, seed: int) -> int:
+    environment = require_environment()  # before any model loads
     questions, errors = load_questions()
     if errors:
         for e in errors:
@@ -138,7 +140,7 @@ def main(out: Path | None, resamples: int, seed: int) -> int:
         "metric": "retrieval quality — four-configuration ablation",
         "source_commit_sha": _git("rev-parse", "HEAD"),
         "worktree_clean": _source_is_clean(),
-        "environment_ref": "env-001",
+        **environment,
         "dataset": {
             "corpus_articles": len(docs),
             "questions_written": len(questions),

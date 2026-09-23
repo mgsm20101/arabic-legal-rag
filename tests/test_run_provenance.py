@@ -208,3 +208,45 @@ def test_ollama_details_survive_alongside_the_fingerprint(tmp_path, monkeypatch)
     assert meta["digest"] == "abc"
     assert meta["quantization"] == "Q4_K_M"
     assert "fingerprint" in meta["question_set"]
+
+
+# ---------------------------------------------------------------- commit
+
+
+def test_a_run_records_the_commit_it_ran_at(tmp_path, monkeypatch):
+    import legalrag.answer_eval as ae
+
+    monkeypatch.setattr(ae, "RUNS", tmp_path)
+    path = ae._write_run_meta("hf:some/model", tmp_path / "rows.json", [_q("Q1")])
+    meta = json.loads(path.read_text(encoding="utf-8"))
+    assert len(meta["source_commit_sha"]) == 40
+    assert meta["worktree_clean"] in (True, False)
+
+
+def _at(mod, monkeypatch, head):
+    monkeypatch.setattr(mod, "_git", lambda *a: head)
+
+
+def test_rows_generated_at_another_commit_are_refused(promoter, monkeypatch):
+    _at(promoter, monkeypatch, "b" * 40)
+    _meta(promoter, monkeypatch, {"source_commit_sha": "a" * 40, "worktree_clean": True})
+    reason = promoter._committed_elsewhere("ollama:m", "text")
+    assert reason is not None and "aaaaaaaa" in reason and "bbbbbbbb" in reason
+
+
+def test_rows_with_no_recorded_commit_are_refused(promoter, monkeypatch):
+    _at(promoter, monkeypatch, "b" * 40)
+    _meta(promoter, monkeypatch, {"model": "ollama:m"})
+    assert "no commit" in promoter._committed_elsewhere("ollama:m", "text")
+
+
+def test_rows_from_an_edited_tree_are_refused(promoter, monkeypatch):
+    _at(promoter, monkeypatch, "a" * 40)
+    _meta(promoter, monkeypatch, {"source_commit_sha": "a" * 40, "worktree_clean": False})
+    assert "edited tree" in promoter._committed_elsewhere("ollama:m", "text")
+
+
+def test_rows_generated_at_head_from_a_clean_tree_promote(promoter, monkeypatch):
+    _at(promoter, monkeypatch, "a" * 40)
+    _meta(promoter, monkeypatch, {"source_commit_sha": "a" * 40, "worktree_clean": True})
+    assert promoter._committed_elsewhere("ollama:m", "text") is None

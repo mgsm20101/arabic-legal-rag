@@ -285,6 +285,29 @@ def _produced_elsewhere(model_spec: str, contract: str) -> str | None:
     return None
 
 
+def _committed_elsewhere(model_spec: str, contract: str) -> str | None:
+    """Refuse rows generated at a commit other than the one being stamped.
+
+    The promoter writes its own HEAD as `source_commit_sha`. That is only true
+    if nothing was committed between generation and promotion, so the run
+    records the commit it ran at and the two must agree. A run that recorded
+    none is refused: it cannot be told apart from one that ran elsewhere.
+    """
+    meta = _read_run_meta(model_spec, contract) or {}
+    ran_at = meta.get("source_commit_sha")
+    rerun = (f"re-run it at this commit:  python tasks.py answer-eval "
+             f"--model {model_spec} --contract {contract} --overwrite")
+    if not ran_at:
+        return "the saved run records no commit, so what produced it cannot be established.\n  " + rerun
+    head = _git("rev-parse", "HEAD")
+    if ran_at != head:
+        return (f"the saved run was generated at {ran_at[:8]}, and HEAD is now {head[:8]}.\n  "
+                + rerun)
+    if meta.get("worktree_clean") is not True:
+        return "the saved run was generated from an edited tree.\n  " + rerun
+    return None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--model", default="ollama:gemma3:4b")
@@ -307,12 +330,24 @@ def main() -> int:
         print(foreign)
         return 2
 
+    moved = _committed_elsewhere(a.model, a.contract)
+    if moved is not None:
+        print(moved)
+        return 2
+
     rows = json.loads(saved.read_text(encoding="utf-8"))
     payload = summarise(rows, a.model, a.contract)
     sha = payload["source_commit_sha"][:8]
 
     REGISTRY.mkdir(parents=True, exist_ok=True)
     raw = REGISTRY / f"answer_rows_{sha}.json"
+    if raw.exists() and json.loads(raw.read_text(encoding="utf-8")) != rows:
+        # A second generation run at the same commit. Greedy decoding does not
+        # make it identical across Ollama server sessions, so overwriting would
+        # silently replace one sample with another. Compare them instead.
+        print(f"{raw.relative_to(ROOT)} already holds a different run at this commit; "
+              "compare the two with evals/generation_repeat.py rather than replacing it.")
+        return 2
     raw.write_text(json.dumps(rows, ensure_ascii=False, indent=1), encoding="utf-8")
     payload["raw_judgments"] = f"evals/registry/{raw.name}"
 

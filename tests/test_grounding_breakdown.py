@@ -9,6 +9,7 @@ denominator so that cannot come back.
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -76,3 +77,14 @@ def test_published_rows_reproduce_the_headline():
     assert sum(c["grounded"] for c in by_cat.values()) == 11
     assert by_cat["multi_article"]["grounded"] == 0
     assert (by_cat["colloquial"]["grounded"], by_cat["colloquial"]["answered"]) == (4, 8)
+
+
+def test_a_relative_rows_path_is_resolved_against_the_repository(monkeypatch, tmp_path):
+    """`--rows evals/registry/...` crashed in relative_to(ROOT) before this."""
+    import sys
+    gb = _module()
+    out = tmp_path / "breakdown.json"
+    monkeypatch.setattr(sys, "argv", ["grounding_breakdown.py", "--out", str(out),
+                                      "--rows", "evals/registry/answer_rows_83384b2b.json"])
+    gb.main()  # exit code reflects worktree cleanliness, not this behaviour
+    assert json.loads(out.read_text(encoding="utf-8"))["rows"] == "evals/registry/answer_rows_83384b2b.json"

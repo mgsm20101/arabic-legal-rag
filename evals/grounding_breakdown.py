@@ -88,6 +88,9 @@ def main() -> int:
     parser.add_argument("--baseline", type=Path, default=DEFAULT_BASELINE)
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()
+    # relative paths are relative to the repository, whatever the shell's directory
+    args.rows, args.baseline = ((p if p.is_absolute() else ROOT / p).resolve()
+                                for p in (args.rows, args.baseline))
 
     rows, baseline = _load(args.rows), _load(args.baseline)
     answered = [r for r in rows if r["answerable"] and not r["abstained"]]
@@ -143,7 +146,7 @@ def main() -> int:
     b = result["batch_1_against_baseline"]
     print(f"  batch 1: {b['now']['grounded']}/{b['now']['answered']} now vs "
           f"{b['baseline']['grounded']}/{b['baseline']['answered']} baseline")
-    print(f"wrote {out.relative_to(ROOT)}  worktree_clean={result['worktree_clean']}")
+    print(f"wrote {out}  worktree_clean={result['worktree_clean']}")
     return 0 if result["worktree_clean"] else 1
 
 

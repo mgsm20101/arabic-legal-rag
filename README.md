@@ -145,19 +145,32 @@ reasons, not subject matter: the text is pre-segmented into numbered articles,
 so every ground-truth answer has an objective key. A corpus without stable
 references cannot be evaluated, only demoed.
 
-**The question set — what exists today.** 20 questions, hand-written, every
-article reference machine-verified against the ingested corpus. All of them are
-the **dev** split; there is no held-out test split yet, so nothing here has been
-validated out of sample.
+**The question set.** 60 questions, hand-written, every article reference
+machine-verified against the ingested corpus.
 
-| Category | Written | What it probes |
-|---|---:|---|
-| `direct` | 4 | single-article factual retrieval |
-| `multi_article` | 3 | answers requiring two articles combined |
-| `colloquial` | 8 | Egyptian-dialect phrasing against formal legal Arabic |
-| `out_of_corpus` | 5 | **abstention** — the honest answer is "not in the corpus" |
+| Category | Total | dev | test | What it probes |
+|---|---:|---:|---:|---|
+| `direct` | 20 | 12 | 8 | single-article factual retrieval |
+| `multi_article` | 15 | 9 | 6 | answers requiring two articles combined |
+| `colloquial` | 10 | 9 | 1 | Egyptian-dialect phrasing against formal legal Arabic |
+| `out_of_corpus` | 15 | 10 | 5 | **abstention** — the honest answer is "not in the corpus" |
 
-The 60-question set with a locked test split is the design in [`PRD.md`](PRD.md).
+**20 of them are held out and have never been run.** `load_questions` returns
+`dev` unless a caller names the split, so forgetting to exclude the test rows
+is not a way to include them — a split kept by convention is not held out. They
+exist to answer one question later: does a configuration chosen on `dev`
+survive questions that never informed it? The original 20 cannot serve that
+role, because they have already informed every choice in this repository.
+
+Questions 21–66 were written **with the corpus text visible**, which is weaker
+provenance than the first 20 (paraphrased from secondary sources). The
+containment guard is what makes that tolerable, and it proved the point
+immediately: 22 of the first 40 drafts failed it — 19 above band, where a
+question quotes its own answer and hands BM25 a match it did not earn, and 3
+below band, where a question has no lexical anchor at all and crushes the
+lexical baseline just as unfairly. All were rewritten and re-measured before
+anything was committed. `evals/retrieval/meta.json` records this rather than
+hiding it.
 It is a plan, not a state.
 
 **Two guards worth knowing about, because both have fired.** Scoring is refused
@@ -187,93 +200,140 @@ Full protocol, environment and raw files: **[`EVIDENCE.md`](EVIDENCE.md)**.
 > **Demo — not measurement evidence**, and it is kept out of this section on
 > purpose: a screenshot has no command, no commit and no raw result behind it.
 
-### Retrieval quality — 15 scored questions, k=5, dev split
+### Retrieval quality — 30 scored questions, k=5, dev split
 
-| Configuration | Recall@5 | 95% CI | MRR |
-|---|---:|---|---:|
-| BM25 | 0.333 | 0.133 – 0.567 | 0.289 |
-| **dense** (e5-base) | **0.767** | 0.567 – 0.933 | **0.588** |
-| hybrid (RRF) | 0.600 | 0.400 – 0.800 | 0.530 |
-| hybrid + rerank | 0.667 | 0.433 – 0.867 | 0.567 |
+| Configuration | Recall@5 | 95% CI | MRR | 95% CI |
+|---|---:|---|---:|---|
+| BM25 | 0.467 | 0.300 – 0.633 | 0.403 | 0.250 – 0.561 |
+| dense (e5-base) | 0.750 | 0.617 – 0.883 | 0.562 | 0.423 – 0.699 |
+| hybrid (RRF) | 0.750 | 0.600 – 0.883 | 0.591 | 0.449 – 0.726 |
+| hybrid + rerank | 0.767 | 0.617 – 0.900 | 0.668 | 0.512 – 0.811 |
 
-Candidate ceiling (Recall@20 of the hybrid stage): 0.933.
+Candidate ceiling (Recall@20 of the hybrid stage): 0.967.
 
-### Retrieval latency — CPU, warm, interleaved, n=45 per configuration
+**Every interval overlaps every other.** No ordering between these four is
+supported by this eval set — not on Recall@5 and not on MRR. Read the section
+below before quoting any row.
+
+### Retrieval latency — CPU, warm, interleaved, n=90 per configuration
 
 | Configuration | Median | p95 |
 |---|---:|---:|
-| BM25 | 1.1 ms | 3.1 ms |
-| dense | 100.1 ms | 326.6 ms |
-| hybrid (RRF) | 98.7 ms | 253.5 ms |
-| hybrid + rerank | 6 369.0 ms | 11 547.3 ms |
+| BM25 | 1.5 ms | 3.9 ms |
+| dense | 125.5 ms | 469.8 ms |
+| hybrid (RRF) | 124.8 ms | 346.3 ms |
+| hybrid + rerank | 7 710.0 ms | 14 161.2 ms |
+
+The reranker costs about **61× dense**. Unlike the quality numbers, this did
+not move when the eval set doubled (it was 64× at 15 questions).
 
 ### Generation — gemma3:4b, greedy, over dense top-5
 
 Scored by `cite.audit`, a program: it resolves every citation against the corpus
 and against the exact articles the retriever returned. No judge model.
 
-| | |
-|---|---:|
-| Fully grounded | 9/15 = 60.0% |
-| Cited an article not in the law | **0** |
-| Cited a real article it was not given | 1 |
-| Made a claim with no citation | 5 |
-| Cited the expected article | 10/15 = 66.7% |
-| Used the requested `[مادة N]` form | 15/15 = 100% |
-| Abstained on `out_of_corpus` | 4/5 = 80.0% |
-| Falsely abstained on answerable | 0/15 = 0.0% |
+| | 15 answerable (prev) | 30 answerable (now) |
+|---|---:|---:|
+| Fully grounded | 9/15 = 60.0% | 11/29 = 37.9% |
+| Cited an article not in the law | **0** | **0** |
+| Cited a real article it was not given | 1 | 2 |
+| Made a claim with no citation | 5 | 16 |
+| Cited the expected article | 10/15 = 66.7% | 16/29 = 55.2% |
+| Used the requested `[مادة N]` form | 15/15 = 100% | 25/29 = 86.2% |
+| Abstained on `out_of_corpus` | 4/5 = 80.0% | 8/10 = 80.0% |
+| Falsely abstained on answerable | 0/15 = 0.0% | 1/30 = 3.3% |
+
+Zero fabricated citations, at twice the questions. The grounding fall is
+explained below and is **not** the model getting worse.
 
 Against thresholds pre-registered in [`EVAL.md`](EVAL.md) before the run:
 **B1 (grounding) FAIL · B2 (abstention) PASS**.
 
-### The reranker did not help — the interesting part of this repo
+### An eval set overturned this repo's own headline — the interesting part
 
-**Observed.**
+This section used to be titled **"The reranker did not help."** It was wrong,
+and it is worth keeping the correction visible rather than quietly editing it.
 
-* Dense alone scores highest (0.767). Adding RRF fusion *lowered* it to 0.600;
-  adding the cross-encoder on top brought it back to 0.667 — still under dense.
-* The reranker did not run out of candidates: the hybrid stage's Recall@20 is
-  0.933, so the right article was usually in the pool and was ranked out of the
-  top 5.
-* Per-category Recall@5 shows the two stages failing in opposite places:
+At 15 scored questions, dense led at 0.767 and hybrid+rerank came fourth at
+0.667. That ordering inverted at 30. But the retrievers did not change:
 
-  | Configuration | `direct` | `multi_article` | `colloquial` |
-  |---|---:|---:|---:|
-  | BM25 | 0.750 | 0.333 | **0.125** |
-  | dense | 0.750 | 0.667 | **0.812** |
-  | hybrid (RRF) | 0.750 | 0.500 | 0.562 |
-  | hybrid + rerank | **1.000** | **0.833** | **0.438** |
+| | `direct` | `multi_article` | `colloquial` |
+|---|---:|---:|---:|
+| hybrid + rerank @ n=15 | 1.000 | 0.833 | 0.438 |
+| hybrid + rerank @ n=30 | 1.000 | 0.833 | **0.389** |
 
-* The reranker costs **6 369 ms** at the median against dense's **100 ms** —
-  about 64× — for a quality difference this eval set cannot resolve.
+What changed is that `colloquial` — the one category the reranker is bad at —
+fell from **53% of the scored set to 30%**. The old set was badly unbalanced,
+and the aggregate was reporting that imbalance.
+
+**The check.** Take the n=30 per-category rates and re-weight them by the n=15
+category mix. If composition explains the reversal, the old ordering should
+come back:
+
+| Configuration | measured @ n=15 | measured @ n=30 | n=30 rates, n=15 mix |
+|---|---:|---:|---:|
+| dense | 0.767 | 0.750 | **0.778** |
+| hybrid (RRF) | 0.600 | 0.750 | 0.704 |
+| hybrid + rerank | 0.667 | **0.767** | **0.641** |
+| BM25 | 0.333 | 0.467 | 0.348 |
+
+It does. `evals/registry/reweighting_check_618693ef.json`.
+
+**What the numbers now support.** Per-category, the two stages still fail in
+opposite places, and those gaps are large enough to be worth something:
+
+| Configuration | `direct` | `multi_article` | `colloquial` |
+|---|---:|---:|---:|
+| BM25 | 0.667 | 0.556 | **0.111** |
+| dense | 0.750 | 0.667 | **0.833** |
+| hybrid (RRF) | 0.833 | 0.778 | 0.611 |
+| hybrid + rerank | **1.000** | **0.833** | 0.389 |
+
+**What they do not support: any aggregate ordering at all.** Every interval
+overlaps every other, on both metrics. Even `dense > BM25`, the single
+comparison that survived at 15 questions, no longer does — BM25's point estimate
+rose faster (0.333 → 0.467) than the intervals shrank.
 
 **Hypotheses** — consistent with the numbers, *not established by them*.
 
-* Equal-weight RRF may dilute the stronger dense signal by fusing it with a
-  weaker retriever on equal terms.
 * The reranker is trained on mMARCO, machine-translated. A training
   distribution that does not cover Arabic paraphrase would explain help on
   lexically-anchored questions and harm on reworded ones — which is the shape
-  of the table above. It would not be the only explanation.
+  of the per-category table, in both runs.
+* Equal-weight RRF may dilute the stronger dense signal by fusing it with a
+  weaker retriever on equal terms.
 
-**Next experiments.** Tune RRF weights on a validation split — not on dev,
-which is what produced these numbers. Try a different multilingual or Arabic
-reranker. Extend the eval set to 60 questions and re-run before claiming any
-ordering among dense, hybrid and rerank.
+**Next experiments.** A paired comparison — bootstrap over per-question
+differences rather than four marginal intervals — which has the power these
+lack, since every configuration answers the same questions. Then the 20
+held-out `test` questions, still unrun. Then RRF weights tuned on a validation
+split, not on dev.
 
-**The decision this supports:** ship dense. The cost is certain, the benefit is
-unmeasured, and a configuration chosen on 15 overlapping questions is a
-configuration chosen on noise.
+**The decision this supports:** ship dense, but for a different reason than
+before. It is no longer "the reranker is worse" — that claim is dead. It is
+that the aggregate difference is unresolvable while the cost is certain at
+**61×**, and that the reranker's advantage is concentrated in `direct`
+questions while its deficit is concentrated in `colloquial` ones, which is the
+register real users actually write in. Routing to the reranker by question
+shape is the obvious follow-up and has not been tried.
 
 ## Limitations
 
 Every limitation here carries *why* and *what would settle it*.
 
-* **15 scored retrieval questions; 15 answerable + 5 abstention for
-  generation.** The intervals overlap, so only `dense > BM25` survives them.
-  One question moves generation grounding by 6.7 points and abstention by 20.
-  *Why:* hand-written questions with machine-verified references, bought at the
-  cost of volume. *Next:* 60 questions under the same protocol.
+* **30 scored retrieval questions; 30 answerable + 10 abstention for
+  generation.** Every interval overlaps every other, so **no** configuration
+  ordering survives them — including `dense > BM25`, which did survive at 15.
+  Abstention still moves 10 points per question. *Why:* hand-written questions
+  with machine-verified references, bought at the cost of volume. *Next:* a
+  paired comparison, which has the power four marginal intervals lack; then the
+  20 held-out questions.
+* **Generation latency is not measured.** The two generation runs recorded
+  38.7 s and 17.9 s per answer for the same model at the same quantization,
+  because GPU share on a shared 4 GB card was 9% and 55%. Neither is a
+  benchmark and neither is quoted as one. Retrieval latency (E2) is the row
+  with a real timing protocol behind it. *Next:* an idle machine, if a
+  generation number is ever needed.
 * **The corpus failed its fidelity check.** The ingested PDF is a third-party
   republication and 9 of 11 sampled articles differ from the gazette — whole
   different words, reproduced independently by two OCR engines, so the
@@ -315,7 +375,7 @@ instrument and is not redistributed here.
 ```bash
 python tasks.py ingest --law "قانون حماية البيانات الشخصية"
 python tasks.py verify-refs          # every ground-truth reference re-checked
-python tasks.py test                 # 890 tests, no model needed (2 skip on a
+python tasks.py test                 # 911 tests, no model needed (2 skip on a
                                      # fresh clone — they read the ignored corpus)
 
 python evals/environment.py          # regenerate the environment record

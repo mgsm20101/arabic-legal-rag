@@ -400,7 +400,7 @@ instrument and is not redistributed here.
 ```bash
 python tasks.py ingest --law "قانون حماية البيانات الشخصية"
 python tasks.py verify-refs          # every ground-truth reference re-checked
-python tasks.py test                 # 938 tests, no model needed (2 skip on a
+python tasks.py test                 # 956 tests, no model needed (2 skip on a
                                      # fresh clone — they read the ignored corpus)
 
 python evals/environment.py          # regenerate the environment record

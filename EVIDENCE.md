@@ -30,8 +30,9 @@ Each harness checks step 2 itself and stamps `worktree_clean` into its output,
 so a result produced from an edited tree says so in the file. It has fired in
 anger: a generation run was discarded and repeated because documentation edits
 landed while it was going. The re-run matched it — inside the same Ollama server
-session. Across a server restart it does not (E3c), which is a limit of greedy
-decoding on this stack rather than of the discipline.
+session, and it does across restarts too — as long as Ollama puts the same
+number of layers on the GPU (E3d). A different placement produces different
+text; the layer count is now recorded with every run.
 
 ---
 
@@ -79,9 +80,12 @@ all of them were found by re-running rather than by reading.
    now compares the running interpreter with `evals/environment.json`, stops
    before any model loads on a mismatch, and writes what actually ran into each
    result as `runtime_observed`.
-3. **"The re-run reproduced it exactly" was true of one server session.**
-   See E3c: across an Ollama restart, the same model digest under greedy
-   decoding produced different text on 26 of 40 questions.
+3. **"The re-run reproduced it exactly" hid a condition.** The same model
+   digest under greedy decoding produced different text on 26 of 40 questions
+   between two runs (E3c). Ten further runs across restarts (E3d) showed it is
+   not the restart: it is how many layers Ollama placed on the GPU, which it
+   decides from the VRAM other programs leave free. Output is identical at a
+   fixed placement and different across placements.
 
 Every row below was re-measured on 2026-09-23 at a commit on `origin/main`,
 with the environment checked rather than asserted.
@@ -277,17 +281,19 @@ rows with `answer-eval --report-only`.
 | **B1** grounding (pre-registered) | **FAIL** | FAIL |
 | **B2** abstention ≥ 80% (pre-registered) | **FAIL** | PASS |
 
-**The one claim that holds in every run: zero fabricated citations** — 0 of 59
-answers across the two runs above, and 0 in every earlier run. The failure is
+**The one claim that holds in every run: zero fabricated citations** — 0 in
+all 15 generation runs recorded here (three distinct sets of answers, at two
+GPU placements), and 0 in every earlier run. The failure is
 attribution, not invention: the model omits the reference far more than it
 misplaces one, and it never cites an article the law does not have.
 
-**B2 is not a stable verdict.** It sits one question from the pre-registered
-floor, and which side it lands on changed between two runs of the same code.
-Read it beside the false-abstention line, always — a model that abstained on
-everything would score 100% on the first and be useless — and read the pair as
-"abstains on 70–80% of out-of-corpus questions, at 0–3% false abstention", not
-as a pass or a fail.
+**B2 depends on GPU placement.** It sits one question from the pre-registered
+floor: 7/10 (FAIL) with 34 of 35 layers on the GPU — the placement Ollama chose
+in every run since — and 8/10 (PASS) with 2 layers (E3d). Read it beside the
+false-abstention line, always — a model that abstained on everything would
+score 100% on the first and be useless — and read the pair as "abstains on
+70–80% of out-of-corpus questions, at 0–3% false abstention, depending on
+placement", not as a pass or a fail.
 
 #### E3b · Grounding by category — `grounding_breakdown_5c76fa46.json`
 
@@ -322,8 +328,8 @@ The token cap contributes and does not explain it: 3 answers were cut here, and
 > computed by hand and counted the one false abstention (Q014) as grounded,
 > which is how its two tables summed to 12 against a headline of 11/29. The
 > script replaced it, with a test holding that run to 11/29. Its
-> `multi_article 0/9` stood as computed — and is now shown by E3c to be one
-> sample, not a property of the system.
+> `multi_article 0/9` stood as computed — and is now shown by E3c/E3d to be one
+> placement's result, not a property of the model.
 
 #### E3c · Does the generation run repeat? — `generation_repeat_5250b8b0.json`
 
@@ -343,26 +349,87 @@ Three runs of the same 40 questions, same model digest, greedy decoding:
 Retrieval is identical in every run. Generation is identical **within** one
 Ollama server session and differs on 26 of 40 questions **across** one. The two
 sessions also ran at different speeds (prompt evaluation 10.5 s against 2.7 s
-on the same first question), which is consistent with a different placement of
-work between CPU and GPU changing floating-point results enough to change an
-argmax — a hypothesis, not established here.
+on the same first question), which pointed at a different placement of work
+between CPU and GPU. E3d tested it.
 
-This retracts a sentence that stood at the top of this file: that a generation
-run discarded and repeated "reproduced it exactly". It did, inside one server
-session. That is the weaker property, and the one that was tested.
+This qualified a sentence that stood at the top of this file: that a
+generation run discarded and repeated "reproduced it exactly". It did — and E3d
+shows the missing condition was placement, not the server session.
 
-> **Limitations.** Two server sessions is the smallest sample that can show
-> variance and far too small to size it. *Why this limit:* each run is ~15–25
-> minutes of a shared desktop. *Next experiment:* five runs, each after a server
-> restart, reporting every metric as a range; and pinning `num_gpu` so layer
-> placement is not left to Ollama, to test whether that removes the variance.
+#### E3d · Where the difference came from — Run 13 and Run 13b
+
+Both pre-registered in [`EVAL.md`](EVAL.md) — hypothesis, the rule for every
+chosen value, and how each outcome would be read — and pushed before any run
+(`d5379c39`, `7455aba8`).
+
+**Run 13 — ten runs, each after a full Ollama restart.**
+
+| | |
+|---|---|
+| **Command** | `python evals/generation_variance.py --runs 5 --label auto` · then `--label pinned --num-gpu 34` |
+| **source_commit_sha** | `d5379c39` · worktree clean · env-001 checked |
+| **Raw results** | [`generation_variance_d5379c39_auto.json`](evals/registry/generation_variance_d5379c39_auto.json) · [`generation_variance_d5379c39_pinned.json`](evals/registry/generation_variance_d5379c39_pinned.json) |
+
+| Arm | runs | distinct outputs | layers on GPU (server log) | VRAM held by other processes | B2 met |
+|---|---:|---:|---|---|---:|
+| auto — Ollama chooses | 5 | **1** | 34/35 in every run | 134–216 MiB | 0/5 |
+| pinned — `num_gpu 34` | 5 | **1** | 34/35 in every run | 215–238 MiB | 0/5 |
+
+All ten produced the same text as each other and as `4fe53a93`. A restart does
+not change the output. Ollama chose the same split every time, so the pinned
+arm had nothing to remove — by the table written beforehand, this arm could not
+confirm or refute placement as the cause.
+
+**Run 13b — the placement of the one run that differed.**
+
+| | |
+|---|---|
+| **Command** | `python evals/placement_probe.py --layers 0 2 4 6 8 10 12 --target-share 0.09` · `python evals/generation_variance.py --runs 2 --label low2 --num-gpu 2` · `python evals/generation_repeat.py …` |
+| **source_commit_sha** | `7455aba8` · worktree clean · env-001 checked |
+| **Raw results** | [`placement_probe_7455aba8.json`](evals/registry/placement_probe_7455aba8.json) · [`generation_variance_7455aba8_low2.json`](evals/registry/generation_variance_7455aba8_low2.json) · [`generation_repeat_7455aba8.json`](evals/registry/generation_repeat_7455aba8.json) |
+
+`83384b2b` recorded a GPU share of **9%** — another process held most of the
+card — and generated at 2.6 tokens/s against 8.3 since. It recorded no layer
+count. The probe measured the share at each pin (0.000, **0.078**, 0.109, 0.140,
+0.169, 0.198, 0.227 for 0–12 layers), and the pre-registered rule picked
+`num_gpu 2`. Two runs there, each after a restart:
+
+| | same text as `83384b2b` | grounded | abstained OOC | false abstention | B2 |
+|---|---:|---:|---:|---:|---|
+| 34 layers (all ten Run 13 runs) | 14/40 | 12/30 | 7/10 | 0/30 | FAIL |
+| **2 layers (both Run 13b runs, identical)** | **37/40** | **11/29** | **8/10** | **1/30** | **PASS** |
+| `83384b2b` itself | — | 11/29 | 8/10 | 1/30 | PASS |
+
+**What this establishes.** Generation here is deterministic *per placement*
+and changes *between* placements. At two layers on the GPU every headline
+number and every per-question verdict of the old run comes back; the three
+answers that still differ diverge late (from character 52, 93 and 183) and
+change no verdict. By the table written beforehand this is the **partial**
+row, not a confirmation: placement moves agreement from 14/40 to 37/40, but the
+text is not reproduced exactly. The share at two layers (0.078) is not the
+recorded 0.09, and the old run's Ollama version was not recorded — either could
+account for three answers.
+
+**What it means for every generation number in this file.** The placement is
+Ollama's choice, made at load time from the VRAM free on a card that other
+desktop programs also use. So the pre-registered abstention verdict is not
+noise and not a property of the model alone: it is **PASS with 2 layers on the
+GPU and FAIL with 34**. A generation result on this stack is not reproducible
+unless the layer count is recorded — and from `bc520d3` on it is, in every
+run's metadata and in the promoted result. Quote E3 as *at 34/35 layers*.
+
+> **Limitations.** Two placements measured end to end, not a sweep; whether the
+> verdicts drift monotonically with layer count is not known. *Next
+> experiment:* full runs at 0, 8 and 17 layers, to see whether B2 has a
+> threshold in placement or flips irregularly.
+
 
 **Hypotheses** — consistent with these numbers, *not established by them*: the
 free-text contract leaves citation optional in practice, so whether a given
 answer carries its reference is close to a coin toss that decoding noise can
 flip. *Next experiment:* the `gated` claims contract, where an answer must name
 its articles before writing prose — aimed at exactly this failure, and one that
-should make grounding far less sensitive to run-to-run variance if it works.
+should make grounding far less sensitive to placement if it works.
 
 > **Timing is not a benchmark.** Median 20.7 s per answer here, on a desktop,
 > with GPU share left to Ollama. E2 is the row with a real timing protocol.
@@ -433,7 +500,7 @@ should see it explained here rather than wonder which number was inflated.
 
 | Claim someone might expect | Status |
 |---|---|
-| Run-to-run variance of generation, sized | **Not measured.** E3c shows it exists (2 server sessions); sizing it needs more runs. |
+| How generation verdicts vary across GPU placements | **Two placements measured** (2 and 34 layers, E3d). A sweep is not. |
 | Whether a citation *supports* the sentence it is attached to | **Not measured.** The audit is mechanical (ADR-022). |
 | Cost per 1 000 queries against a hosted API | Not measured. Everything here is local; there are no API calls to price. Any cost figure would be an assumed rate multiplied by a latency, which is the latency restated. |
 | Held-out test-split results | **Not run.** The 60-question set has a locked `test` split of 20 questions that no measurement here has touched. Nothing in this file has been validated out of sample. |

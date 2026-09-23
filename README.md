@@ -233,10 +233,10 @@ unisolated desktop, the order of magnitude does not. Read it as roughly 55–65�
 Scored by `cite.audit`, a program: it resolves every citation against the corpus
 and against the exact articles the retriever returned. No judge model.
 
-Two runs of the same code and model digest, 30 answerable + 10 out-of-corpus
-questions each, separated by an Ollama server restart:
+Same code, same model digest, greedy decoding, 30 answerable + 10
+out-of-corpus questions — at the two GPU placements measured end to end:
 
-| | run A | run B |
+| | 34 of 35 layers on GPU | 2 of 35 layers on GPU |
 |---|---:|---:|
 | Fully grounded (of answered) | 12/30 = 40.0% | 11/29 = 37.9% |
 | Cited an article not in the law | **0** | **0** |
@@ -248,16 +248,21 @@ questions each, separated by an Ollama server restart:
 | B1 grounding (pre-registered) | FAIL | FAIL |
 | B2 abstention ≥ 80% (pre-registered) | **FAIL** | **PASS** |
 
-**Zero fabricated citations in both runs — 0 of 59 answers.** That is the claim
-that holds. The failure is attribution, not invention: the model omits the
-reference; it does not invent law.
+**Zero fabricated citations in every run — 15 runs, three distinct sets of
+answers.** That is the claim that holds at any placement. The failure is
+attribution, not invention: the model omits the reference; it does not invent law.
 
-**The abstention verdict is not stable.** Retrieval was identical on all 40
-questions in both runs; the generated text differed on 26. Inside one server
-session the same run repeats exactly (40/40); across a restart it does not, and
-B2 — one question from its pre-registered floor — passed once and failed once.
-Read abstention as *70–80% at 0–3% false abstention*, not as a pass.
-[`EVIDENCE.md`](EVIDENCE.md) E3c.
+**The abstention verdict depends on where the model runs.** Ten runs, each after
+a full Ollama restart, produced identical text: Ollama put 34 of 35 layers on
+the GPU every time. The one run that differed had recorded a 9% GPU share —
+another program held the card. Pinning 2 layers, the placement that measures
+closest to 9%, reproduced that run's text on 37 of 40 questions (against 14/40
+at 34 layers) and every one of its verdicts, B2 PASS included. So the output is
+deterministic *per placement*, and Ollama picks the placement from the VRAM
+other programs leave free. Read abstention as *70–80% at 0–3% false abstention,
+depending on placement* — never as a pass. The layer count is now recorded with
+every run. [`EVIDENCE.md`](EVIDENCE.md) E3c–E3d, pre-registered as Runs 13 and
+13b in [`EVAL.md`](EVAL.md).
 
 ### An eval set overturned this repo's own headline — the interesting part
 
@@ -343,12 +348,12 @@ Every limitation here carries *why* and *what would settle it*.
   with machine-verified references, bought at the cost of volume. *Next:* a
   paired comparison, which has the power four marginal intervals lack; then the
   20 held-out questions.
-* **Generation is not reproducible across server sessions.** Greedy decoding
-  on the same model digest repeated exactly within one Ollama session and
-  differed on 26 of 40 answers across a restart. Two sessions show the variance
-  exists; they cannot size it. *Next:* five runs, each after a restart, every
-  metric reported as a range; and pinning GPU layer placement to test whether
-  that is the source.
+* **Generation depends on GPU placement.** Identical across ten restarts at a
+  fixed placement; different text and a different abstention verdict at
+  another (E3d). Two placements are measured end to end, not a sweep, and the
+  remaining 3/40 difference from the old run is unexplained (its Ollama version
+  was not recorded). *Next:* full runs at 0, 8 and 17 layers to see whether the
+  verdicts change at a threshold or irregularly.
 * **Generation latency is not measured.** Runs recorded 17.9–38.7 s per answer
   for the same model at the same quantization, depending on GPU share on a
   shared 4 GB card. None is a benchmark and none is quoted as one. Retrieval latency (E2) is the row

@@ -1218,3 +1218,19 @@ def test_report_gated_itself_refuses_the_verdict_when_rows_carry_no_relevance_da
     assert "ADOPT for the app: n/a — no relevance data in gated rows" in out
     assert "ADOPT for the app: YES" not in out
     assert code == 1
+
+
+def test_num_gpu_is_refused_for_a_non_ollama_model(capsys, monkeypatch):
+    from legalrag.answer_eval import main
+
+    monkeypatch.delenv("LEGALRAG_OLLAMA_NUM_GPU", raising=False)
+    assert main(["--model", "hf:org/model", "--num-gpu", "3"]) == 2
+    assert "needs an ollama: model" in capsys.readouterr().out
+
+
+def test_a_negative_num_gpu_is_refused(capsys, monkeypatch):
+    from legalrag.answer_eval import main
+
+    monkeypatch.delenv("LEGALRAG_OLLAMA_NUM_GPU", raising=False)
+    assert main(["--model", "ollama:gemma3:4b", "--num-gpu", "-1"]) == 2
+    assert ">= 0" in capsys.readouterr().out

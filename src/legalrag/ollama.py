@@ -120,6 +120,7 @@ class OllamaChat:
         think: bool | None,
         timeout: float,
         client: httpx.Client | None,
+        num_gpu: int | None = None,
     ) -> None:
         self.model = model
         self.host = normalize_host(host)
@@ -129,6 +130,12 @@ class OllamaChat:
         self.think = think
         self.timeout = timeout
         self._client = client
+        # Layers offloaded to the GPU. None leaves the choice to Ollama, which
+        # decides per server session from the VRAM free at load time — and a
+        # different split changes floating-point results enough to change a
+        # greedy answer (EVIDENCE E3c). Pinning it is what the variance
+        # experiment tests; the env var lets a harness pin it for a subprocess.
+        self.num_gpu = num_gpu if num_gpu is not None else num_gpu_from_env()
         self.last_stats: dict | None = None
         # Every call's stats, in order — not just the latest. Run 5 retries
         # once on invalid JSON, so a single question can make more than one
@@ -174,6 +181,8 @@ class OllamaChat:
                 "num_ctx": self.num_ctx,
             },
         }
+        if self.num_gpu is not None:
+            body["options"]["num_gpu"] = self.num_gpu
         if self.fmt is not None:
             body["format"] = self.fmt
         if self.think is not None:
@@ -272,6 +281,7 @@ def ollama_chat(
     think: bool | None = None,
     timeout: float = 600.0,
     client: httpx.Client | None = None,
+    num_gpu: int | None = None,
 ) -> OllamaChat:
     """Build an `OllamaChat` for `model` on a local Ollama server.
 
@@ -289,7 +299,29 @@ def ollama_chat(
         think=think,
         timeout=timeout,
         client=client,
+        num_gpu=num_gpu,
     )
+
+
+NUM_GPU_ENV = "LEGALRAG_OLLAMA_NUM_GPU"
+
+
+def num_gpu_from_env() -> int | None:
+    """`$LEGALRAG_OLLAMA_NUM_GPU` as a layer count, or None when unset.
+
+    A malformed value raises rather than being ignored: a run that believed
+    it had pinned GPU placement and silently had not would record the very
+    variance it was meant to rule out.
+    """
+    import os
+
+    raw = os.environ.get(NUM_GPU_ENV, "").strip()
+    if not raw:
+        return None
+    value = int(raw)
+    if value < 0:
+        raise ValueError(f"{NUM_GPU_ENV} must be >= 0, got {value}")
+    return value
 
 
 def health(host: str | None = None, client: httpx.Client | None = None) -> dict:
@@ -444,6 +476,7 @@ def run_metadata(chat: OllamaChat, client: httpx.Client | None = None) -> dict:
         "gpu_share": match.get("gpu_share") if match else None,
         "digest": match.get("digest") if match else None,
         "quantization": match.get("quantization") if match else None,
+        "num_gpu_requested": chat.num_gpu,
         "reachable": True,
         "error": None,
     }

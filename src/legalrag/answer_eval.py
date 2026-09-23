@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -47,7 +48,7 @@ from .evaluate import (
 )
 from .envcheck import observed as observed_environment
 from .generate import DEFAULT_MODEL, Generator, model_source, parse_model_spec, resolve_model
-from .ollama import GeneratorUnavailable, run_metadata
+from .ollama import NUM_GPU_ENV, GeneratorUnavailable, run_metadata
 
 TOP_K = 5
 
@@ -607,6 +608,11 @@ def _build_arg_parser() -> _ArgumentParser:
         "--overwrite", action="store_true",
         help="let a full run replace an existing rows file",
     )
+    parser.add_argument(
+        "--num-gpu", type=int, default=None, metavar="LAYERS",
+        help="pin the number of layers Ollama offloads to the GPU "
+             "(default: Ollama decides per server session)",
+    )
     return parser
 
 
@@ -646,6 +652,17 @@ def main(argv: list[str] | None = None) -> int:
               "schema-constrained decoding is not available on the "
               "transformers path here")
         return 2
+
+    if args.num_gpu is not None:
+        if not model_spec.startswith("ollama:"):
+            print(f"--num-gpu needs an ollama: model (got {model_spec!r})")
+            return 2
+        if args.num_gpu < 0:
+            print(f"--num-gpu must be >= 0 (got {args.num_gpu})")
+            return 2
+        # Through the environment so every chat this run builds — the text
+        # generator, or both of the gated contract's — carries the same pin.
+        os.environ[NUM_GPU_ENV] = str(args.num_gpu)
 
     rows_file = rows_path(model_spec, contract)
 

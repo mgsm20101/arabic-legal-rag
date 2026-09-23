@@ -537,3 +537,53 @@ def test_ollama_chat_returns_a_chat_instance_without_touching_the_network(monkey
     assert chat.model == "qwen3:4b"
     assert chat.last_stats is None
     assert chat.calls == []
+
+
+# ---------------------------------------------------------------- num_gpu
+
+
+def _captured_options(monkeypatch, env=None, **kw):
+    if env is None:
+        monkeypatch.delenv("LEGALRAG_OLLAMA_NUM_GPU", raising=False)
+    else:
+        monkeypatch.setenv("LEGALRAG_OLLAMA_NUM_GPU", env)
+    captured = {}
+
+    def handler(request):
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json=_chat_body())
+
+    ollama_chat("m", client=_client(handler), num_predict=NUM_PREDICT, **kw)(
+        [{"role": "user", "content": "س"}])
+    return captured["body"]["options"]
+
+
+def test_gpu_placement_is_left_to_ollama_unless_pinned(monkeypatch):
+    assert "num_gpu" not in _captured_options(monkeypatch)
+
+
+def test_a_pinned_layer_count_is_sent(monkeypatch):
+    assert _captured_options(monkeypatch, num_gpu=20)["num_gpu"] == 20
+
+
+def test_zero_is_a_pin_not_an_absence(monkeypatch):
+    """num_gpu=0 means CPU only. A falsy check would drop it and let Ollama
+    offload anyway — the exact silent failure a pin exists to prevent."""
+    assert _captured_options(monkeypatch, num_gpu=0)["num_gpu"] == 0
+
+
+def test_the_environment_pins_it_for_a_subprocess(monkeypatch):
+    assert _captured_options(monkeypatch, env="17")["num_gpu"] == 17
+
+
+def test_an_explicit_pin_wins_over_the_environment(monkeypatch):
+    assert _captured_options(monkeypatch, env="17", num_gpu=5)["num_gpu"] == 5
+
+
+def test_a_malformed_environment_pin_refuses_rather_than_ignoring(monkeypatch):
+    import pytest
+
+    for bad in ("abc", "-1"):
+        monkeypatch.setenv("LEGALRAG_OLLAMA_NUM_GPU", bad)
+        with pytest.raises(ValueError):
+            ollama_chat("m", num_predict=NUM_PREDICT)

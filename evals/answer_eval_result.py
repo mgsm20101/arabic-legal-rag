@@ -337,6 +337,10 @@ def main() -> int:
 
     rows = json.loads(saved.read_text(encoding="utf-8"))
     payload = summarise(rows, a.model, a.contract)
+    # None means Ollama chose the GPU split itself; a pinned run must say so,
+    # or it would be promoted looking exactly like a default one.
+    payload["generation_protocol"]["num_gpu"] = (
+        (_read_run_meta(a.model, a.contract) or {}).get("num_gpu_requested"))
     sha = payload["source_commit_sha"][:8]
 
     REGISTRY.mkdir(parents=True, exist_ok=True)

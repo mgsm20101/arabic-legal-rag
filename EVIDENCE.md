@@ -414,8 +414,9 @@ stands.
 | | |
 |---|---|
 | **Command** | `python tasks.py test` |
-| **source_commit_sha** | `7b0f461f` |
-| **Result** | **916 passed** locally · **914 passed, 2 skipped** from a clone of this repository |
+| **source_commit_sha** | `e8283083` |
+| **environment_ref** | `env-001` — both runs on the recorded interpreter |
+| **Result** | **938 passed** locally · **936 passed, 2 skipped** from a fresh clone of this repository |
 
 A test count is not a quality metric and is not presented as one. It is here so
 that the number quoted elsewhere is the *passing* count, taken from a run,
@@ -423,7 +424,7 @@ rather than the collected count taken from `--collect-only`.
 
 The two numbers differ for a reason worth stating: the statute corpus is
 git-ignored, so the two tests that read it skip on any machine that has not run
-`ingest`. CI reports the same split. A reader who clones this and sees 914
+`ingest`. CI reports the same split. A reader who clones this and sees 936
 should see it explained here rather than wonder which number was inflated.
 
 ---

@@ -12,7 +12,7 @@ produced it, the commit it ran at, the environment, the eval set and the raw
 result file. A number with no row there is not quotable.
 
 > **Citing this from somewhere else?** Use the
-> [`portfolio-v3`](https://github.com/mgsm20101/arabic-legal-rag/tree/portfolio-v3)
+> [`portfolio-v6`](https://github.com/mgsm20101/arabic-legal-rag/tree/portfolio-v6)
 > tag, not `main`. The tag pins the numbers to the code that produced them;
 > `main` will move.
 

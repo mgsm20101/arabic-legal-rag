@@ -282,17 +282,17 @@ rows with `answer-eval --report-only`.
 | **B2** abstention ≥ 80% (pre-registered) | **FAIL** | PASS |
 
 **The one claim that holds in every run: zero fabricated citations** — 0 in
-all 15 generation runs recorded here (three distinct sets of answers, at two
+all 21 generation runs recorded here (six distinct sets of answers, at five
 GPU placements), and 0 in every earlier run. The failure is
 attribution, not invention: the model omits the reference far more than it
 misplaces one, and it never cites an article the law does not have.
 
-**B2 depends on GPU placement.** It sits one question from the pre-registered
-floor: 7/10 (FAIL) with 34 of 35 layers on the GPU — the placement Ollama chose
-in every run since — and 8/10 (PASS) with 2 layers (E3d). Read it beside the
+**B2 depends on GPU placement, irregularly.** It sits one question from the
+pre-registered floor: FAIL at 0 and at 34 of 35 layers on the GPU — the
+placement Ollama chose in every run since — and PASS at 2, 8 and 17 (E3d–E3e). Read it beside the
 false-abstention line, always — a model that abstained on everything would
 score 100% on the first and be useless — and read the pair as "abstains on
-70–80% of out-of-corpus questions, at 0–3% false abstention, depending on
+70–80% of out-of-corpus questions, at 0–7% false abstention, depending on
 placement", not as a pass or a fail.
 
 #### E3b · Grounding by category — `grounding_breakdown_5c76fa46.json`
@@ -418,10 +418,55 @@ GPU and FAIL with 34**. A generation result on this stack is not reproducible
 unless the layer count is recorded — and from `bc520d3` on it is, in every
 run's metadata and in the promoted result. Quote E3 as *at 34/35 layers*.
 
-> **Limitations.** Two placements measured end to end, not a sweep; whether the
-> verdicts drift monotonically with layer count is not known. *Next
-> experiment:* full runs at 0, 8 and 17 layers, to see whether B2 has a
-> threshold in placement or flips irregularly.
+> **Limitations.** Two placements measured end to end here; E3e adds three.
+
+#### E3e · Five placements — Run 13c
+
+Pre-registered in [`EVAL.md`](EVAL.md) and pushed before any run (`34690455`).
+
+| | |
+|---|---|
+| **Command** | `python evals/generation_variance.py --runs 2 --num-gpu N` for N = 0, 8, 17 · then `python evals/generation_repeat.py` over all five placements |
+| **source_commit_sha** | `34690455` · worktree clean · env-001 checked |
+| **Raw results** | [`…_low0.json`](evals/registry/generation_variance_34690455_low0.json) · [`…_low8.json`](evals/registry/generation_variance_34690455_low8.json) · [`…_mid17.json`](evals/registry/generation_variance_34690455_mid17.json) · [`generation_repeat_34690455.json`](evals/registry/generation_repeat_34690455.json) |
+
+| Layers on GPU | GPU share | runs, all identical | grounded | abstained OOC | false abstention | fabricated | B2 |
+|---:|---:|---|---:|---:|---:|---:|---|
+| 0 | 0.000 | 2 ✔ | 12/28 | 7/10 | 2/30 | 0 | **FAIL** |
+| 2 | 0.078 | 2 ✔ (13b) | 11/29 | 8/10 | 1/30 | 0 | **PASS** |
+| 8 | 0.169 | 2 ✔ | 11/29 | 8/10 | 1/30 | 0 | **PASS** |
+| 17 | 0.301 | 2 ✔ | 11/30 | 8/10 | 0/30 | 0 | **PASS** |
+| 34 | 0.551 | 10 ✔ (13) | 12/30 | 7/10 | 0/30 | 0 | **FAIL** |
+
+**Read by the table written beforehand:**
+
+1. **Deterministic at every placement measured** — two or more runs, each after
+   a restart, identical at all five. That includes the first 0-layer run, which
+   the machine slept through for six and a half hours mid-question; its
+   repeat, uninterrupted, matched it on all 40 answers.
+2. **B2 changes twice** — FAIL at 0, PASS at 2, 8 and 17, FAIL at 34. The
+   pre-registered reading for more than one change is **irregular**: the
+   verdict is stated only with the exact layer count, never as "below N" or
+   "above N". Descriptively the three PASS placements are contiguous, but five
+   points cannot say whether that holds between them, and every one of these
+   verdicts is one out-of-corpus question from the floor.
+
+**Text agreement falls with distance in placement.** Neighbours share the most
+answers — 2 and 8 layers agree on 31 of 40, 8 and 17 on 27 — and every
+placement agrees with 34 layers on only 13 or 14. Retrieval is identical
+throughout (40/40 in every pair).
+
+**What this leaves standing.** Grounding is 11–12 answers at every placement;
+abstention is 7–8 of 10; false abstention 0–2 of 30; and **zero fabricated
+citations in all 21 runs** — six distinct sets of answers. Those ranges, not
+any single run, are the generation result of this repository.
+
+> **Limitations.** Five of 36 possible placements. The verdict between them is
+> unmeasured, and B2's two changes are each one question. *Why this limit:* a
+> 0-layer run takes about 90 minutes on this CPU. *Next experiment:* none on
+> placement — the finding is that the verdict is placement-bound, and more
+> points would refine that without changing it. The next generation experiment
+> is the `gated` contract, measured at a recorded placement.
 
 
 **Hypotheses** — consistent with these numbers, *not established by them*: the
@@ -500,7 +545,7 @@ should see it explained here rather than wonder which number was inflated.
 
 | Claim someone might expect | Status |
 |---|---|
-| How generation verdicts vary across GPU placements | **Two placements measured** (2 and 34 layers, E3d). A sweep is not. |
+| B2 between the measured placements | **Five of 36 placements measured** (E3e). The verdict between them is not. |
 | Whether a citation *supports* the sentence it is attached to | **Not measured.** The audit is mechanical (ADR-022). |
 | Cost per 1 000 queries against a hosted API | Not measured. Everything here is local; there are no API calls to price. Any cost figure would be an assumed rate multiplied by a latency, which is the latency restated. |
 | Held-out test-split results | **Not run.** The 60-question set has a locked `test` split of 20 questions that no measurement here has touched. Nothing in this file has been validated out of sample. |

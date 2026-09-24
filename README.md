@@ -248,8 +248,8 @@ out-of-corpus questions — at the two GPU placements measured end to end:
 | B1 grounding (pre-registered) | FAIL | FAIL |
 | B2 abstention ≥ 80% (pre-registered) | **FAIL** | **PASS** |
 
-**Zero fabricated citations in every run — 15 runs, three distinct sets of
-answers.** That is the claim that holds at any placement. The failure is
+**Zero fabricated citations in every run — 21 runs, six distinct sets of
+answers, five GPU placements.** That is the claim that holds at any placement. The failure is
 attribution, not invention: the model omits the reference; it does not invent law.
 
 **The abstention verdict depends on where the model runs.** Ten runs, each after
@@ -259,10 +259,15 @@ another program held the card. Pinning 2 layers, the placement that measures
 closest to 9%, reproduced that run's text on 37 of 40 questions (against 14/40
 at 34 layers) and every one of its verdicts, B2 PASS included. So the output is
 deterministic *per placement*, and Ollama picks the placement from the VRAM
-other programs leave free. Read abstention as *70–80% at 0–3% false abstention,
-depending on placement* — never as a pass. The layer count is now recorded with
-every run. [`EVIDENCE.md`](EVIDENCE.md) E3c–E3d, pre-registered as Runs 13 and
-13b in [`EVAL.md`](EVAL.md).
+other programs leave free.
+
+Measured at five placements, the pre-registered abstention verdict is FAIL at
+0 layers, PASS at 2, 8 and 17, and FAIL at 34 — it changes twice, so it is
+stated only with its layer count. Every placement was deterministic across
+restarts. Read abstention as *70–80% at 0–7% false abstention, depending on
+placement* — never as a pass. The layer count is now recorded with every run.
+[`EVIDENCE.md`](EVIDENCE.md) E3c–E3e, pre-registered as Runs 13, 13b and 13c in
+[`EVAL.md`](EVAL.md).
 
 ### An eval set overturned this repo's own headline — the interesting part
 
@@ -350,10 +355,10 @@ Every limitation here carries *why* and *what would settle it*.
   20 held-out questions.
 * **Generation depends on GPU placement.** Identical across ten restarts at a
   fixed placement; different text and a different abstention verdict at
-  another (E3d). Two placements are measured end to end, not a sweep, and the
-  remaining 3/40 difference from the old run is unexplained (its Ollama version
-  was not recorded). *Next:* full runs at 0, 8 and 17 layers to see whether the
-  verdicts change at a threshold or irregularly.
+  another (E3d). Five of 36 placements are measured; the abstention verdict
+  changes twice across them and is unmeasured between them (E3e). The remaining
+  3/40 difference from the old run is unexplained (its Ollama version was not
+  recorded).
 * **Generation latency is not measured.** Runs recorded 17.9–38.7 s per answer
   for the same model at the same quantization, depending on GPU share on a
   shared 4 GB card. None is a benchmark and none is quoted as one. Retrieval latency (E2) is the row

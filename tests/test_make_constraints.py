@@ -109,7 +109,7 @@ def test_requirement_files_are_read_through_their_r_includes_without_options_or_
 
 
 def test_requirements_dev_is_one_of_the_generators_roots():
-    # tasks.py and the Makefile install requirements-dev.txt under constraints.txt
+    # tasks.py setup installs requirements-dev.txt under constraints.txt
     # too, so anything it alone needs (pytest's own dependencies, say) must be
     # reachable from here as well, not just incidentally pinned by another root.
     assert "requirements-dev.txt" in make_constraints.ROOTS

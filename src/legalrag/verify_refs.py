@@ -14,7 +14,7 @@ Questions that pass both are flipped to ``ref_status: "verified"`` when run
 with ``--write``. Nothing else in the project is allowed to consume a question
 whose ``ref_status`` is still ``unverified``.
 
-Run: ``python tasks.py verify-refs [--write]``  (alias: ``make verify-refs``)
+Run: ``python tasks.py verify-refs [--write]``
 """
 
 from __future__ import annotations

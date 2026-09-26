@@ -13,15 +13,15 @@
                                           end-to-end answers: citations + abstention (M2)
     python tasks.py app-eval [--retrieval-only] [--doc pdf|txt] [--model SPEC] [--overwrite]
                                           the upload pipeline on the app-dev split (ADR-023)
-    python tasks.py serve [--port 8000]   local test page (retrieval + eval run)
+    python tasks.py serve [--port 8000]   legacy benchmark test page (BM25 + eval run)
     python tasks.py app [--host 127.0.0.1] [--port 8000]
                                           the local app: upload a document and ask it (ADR-023)
+    python tasks.py reindex [--dry-run]   recompute stored documents' embeddings after an upgrade
     python tasks.py test                  run the test suite (after setup)
     python tasks.py setup                 install the app and test dependencies at the pinned versions
     python tasks.py all --law "…"         ingest -> verify-refs -> eval
 
-`make <target>` does the same thing on Linux/CI; this file is what runs on
-Windows, where `make` is usually absent. Both must stay in sync.
+The only runner: it needs nothing but Python, on every platform.
 """
 
 from __future__ import annotations

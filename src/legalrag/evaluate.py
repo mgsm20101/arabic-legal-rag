@@ -6,7 +6,7 @@ enforces its schema and prints the scoreboard with an empty result column.
 When a retriever lands it fills the same table — the table shape never changes,
 so runs stay comparable across the whole project.
 
-Run: ``python tasks.py eval``  (alias: ``make eval``)
+Run: ``python tasks.py eval``
 """
 
 from __future__ import annotations

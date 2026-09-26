@@ -101,7 +101,7 @@ Registry results come from the scripts in `evals/` (below), not from `tasks.py`.
 
 ### Code map
 
-`src/legalrag/`, 38 modules. The app uses dense retrieval only; BM25, fusion and
+`src/legalrag/`: 38 modules plus `__init__.py`. The app uses dense retrieval only; BM25, fusion and
 rerank exist only in the bench.
 
 **App**
@@ -169,7 +169,7 @@ rerank exist only in the bench.
 |---|---|
 | `ui/` | `app.html`, `app.css`, `app.js`, `js/`: the app's page. `index.html`: the legacy `serve` page |
 | `tests/` | The test suite; no model or network needed |
-| `evals/retrieval/`, `evals/adversarial/`, `evals/app/`, `evals/ocr/` | Question sets and ground truth, each with a `meta.json` |
+| `evals/retrieval/`, `evals/adversarial/`, `evals/app/`, `evals/ocr/` | Question sets and OCR ground truth; the question sets carry a `meta.json` |
 | `evals/*.py` | Registry harnesses: each stamps commit and environment and writes `evals/registry/*.json`. `ablation_result.py`, `retrieval_latency.py`, `answer_eval_result.py`, `reweighting_check.py`, `grounding_breakdown.py`, `generation_repeat.py`; `generation_variance.py` and `placement_probe.py` are targeted experiments behind E3c–E3e; `environment.py` writes `evals/environment.json` |
 | `evals/app/coldstart_check.py` | One-off reproduction against a running container; writes `coldstart_result.json` beside it |
 | `evals/registry/` | Tracked raw results: the only files a number may cite |

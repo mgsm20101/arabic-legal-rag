@@ -1,4 +1,4 @@
-"""Local test page for the retrieval system.
+"""Legacy benchmark test page for the statute corpus (BM25), not part of the app.
 
     python tasks.py serve            # http://127.0.0.1:8000
 

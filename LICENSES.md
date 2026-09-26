@@ -110,7 +110,7 @@ Transitive dependencies are not enumerated by hand — see the generated report 
 
 ## 5. Security audit
 
-[`docs/review/dependency-audit-summary.json`](docs/review/dependency-audit-summary.json)
+[`docs/internal/dependency-audit-summary.json`](docs/internal/dependency-audit-summary.json)
 — `pip-audit -r constraints.txt --no-deps`, run from an isolated venv so the
 environment being audited is not the environment doing the auditing.
 

@@ -1,6 +1,6 @@
 """Evaluation harness.
 
-Deliberately written BEFORE any retrieval code (see PRD.md §5 and the
+Deliberately written BEFORE any retrieval code (see docs/internal/PRD.md §5 and the
 eval-first rule in DECISIONS.md ADR-001). Today it loads the question set,
 enforces its schema and prints the scoreboard with an empty result column.
 When a retriever lands it fills the same table — the table shape never changes,

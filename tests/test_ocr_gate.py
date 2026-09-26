@@ -149,7 +149,7 @@ def test_a_page_missing_from_ocr_is_a_full_miss_not_a_silent_drop():
 
 
 def test_reproduces_the_missing_page_finding_recall_no_longer_hides_it():
-    """docs/review/reproductions.json's `ocr_missing_page` key recorded the
+    """docs/internal/reproductions.json's `ocr_missing_page` key recorded the
     pre-fix behaviour: an OCR file simply missing p02 (which has ground
     truth) still scored recall 1.0, because the page was skipped rather than
     scored. It must not."""
@@ -164,7 +164,7 @@ def test_reproduces_the_missing_page_finding_recall_no_longer_hides_it():
 
 
 def test_reproduces_the_spurious_digit_finding_main_now_fails(tmp_path, monkeypatch):
-    """docs/review/reproductions.json's `ocr_spurious_digits` key recorded
+    """docs/internal/reproductions.json's `ocr_spurious_digits` key recorded
     two invented digit tokens (777, 888) sitting alongside an otherwise
     fully-correct page: recall was 1.0 and critical_failures was empty, so
     the pre-fix `passed` check reported PASS. An invented digit is exactly

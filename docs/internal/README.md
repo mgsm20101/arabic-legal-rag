@@ -1,7 +1,13 @@
-# Internal review — an audit trail, not a roadmap
+# Internal notes
 
-This folder is a **point-in-time critical review** of the repository, carried out
-against commit `ed2107e` on **2026-09-17**. It is kept in the repo because the
+Working notes, not documentation of the code: `PRD.md` (scope and acceptance
+criteria), `PROJECT-STATE.md` (the running project log), and the review below.
+Start from the top-level `README.md` instead.
+
+## Internal review — an audit trail, not a roadmap
+
+The review files here are a **point-in-time critical review** of the repository, carried out
+against commit `ed2107e` on **2026-09-17**. They are kept in the repo because the
 findings and the probes that produced them are part of the record, not because
 the task list describes the project's current state.
 
@@ -27,7 +33,7 @@ links so they resolve on GitHub.
 |---|---|
 | `PROJECT-REVIEW-AR.md` | The critical review itself (Arabic), with a code reference per finding |
 | `IMPLEMENTATION-TASKS-AR.md` | 22 proposed tasks with acceptance criteria (Arabic) — **a 2026-09-17 snapshot** |
-| `reproduce_findings.py` | Read-only probes that reproduce the findings. Uses temporary directories; changes nothing. Run from the repo root: `python docs/review/reproduce_findings.py` |
+| `reproduce_findings.py` | Read-only probes that reproduce the findings. Uses temporary directories; changes nothing. Run from the repo root: `python docs/internal/reproduce_findings.py` |
 | `reproductions.json` · `VERIFICATION.json` | What each probe checked and what it returned |
 | `dependency-audit-summary.json` | `pip-audit` over `constraints.txt` — 61 packages, 2 unique advisories. Scope is stated in the file: package-version matches, **not** demonstrated exploitability |
 | `pytest-ci-environment.txt` | The environment the suite ran in |

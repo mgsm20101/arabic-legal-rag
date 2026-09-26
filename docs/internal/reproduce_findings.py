@@ -1,6 +1,6 @@
 """Read-only audit probes; generated documents and indexes use temporary directories.
 
-Run from the repository root: python docs/review/reproduce_findings.py
+Run from the repository root: python docs/internal/reproduce_findings.py
 These probes describe current behavior, not the desired regression-test contract.
 """
 

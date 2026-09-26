@@ -172,7 +172,7 @@ rerank exist only in the bench.
 | `evals/registry/` | Tracked raw results: the only files a number may cite |
 | `scripts/make_constraints.py` | Regenerates `constraints.txt` |
 | `docs/demo/` | One screenshot, not evidence |
-| `PRD.md`, `PROJECT-STATE.md`, `docs/review/` | Working notes: PRD, project state, a point-in-time review |
+| `docs/internal/` | Working notes: `PRD.md`, `PROJECT-STATE.md`, and a point-in-time review (`README.md` there) |
 | `data/raw/`, `data/processed/`, `data/app/` | Statute PDF, ingested corpus, uploaded documents. Git-ignored except `data/raw/README.md` and `data/raw/SOURCE.txt` |
 
 `EVIDENCE.md` binds each number to its command, commit and raw file; `EVAL.md`

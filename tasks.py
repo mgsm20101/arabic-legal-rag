@@ -26,6 +26,7 @@ The only runner: it needs nothing but Python, on every platform.
 
 from __future__ import annotations
 
+import importlib
 import subprocess
 import sys
 from pathlib import Path
@@ -34,48 +35,11 @@ ROOT = Path(__file__).resolve().parent
 SRC = ROOT / "src"
 
 
-def _run_module(module: str, *args: str) -> int:
+def _run_module(module: str, args: list[str] | None) -> int:
+    """Import `legalrag.<module>` and call its `main`; `args=None` for a main that takes none."""
     sys.path.insert(0, str(SRC))
-    if module == "legalrag.evaluate":
-        from legalrag.evaluate import main
-        return main()
-    if module == "legalrag.ingest":
-        from legalrag.ingest import main
-        return main(list(args))
-    if module == "legalrag.verify_refs":
-        from legalrag.verify_refs import main
-        return main(list(args))
-    if module == "legalrag.broken_words":
-        from legalrag.broken_words import main
-        return main(list(args))
-    if module == "legalrag.answer_eval":
-        from legalrag.answer_eval import main
-        return main(list(args))
-    if module == "legalrag.app_eval":
-        from legalrag.app_eval import main
-        return main(list(args))
-    if module == "legalrag.ocr_text":
-        from legalrag.ocr_text import main
-        return main(list(args))
-    if module == "legalrag.ocr_gate":
-        from legalrag.ocr_gate import main
-        return main(list(args))
-    if module == "legalrag.ablate":
-        from legalrag.ablate import main
-        return main(list(args))
-    if module == "legalrag.adversarial":
-        from legalrag.adversarial import main
-        return main(list(args))
-    if module == "legalrag.server":
-        from legalrag.server import main
-        return main(list(args))
-    if module == "legalrag.webapp":
-        from legalrag.webapp import main
-        return main(list(args))
-    if module == "legalrag.reindex":
-        from legalrag.reindex import main
-        return main(list(args))
-    raise ValueError(module)
+    main = importlib.import_module(f"legalrag.{module}").main
+    return main() if args is None else main(list(args))
 
 
 def _subprocess(*cmd: str) -> int:
@@ -84,20 +48,25 @@ def _subprocess(*cmd: str) -> int:
     return subprocess.call(cmd, cwd=ROOT)
 
 
+# command -> module under src/legalrag/ whose main() it runs
+MODULE_TASKS = {
+    "ingest": "ingest",
+    "verify-refs": "verify_refs",
+    "ablate": "ablate",
+    "adversarial": "adversarial",
+    "broken-words": "broken_words",
+    "ocr-gate": "ocr_gate",
+    "ocr-to-raw": "ocr_text",
+    "answer-eval": "answer_eval",
+    "app-eval": "app_eval",
+    "serve": "server",
+    "app": "webapp",
+    "reindex": "reindex",
+}
+
 TASKS = {
-    "eval": lambda a: _run_module("legalrag.evaluate"),
-    "ablate": lambda a: _run_module("legalrag.ablate", *a),
-    "adversarial": lambda a: _run_module("legalrag.adversarial", *a),
-    "broken-words": lambda a: _run_module("legalrag.broken_words", *a),
-    "ocr-gate": lambda a: _run_module("legalrag.ocr_gate", *a),
-    "ocr-to-raw": lambda a: _run_module("legalrag.ocr_text", *a),
-    "answer-eval": lambda a: _run_module("legalrag.answer_eval", *a),
-    "app-eval": lambda a: _run_module("legalrag.app_eval", *a),
-    "ingest": lambda a: _run_module("legalrag.ingest", *a),
-    "serve": lambda a: _run_module("legalrag.server", *a),
-    "app": lambda a: _run_module("legalrag.webapp", *a),
-    "reindex": lambda a: _run_module("legalrag.reindex", *a),
-    "verify-refs": lambda a: _run_module("legalrag.verify_refs", *a),
+    "eval": lambda a: _run_module("evaluate", None),  # takes no arguments
+    **{name: (lambda a, m=module: _run_module(m, a)) for name, module in MODULE_TASKS.items()},
     "test": lambda a: _subprocess(sys.executable, "-m", "pytest", "-q"),
     "setup": lambda a: _subprocess(
         sys.executable, "-m", "pip", "install", "-c", "constraints.txt", "-r", "requirements-dev.txt"

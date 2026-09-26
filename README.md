@@ -40,7 +40,175 @@ and each one is silent.
 So the eval set and its guards were built before the retriever, and the
 scoreboard exists before the system does.
 
+## Structure
+
+Two products share one core. The **app** answers questions about documents you
+upload. The **statute bench** measures retrieval and generation on one ingested
+law and produces every number under Results. They never read each other's data.
+
+### Entry points
+
+Everything runs through `python tasks.py <command>` from the repo root.
+`python tasks.py --help` lists them.
+
+| Command | What it is | Reads | Writes |
+|---|---|---|---|
+| `app` | **The app**: upload a document, ask it questions (needs Ollama) | `ui/app.html`, `ui/app.js`, `ui/js/`, `data/app/` | `data/app/docs/<doc_id>/` |
+| `reindex` | Recompute stored documents' embeddings after an upgrade | `data/app/docs/` | `data/app/docs/*/embeddings.npz` |
+| `app-eval` | Score the app's upload pipeline on the synthetic `app-dev` set | `evals/app/` | `runs/app_eval-*.json` |
+| `ingest --law "…"` | Statute PDF to article-level chunks, validated | `data/raw/*.pdf` | `data/processed/articles.jsonl` |
+| `verify-refs [--write]` | Check every ground-truth article reference | `evals/retrieval/questions.jsonl`, corpus | stdout (`--write`: the questions file) |
+| `eval` | BM25 scoreboard, no model | questions, corpus | stdout |
+| `ablate` | BM25 / dense / hybrid / hybrid + rerank compared | questions, corpus, local models | stdout, `data/processed/embeddings.npz` |
+| `adversarial` | Named failure-mode probes (not a score) | `evals/adversarial/` | stdout |
+| `answer-eval` | End-to-end answers: citations and abstention | questions, corpus, Ollama | `runs/answer_eval*.json` |
+| `all --law "…"` | `ingest`, then `verify-refs`, then `eval` | as above | as above |
+| `broken-words` | Find words split by a stray space in the corpus | corpus | stdout |
+| `ocr-gate <json>` | Score an OCR engine's digit accuracy | OCR JSON, `evals/ocr/` | stdout |
+| `ocr-to-raw <in> <out>` | OCR pages to raw text that `ingest` can read | OCR JSON | `<out>` |
+| `serve` | **Legacy** benchmark test page (BM25, stdlib server) | `ui/index.html`, questions, corpus | nothing |
+| `test` | The test suite | `tests/` | nothing |
+| `setup` | Install pinned dependencies | `requirements-dev.txt`, `constraints.txt` | the environment |
+
+Registry results come from the scripts in `evals/` (below), not from `tasks.py`.
+
+### Request flow
+
+**`POST /api/chat`** (question in, JSON answer out):
+
+1. `web_guard.py` `Guard`: host, `X-LegalRAG` header, rate limits, before any route.
+2. `webapp.py` `_add_chat_route.chat`: validates the body (`ChatRequest`).
+3. `pipeline.py` `Pipeline.ask`: rejects a too-short or too-long question.
+4. `library.py` `Library.search`: `dense.py` `encode_query` once, then each live document's
+   `DenseIndex.search_with_vector` (loaded by `docindex.py` `load_index`); top 5 overall.
+5. `pipeline.py` `Pipeline._generate`: one generation at a time (`TooBusy` otherwise), calling
+   `claims.py` `ClaimsGenerator.answer`: a relevance check, then JSON claims, both through
+   `ollama.py` `OllamaChat`.
+6. `cite.py` `gate`: drops every claim whose citation is not among the retrieved sources or
+   not grounded in them.
+7. `claims.py` `final_abstain_reason`, then `pipeline.py` `ChatResult.to_dict` is the response.
+   Anticipated errors become HTTP codes in `webapp.py` `_add_error_handlers`.
+
+**`POST /api/documents`** (upload):
+
+1. `webapp.py` `_add_document_routes.upload` calls `library.py` `Library.add`: size, suffix and
+   PDF checks first; identical bytes return the existing document.
+2. PDF: `docextract.py` `extract_pdf` runs `pdf_text.py` `extract_pages` in a killable
+   subprocess (`isolate.py` `run_isolated`), then `chunking.py` cuts statute articles if the
+   text validates as a statute, page chunks otherwise. Text files go to `chunk_document`.
+3. `docstore.py` writes `chunks.jsonl` and `meta.json`, `dense.py` `DenseIndex.save` writes
+   `embeddings.npz`, all in a staging directory moved into `data/app/docs/<doc_id>/` at the end.
+
+### Code map
+
+`src/legalrag/`, 35 modules. The app uses dense retrieval only; BM25, fusion and
+rerank exist only in the bench.
+
+**App**
+
+| Module | Role |
+|---|---|
+| `webapp.py` | FastAPI app, routes, error-to-HTTP mapping, `main()` for `tasks.py app` |
+| `web_guard.py` | ASGI middleware: host and header checks, rate limits, security headers |
+| `pipeline.py` | `Pipeline.ask`: one question from retrieval to a gated answer |
+| `library.py` | The on-disk document library: add, search, soft delete |
+| `docextract.py` | A stored PDF's pages and chunks, extracted in a subprocess |
+| `isolate.py` | Run a callable in its own process with a hard timeout |
+| `docstore.py` | One stored document's files, atomic JSON writes |
+| `docindex.py` | A document's dense index and the shared lazily loaded encoder |
+| `docerrors.py` | Every error the library raises, each with a stable code |
+| `reindex.py` | `tasks.py reindex`: rebuild stale embeddings |
+| `app_eval.py` | `tasks.py app-eval`: the upload pipeline on the `app-dev` split |
+
+**Shared core**
+
+| Module | Role |
+|---|---|
+| `normalize.py` | Search normalization vs evaluation normalization, kept apart |
+| `pdf_text.py` | Logical-order Arabic from a visually ordered PDF |
+| `chunking.py` | Article chunks for statutes, page chunks for everything else |
+| `dense.py` | multilingual-e5-base index, cached and fingerprinted |
+| `cite.py` | Citation checks with no model in them: `audit` (bench) and `gate` (app) |
+| `claims.py` | The claims contract: relevance step, JSON claims, abstain reason |
+| `ollama.py` | Local Ollama client and health probe |
+| `generate.py` | Model-spec parsing and loading, used by both products. Its `Generator` class (text and JSON contracts, `transformers` path) is legacy, kept to reproduce E3 |
+
+**Statute bench**
+
+| Module | Role |
+|---|---|
+| `ingest.py` | `tasks.py ingest`: PDF to validated article chunks |
+| `verify_refs.py` | `tasks.py verify-refs`: every ground-truth reference re-checked |
+| `overlap.py` | Lexical-overlap guard for the question set |
+| `evaluate.py` | `tasks.py eval`: question loading, split handling, BM25 scoreboard |
+| `retrieve.py` | BM25 baseline, Recall@k, MRR |
+| `fusion.py` | Reciprocal rank fusion (ablation arm only) |
+| `rerank.py` | Cross-encoder reranking (ablation arm only) |
+| `ablate.py` | `tasks.py ablate`: the four retrieval configurations |
+| `adversarial.py` | `tasks.py adversarial`: named failure-mode probes |
+| `answer_eval.py` | `tasks.py answer-eval`: end-to-end answers over dense top-5. The `text` and `json` contracts are legacy, kept to reproduce E3; `gated` is what the app runs |
+| `answer_report.py` | Console reports for `answer-eval` |
+| `envcheck.py` | Refuses to stamp an environment record the interpreter does not match |
+| `server.py` | `tasks.py serve` (legacy, benchmark test page) |
+
+**Tools**
+
+| Module | Role |
+|---|---|
+| `broken_words.py` | `tasks.py broken-words`: split-word detector for the corpus |
+| `ocr_gate.py` | `tasks.py ocr-gate`: digit-accuracy gate for an OCR engine |
+| `ocr_text.py` | `tasks.py ocr-to-raw`: OCR output to raw text for `ingest` |
+| `__init__.py` | Package version |
+
+### Other folders
+
+| Path | What is in it |
+|---|---|
+| `ui/` | `app.html`, `app.css`, `app.js`, `js/`: the app's page. `index.html`: the legacy `serve` page |
+| `tests/` | The test suite; no model or network needed |
+| `evals/retrieval/`, `evals/adversarial/`, `evals/app/`, `evals/ocr/` | Question sets and ground truth, each with a `meta.json` |
+| `evals/*.py` | Registry harnesses: each stamps commit and environment and writes `evals/registry/*.json`. `ablation_result.py`, `retrieval_latency.py`, `answer_eval_result.py`, `reweighting_check.py`, `grounding_breakdown.py`, `generation_repeat.py`; `generation_variance.py` and `placement_probe.py` are targeted experiments behind E3c–E3e; `environment.py` writes `evals/environment.json` |
+| `evals/app/coldstart_check.py` | One-off reproduction against a running container; writes `coldstart_result.json` beside it |
+| `evals/registry/` | Tracked raw results: the only files a number may cite |
+| `scripts/make_constraints.py` | Regenerates `constraints.txt` |
+| `docs/demo/` | One screenshot, not evidence |
+| `PRD.md`, `PROJECT-STATE.md`, `docs/review/` | Working notes: PRD, project state, a point-in-time review |
+| `data/raw/`, `data/processed/`, `data/app/` | Statute PDF, ingested corpus, uploaded documents. Git-ignored except `data/raw/README.md` and `data/raw/SOURCE.txt` |
+
+`EVIDENCE.md` binds each number to its command, commit and raw file; `EVAL.md`
+records every run in order; `DECISIONS.md` holds the ADRs; `LICENSES.md` covers
+models, corpus and dependencies.
+
+### Read the code in this order
+
+1. `tasks.py`: every entry point in one table.
+2. `webapp.py` `create_app`, then `pipeline.py` `Pipeline.ask`: the app's whole round trip.
+3. `library.py` `Library.add` and `Library.search`, then `dense.py` `DenseIndex`.
+4. `claims.py` `ClaimsGenerator.answer`, then `cite.py` `gate`.
+5. For the bench: `ingest.py`, `evaluate.py`, `ablate.py`, `answer_eval.py`, then `EVIDENCE.md`.
+
 ## Architecture
+
+**App** (`python tasks.py app`, dense retrieval only)
+
+```
+upload ──► webapp ──► library.add
+                        │  docextract: pdf_text in a killable subprocess
+                        │  chunking:   article chunks if it validates as a statute, page chunks otherwise
+                        ▼
+              data/app/docs/<doc_id>/  source · chunks.jsonl · meta.json · embeddings.npz
+
+question ─► webapp ──► pipeline.ask
+                        │  library.search   dense (multilingual-e5-base), top 5 across documents
+                        ▼
+                      claims              relevance check, then JSON claims (local Ollama, greedy)
+                        ▼
+                      cite.gate           drops every claim citing a source it was not handed
+                        ▼
+                      JSON: claims · sources · abstain_reason · timings
+```
+
+**Statute bench** (`ingest`, `verify-refs`, `eval`, `ablate`, `answer-eval`)
 
 ```
 data/raw/<law>.pdf
@@ -51,23 +219,26 @@ data/raw/<law>.pdf
      ▼
 data/processed/articles.jsonl     56 articles, each with a stable number
      │
-     ├──► retrieve.py    BM25 baseline                       (rank-bm25)
-     ├──► dense.py       multilingual-e5-base, cached        (sentence-transformers)
-     ├──► fusion.py      reciprocal rank fusion, depth 20
-     └──► rerank.py      cross-encoder over the fused candidates
+     ├──► evaluate.py    BM25 scoreboard (retrieve.py, rank-bm25)
+     ├──► ablate.py      BM25 · dense · hybrid (fusion.py, RRF depth 20) · hybrid + rerank.py
      │
      ▼
-  generate.py            citation-forced answer, local Ollama, greedy
+  answer_eval.py         dense top-5 → claims.py / generate.py → local Ollama, greedy
      │
      ▼
   cite.py                audits every citation against the corpus AND against
-                         the exact articles the retriever handed over.
-                         No model in it — the check holds whatever wrote the text.
+     │                   the exact articles the retriever handed over.
+     │                   No model in it — the check holds whatever wrote the text.
+     ▼
+runs/*.json ──► evals/*.py ──► evals/registry/*.json ──► EVIDENCE.md
 ```
 
-Chunks are **articles, not token windows**. A 512-token window splits an
-article in half and destroys the verification key that makes any of this
-scoreable. ADR-002.
+**Shared core:** `normalize`, `pdf_text`, `chunking`, `dense`, `cite`, and the
+generation clients `claims`, `ollama`, `generate`.
+
+In the bench, chunks are **articles, not token windows**. A 512-token window
+splits an article in half and destroys the verification key that makes any of
+this scoreable. ADR-002.
 
 ## Run
 
@@ -79,14 +250,13 @@ python tasks.py verify-refs              # check every ground-truth article ref
 python tasks.py eval                     # BM25 scoreboard — fast, no model needed
 python tasks.py ablate                   # 4 configs: BM25/dense/hybrid/+rerank
 python tasks.py answer-eval --model ollama:gemma3:4b   # end-to-end answers
-python tasks.py serve                    # local test page at http://127.0.0.1:8000
 python tasks.py app                      # document Q&A app (needs Ollama)
 python tasks.py reindex                  # repair stored documents after an upgrade
 python tasks.py test                     # the test suite
 ```
 
-`tasks.py` is the canonical runner and needs nothing but Python. `make <target>`
-is an equivalent alias on Linux/CI.
+`tasks.py` is the only runner and needs nothing but Python. The full command
+list is under **Structure**.
 
 `eval` and `ablate` are separate on purpose: `eval` must stay runnable on a
 fresh clone with no model and no torch (~0.2 s), while `ablate` loads ~1 GB of
@@ -129,9 +299,9 @@ python tasks.py reindex --dry-run        # which stored documents are stale
 python tasks.py reindex                  # recompute them from their chunks
 ```
 
-### The test page
+### The legacy test page
 
-`python tasks.py serve` opens a local page whose primary job is **running the
+Kept for the benchmark, not part of the app. `python tasks.py serve` opens a local page whose primary job is **running the
 eval set against the current retriever and showing which questions fail**, not
 demoing answers. Ad-hoc querying and corpus browsing are secondary tabs. It is a
 local server, not a hosted page: the corpus is not redistributable, and the page
@@ -426,36 +596,6 @@ Generation reproduced verdict-for-verdict across three commits here (greedy,
 temperature 0), but that is an observation about this setup, not a guarantee
 about yours. Latency will not reproduce: it is hardware, and `env-001` in
 [`EVIDENCE.md`](EVIDENCE.md) says which.
-
-## Repository layout
-
-```
-tasks.py             task runner — the entry point on every platform
-src/legalrag/
-  normalize.py       search vs evaluation normalization (ADR-004)
-  pdf_text.py        logical-order Arabic out of a visually-ordered PDF (ADR-013)
-  ingest.py          PDF -> article chunks + extraction & structural validation
-  retrieve.py        BM25 baseline + Recall@k / MRR
-  dense.py           e5-base index, cached and fingerprinted
-  fusion.py          reciprocal rank fusion
-  rerank.py          cross-encoder over fused candidates
-  generate.py        citation-forced generation (local Ollama / transformers)
-  cite.py            the citation audit — no model in it
-  evaluate.py        the scoreboard
-  server.py          local test page server (stdlib only)
-evals/
-  retrieval/         the question set — written before any retrieval code
-  environment.py     -> environment.json, the environment_ref every row uses
-  ablation_result.py retrieval quality, with bootstrap intervals
-  retrieval_latency.py  latency, interleaved and warmed
-  answer_eval_result.py generation quality, promoted out of git-ignored runs/
-  registry/          tracked raw results — the only files a number may cite
-EVIDENCE.md          the reproducibility registry
-EVAL.md              every measured run, in order, with its pre-registrations
-DECISIONS.md         ADRs with rejected alternatives and revisit conditions
-LICENSES.md          models, corpus, dependencies, dependency audit
-PRD.md               problem, scope, acceptance criteria
-```
 
 ## Attribution
 

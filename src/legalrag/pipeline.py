@@ -1,14 +1,11 @@
-"""Ask a question of the uploaded documents: the P1 demo layer's round trip
-(ADR-023, ADR-025).
+"""The app's question round trip.
 
     Library.search -> ClaimsGenerator.answer (relevance, then claims) -> cite.gate
 
-`Pipeline.ask` returns a `ChatResult` an HTTP layer can serialize as it is
-(`to_dict`). It holds only the claims that survived the gate, each pointing
-at its sources by the numbers the model saw. What the gate or the contract
-kept out of view never gets in: the raw model text, the relevance reply, a
-dropped claim's text, or whether a kept claim was copied. An empty answer
-always says why (`claims.final_abstain_reason`).
+`Pipeline.ask` returns a `ChatResult` ready to serialize (`to_dict`). It holds
+only the claims that survived the gate, each citing its sources by the numbers
+the model saw; raw model text and dropped claims never reach it. An empty
+answer always says why (`claims.final_abstain_reason`).
 """
 
 from __future__ import annotations
@@ -25,27 +22,13 @@ TOP_K = 5
 MIN_QUESTION_CHARS = 3
 MAX_QUESTION_CHARS = 500
 
-# ADR-023: a single-user local demo. 3 is one generation in flight plus room
-# for two more callers queued behind it — enough headroom for a couple of
-# browser tabs firing near-simultaneously (a tab retried while the first
-# request is still running, say) without letting an unbounded number of
-# callers pile up waiting on a lock that only ever lets one through.
+# One generation in flight plus two callers queued: enough for a retried tab.
 MAX_CONCURRENT_GENERATIONS = 3
 
-# This app's own measured generation times run up to ~90s cold and 15-30s
-# warm (ollama.py). A caller queued behind exactly one other generation must
-# not be killed while still reasonably likely to complete once admitted —
-# even in the unlucky case that the generation ahead of it is a cold one.
-# 120s covers waiting out one cold generation ahead plus a margin, while
-# still bounding how long a slot is held for a caller nobody is waiting on
-# any more (an abandoned browser tab).
+# Covers waiting out one cold generation (~90s measured) ahead in the queue.
 MAX_WAIT_SECONDS = 120.0
 
-# A small, fixed hint, not a real queue-depth estimate (Retry-After does not
-# need to be exact) — long enough that an immediate retry is unlikely to hit
-# the exact same wall, short enough that a caller is not told to wait
-# needlessly long for what is, on this single-user demo, normally a short-lived jam.
-RETRY_AFTER_S = 5.0
+RETRY_AFTER_S = 5.0  # a fixed Retry-After hint, not a queue-depth estimate
 
 _DROP_REASONS = ("uncited", "fabricated", "ungrounded")
 
@@ -62,12 +45,8 @@ class QuestionRejected(ValueError):
 
 
 class TooBusy(RuntimeError):
-    """Either MAX_CONCURRENT_GENERATIONS callers are already waiting for (or
-    holding) `Pipeline._generating`, or this caller waited past
-    `max_wait_seconds` for its own turn at it. Both are, from the client's
-    side, the same "too many requests right now" situation `web_guard`'s
-    existing "rate_limited" code and Arabic sentence already cover — this
-    reuses that family rather than inventing a second one for it."""
+    """Too many callers already queued for generation, or this one waited past
+    `max_wait_seconds`. Reported with web_guard's existing "rate_limited" code."""
 
     code = "rate_limited"
 
@@ -128,14 +107,10 @@ class Pipeline:
         self.k = k
         self.max_concurrent_generations = max_concurrent_generations
         self.max_wait_seconds = max_wait_seconds
-        # `claims._stage_calls` finds an answer's calls by their position in
-        # the model's `calls` list, so two answers generated at once on one
-        # model would each count the other's. Generation takes turns.
+        # Generation takes turns: `claims._stage_calls` reads an answer's calls by
+        # position in the model's shared `calls` list.
         self._generating = threading.Lock()
-        # Bounds how many callers may be waiting for `_generating` (or
-        # holding it) at once: the (max_concurrent_generations + 1)th caller
-        # is refused immediately (TooBusy), rather than joining an unbounded
-        # queue on the lock above.
+        # Caps callers waiting for or holding `_generating`; the next one gets TooBusy.
         self._admission = threading.BoundedSemaphore(max_concurrent_generations)
 
     def ask(self, question: str, doc_ids: list[str] | None = None) -> ChatResult:
@@ -155,14 +130,8 @@ class Pipeline:
           waiting for (or holding) the generation lock, or when this caller
           waited past `max_wait_seconds` for its own turn at it.
         """
-        # BEFORE the clock starts, deliberately. `max_wait_seconds` is T11's
-        # end-to-end budget over this request's own work; loading the embedding
-        # model is the process starting up, once, for every request that comes
-        # after too. Billing it to whoever happens to be first turned a cold
-        # start into «waited 244.9s for a generation slot» with nothing queued
-        # and the lock free the whole time. Normally this returns at once,
-        # because the app warms the encoder at startup; it blocks only for a
-        # request that beat the warm-up, and then for the load, not a queue.
+        # Before the clock starts: a one-time model load is not this request's
+        # wait (see DECISIONS.md ADR-031). Normally a no-op; the app warms at startup.
         warm = getattr(self.library, "warm_encoder", None)
         if callable(warm):
             warm()
@@ -188,9 +157,8 @@ class Pipeline:
 
         answer = self._generate(question, texts, started)
 
-        # A page chunk's article is None, so a claim naming «مادة N» that none
-        # of its cited sources' text names is dropped as ungrounded — exactly
-        # as it would be for a statute's article.
+        # A page chunk's article is None; a claim naming «مادة N» its sources do
+        # not name is dropped as ungrounded, as for a statute.
         verdict = cite.gate(answer.parsed, [s.article for s in sources], texts)
         return ChatResult(
             status=verdict["status"],
@@ -207,16 +175,8 @@ class Pipeline:
         )
 
     def _generate(self, question: str, texts: list[str], started: float):
-        """Run `self.generator.answer` under `_generating`, admitting at most
-        `max_concurrent_generations` callers (waiting for the lock, or
-        holding it) at once, and refusing to start an expensive call for a
-        caller who has already waited past `max_wait_seconds` since `ask`
-        began (`started`, the same `perf_counter()` clock as the rest of
-        this module).
-
-        Both refusals are `TooBusy`, raised without ever calling
-        `self.generator.answer`.
-        """
+        """`self.generator.answer` under `_generating`, or `TooBusy` before any call when
+        the queue is full or the caller has waited past `max_wait_seconds` since `started`."""
         if not self._admission.acquire(blocking=False):
             raise TooBusy(
                 f"{self.max_concurrent_generations} callers are already waiting to "
@@ -231,25 +191,15 @@ class Pipeline:
                         f"{self.max_wait_seconds:.0f}s limit; try again shortly"
                     )
                 answer = self.generator.answer(question, texts)
-                # Bounds `OllamaChat.calls` to at most one request's worth
-                # (finding: it otherwise grows for the app's whole lifetime).
-                # Safe only because `_generating` fully serializes generation
-                # and `claims._stage_calls` always measures a fresh `before =
-                # len(model.calls)` at the start of the next call — this MUST
-                # run before the lock above is released, not after: a second,
-                # already-waiting request could otherwise start appending to
-                # `model.calls` before this reset runs, and this reset would
-                # then wipe out that in-flight request's own calls.
+                # Keeps `calls` to one request's worth. Must run inside the lock, or it
+                # could wipe the calls of the next request already generating.
                 self._reset_call_history()
                 return answer
         finally:
             self._admission.release()
 
     def _reset_call_history(self) -> None:
-        """Clear `.calls` on the claims model and, when there is one, the
-        relevance model — `getattr(model, "calls", None)`, the same
-        defensive check `claims._stage_calls` already makes, so an `hf:`
-        runtime (a plain callable with no `.calls` at all) is left alone."""
+        """Clear `.calls` on the claims and relevance models; a model without one is left alone."""
         models = (self.generator.model, getattr(self.generator, "relevance_model", None))
         for model in models:
             if getattr(model, "calls", None) is not None:
@@ -257,10 +207,7 @@ class Pipeline:
 
 
 def _stage_seconds(calls: list[dict], stage: str) -> float:
-    """Time this answer spent in `stage`: its own stage-tagged calls'
-    `total_s` (Ollama's whole-request duration), never the model's running
-    `calls` list, which holds every earlier answer's calls too. A call that
-    reports no duration counts as zero."""
+    """Seconds this answer's own `stage` calls took (`total_s`; missing counts as zero)."""
     return sum(c.get("total_s") or 0.0 for c in calls if c.get("stage") == stage)
 
 

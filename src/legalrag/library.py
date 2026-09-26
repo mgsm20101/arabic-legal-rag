@@ -1,4 +1,4 @@
-"""The on-disk document library behind the P1 demo layer (ADR-023).
+"""The app's on-disk document library: add, search, soft delete.
 
     root/docs/<doc_id>/{source.pdf | source.txt, meta.json, chunks.jsonl, embeddings.npz}
     root/tmp/<uuid4 hex>/    an upload being staged
@@ -113,12 +113,8 @@ class Library:
         with self._lock:
             known = self._metas.get(doc_id)
             if known is None and doc_id in self._skipped:
-                # A read that failed only once (another process had it open for a moment, say) is
-                # no sign the document is gone: try it again before treating doc_id as free to reuse.
-                # Not yet committed to _metas/_skipped here — only once _check_sha256 and _loads
-                # below have both run without raising, so a StorageError from either (a transient
-                # failure, not damage) leaves doc_id exactly as it was, retryable next time instead
-                # of wedged: neither known (in _metas) nor free to overwrite (out of _skipped).
+                # A read that failed once may be transient: retry it. Committed to _metas only
+                # after the checks below pass, so a StorageError leaves doc_id retryable.
                 recovered, problem = read_meta(self._docs / doc_id)
                 if recovered is not None:
                     known = recovered
@@ -223,12 +219,8 @@ class Library:
             else:
                 scope = [self._live(doc_id) for doc_id in dict.fromkeys(doc_ids)]
 
-        # Encoded once for the whole scope, not once per document: every document's index shares
-        # this same encoder and the same (never overridden) default query prefix (docindex.py's
-        # load_index always wraps it as `_QueriesOnly(encoder)` with dense.py's own defaults), so
-        # this vector is exactly what each document's own `DenseIndex.search` would have computed
-        # for it — see F10/ADR-023's dense.encode_query docstring. Only computed when there is
-        # anything to rank: an empty scope must never reach the encoder, same as before.
+        # Encoded once for every document: they share one encoder and query prefix.
+        # An empty scope never reaches the encoder.
         query_vec = dense.encode_query(self._encoder, query) if scope else None
 
         ranked: list[tuple[tuple, LibraryHit]] = []

@@ -1,22 +1,17 @@
-"""End-to-end answer evaluation — PRD M2/B1 and M2/B2.
+"""End-to-end answer evaluation over dense top-5 retrieval.
 
-Retrieval is the dense configuration, because Run 2 measured it as the winner
-(0.767 against BM25's 0.333) and because a generation number computed over a
-retriever nobody chose is unreadable.
+Three answer contracts, chosen with ``--contract``:
 
-**B2 has a trap, and this is designed against it.** "Abstention accuracy on
-``out_of_corpus`` >= 80%" is satisfied trivially by a model that abstains on
-everything: it scores 100% and answers nothing. So the false-abstention rate on
-*answerable* questions is printed next to it, always, and neither number is
-quotable alone. The pair is the metric.
+``gated``  relevance step, then claims JSON, then `cite.gate`: what the app runs.
+``json``   claims JSON and `cite.gate`, no relevance step.
+``text``   free text with inline citations, checked by `cite.audit`. Legacy:
+           `generate.Generator` and this contract are kept to reproduce E3.
 
-**B1 counts three failures apart** — fabricated, ungrounded, uncited — because
-they say different things about where the system broke. See ``cite``.
-
-One more number that costs nothing and says a lot: whether the answer cites the
-article the eval set says it should. That is end-to-end correctness as far as
-this project measures it, and it is bounded above by retrieval — the generator
-cannot cite what the retriever never handed it.
+Abstention on out-of-corpus questions is always printed beside the
+false-abstention rate on answerable ones: a model that abstains on everything
+scores 100% on the first. Fabricated, ungrounded and uncited are counted apart
+(see `cite`). Raw rows go to ``runs/``; `evals/answer_eval_result.py` promotes
+them to the registry.
 
 Run: ``python tasks.py answer-eval``
 """
@@ -56,24 +51,16 @@ RUNS = Path("runs")
 ROWS_PATH = RUNS / "answer_eval.json"
 DEFAULT_SPEC = "hf:" + DEFAULT_MODEL  # Run 3's model, as a --model spec
 
-# "text": Run 3/4's free text. "json": Run 5's claims + gate. "gated": Run 6
-# — the same claims contract behind a yes/no relevance step (EVAL.md,
-# "Run 6"). Order matters only for --help/argparse's choices listing.
+# text: free text (legacy, EVAL.md Runs 3-4); json: claims + gate (Run 5);
+# gated: relevance step + claims + gate (Run 6).
 CONTRACTS = ("text", "json", "gated")
 
 
 def rows_path(spec: str, contract: str = "text") -> Path:
-    """Where a run's raw answers are saved.
+    """Where a run's raw answers are saved: one file per (spec, contract).
 
-    The default spec (under the "text" contract, the only one it can ever
-    appear under — see `main`) keeps Run 3's exact file name, so
-    `--report-only` with no `--model`/`--contract` keeps reproducing that
-    saved run. Any other (spec, contract) pair gets its own file, named
-    from the spec itself — otherwise a second run would silently overwrite
-    a previous one's saved answers. Any non-"text" contract gets a
-    `-{contract}` suffix, so `contract="json"` (Run 5) keeps its established
-    `-json` suffix exactly, and `contract="gated"` (Run 6) gets its own
-    `-gated` suffix that cannot collide with either.
+    The default spec under "text" keeps Run 3's file name so `--report-only`
+    still reproduces it; other contracts get a `-{contract}` suffix.
     """
     if contract != "text":
         slug = re.sub(r"[^A-Za-z0-9._-]", "-", spec)
@@ -92,17 +79,9 @@ def article_number(doc_id: str) -> int | None:
 
 
 def _stats_for(model, before: int) -> list[dict] | None:
-    """Every call `model` made since `before` — a count of its `calls` list
-    taken just before the question was asked — or None if this runtime
-    keeps no such list at all (the hf: runtime is a plain function).
+    """Every call `model` made since the `before` count, or None if it keeps no `calls` list.
 
-    Counting from a call-count snapshot, not from whether the question's
-    articles were empty, is what stays correct once one question can make
-    more than one call: Run 5 retries once on invalid JSON, so `calls`
-    holds both the cut first attempt and the retry, where reading only
-    `last_stats` would silently drop the first one. Must be called *after*
-    the question's `generator.answer` returns, so `before` refers to a
-    count taken strictly earlier.
+    Counted from a snapshot, so a retried question keeps both calls.
     """
     calls = getattr(model, "calls", None)
     if calls is None:
@@ -119,10 +98,7 @@ def run(questions, docs, generator: Generator, model_spec: str, k: int = TOP_K,
     corpus_numbers = {n for n in (article_number(d["id"]) for d in docs) if n}
     fingerprint = corpus_fingerprint(docs)
 
-    # Provenance belongs on the row, not only in the console header
-    # (`_weights_line`): a saved run should be able to answer "what did
-    # this actually load from?" on its own. Same for every row in one run,
-    # so it is resolved once rather than per question.
+    # Where the weights came from, stamped on every row.
     prefix, name = parse_model_spec(model_spec)
     weights = model_source(name) if prefix == "hf" else None
 
@@ -175,27 +151,10 @@ def run(questions, docs, generator: Generator, model_spec: str, k: int = TOP_K,
 def run_claims(questions, docs, generator: ClaimsGenerator, model_spec: str,
                k: int = TOP_K, index: DenseIndex | None = None,
                contract: str = "json") -> list[dict]:
-    """The claims-JSON sibling of `run()` — Run 5's contract (EVAL.md,
-    commit ecd37f8) and, when `generator` carries a `relevance_model`, Run
-    6's gated version of it (EVAL.md, "Run 6") — the same retrieval as
-    `run()` (dense top-k, law articles only, kept in rank order); the answer
-    shape and the model-free check applied to it are what differ — `cite.gate`
-    runs immediately, so a saved row already carries its own verdict the way
-    a text-contract row's `cited`/`fabricated`/... do (`audit`, called
-    inside `run()`).
+    """`run()` for the claims contracts: same retrieval, then `cite.gate` on each answer.
 
-    Per-call stats come from the answer object (`ans.calls`), already
-    stage-tagged ("relevance" / "claims") by `ClaimsGenerator.answer` —
-    not from `generator.model.calls`, which would only ever see the claims
-    model's own calls and silently miss every relevance call Run 6 makes
-    through a SEPARATE model object.
-
-    `contract` is stamped onto every row as-is ("json" or "gated") — this
-    function's own logic never branches on it; only which fields a saved
-    row carries downstream (`relevance`, `abstain_reason`) actually differs,
-    and those come from `ans` regardless of which contract produced them
-    (`None` under Run 5's contract, since `ClaimsGenerator.answer` returns
-    exactly that when it was built with no `relevance_model`).
+    Call stats come from `ans.calls`, which include the relevance model's calls.
+    `contract` ("json" or "gated") is stamped on each row; the logic is the same.
     """
     if index is None:
         index = DenseIndex(docs, cache_path=CACHE_PATH)
@@ -266,31 +225,13 @@ def _read_run_meta(model_spec: str, contract: str = "text") -> dict | None:
 
 
 def _meta_for_rows(rows: list[dict], contract: str = "text") -> dict | None:
-    """Which `.meta.json` belongs beside a report of `rows` — resolved from
-    the model *actually recorded in the rows themselves*, not necessarily
-    whatever `--model` the CLI was given: under a reported mismatch
-    (`_rows_model_mismatch`) `--report-only` still reports on what is
-    actually saved, and the meta shown must describe the same run.
-
-    `report()`/`report_claims()` used to resolve this themselves; pulled out
-    here so `answer_report.py` never needs to know how a model spec maps to
-    a file on disk (`rows_path` lives in this module, not that one).
-    """
+    """The `.meta.json` for the model recorded in `rows`, which may differ from `--model`."""
     model_spec = rows[0]["model"] if rows and "model" in rows[0] else DEFAULT_SPEC
     return _read_run_meta(model_spec, contract)
 
 
 def _weights_line(model_spec: str) -> str | None:
-    """The `weights` header line for an `hf:` spec, or None when there is
-    nothing sensible to show.
-
-    A spec with no repo name after `hf:` (`"hf:"`, or all whitespace) is
-    invalid — `parse_model_spec` rejects it, `main` now checks that before
-    this is ever called — but this stays defensive on its own: calling
-    `model_source` on such a spec would print a blank `weights    :` line,
-    and `Path("").is_dir()` resolving to the current directory makes that
-    not even reliably blank.
-    """
+    """The `weights` header line for a valid `hf:` spec, else None."""
     if not model_spec.startswith("hf:"):
         return None
     try:
@@ -305,25 +246,14 @@ def _write_run_meta(
 ) -> Path:
     """Record what served the run and which eval set it scored.
 
-    `run_metadata` (passed in as `ollama_meta`) looks the loaded model up by
-    name from `/api/ps` rather than trusting anything the request itself
-    claimed: whether a candidate model fit on a 4 GB card, and which build's
-    digest answered, are facts about the server at run time, not something the
-    client can assert.
-
-    `question_set` is the half that was missing. Saved rows record the model
-    that produced them but said nothing about what was asked, so a promotion
-    run could read rows generated days earlier against a 20-question set and
-    stamp the current commit onto them — which is exactly what happened, and
-    produced a registry row reading `questions_total: 20` beside
-    `split: {dev: 40}`. The fingerprint makes that mismatch detectable.
+    `ollama_meta` is what the server reported at run time (`run_metadata`).
+    The question-set fingerprint lets the promoter refuse rows generated
+    against an older question set.
     """
     meta = dict(ollama_meta or {})
     meta["model"] = model_spec  # the full spec, consistent with rows' "model"
     meta["date"] = date.today().isoformat()
-    # The interpreter that retrieved and scored these rows. The promoter runs
-    # later, possibly from another shell, so checking only its own process
-    # would say nothing about the run it is about to stamp.
+    # This process's interpreter: the promoter runs later, from another one.
     meta["runtime"] = observed_environment()
     meta.update(commit_state())  # recorded now: the promoter runs later, maybe at another commit
     meta["question_set"] = {
@@ -339,10 +269,7 @@ def _write_run_meta(
 
 
 def _rows_model_mismatch(rows: list[dict], model_spec: str) -> str | None:
-    """The model recorded in `rows`'s first row, when it differs from
-    `model_spec` — None when they agree, `rows` is empty, or `rows` predates
-    the "model" field entirely (Run 3's saved shape, before this existed).
-    """
+    """The model recorded in `rows`, when it differs from `model_spec`; else None."""
     if not rows:
         return None
     existing = rows[0].get("model")
@@ -352,9 +279,7 @@ def _rows_model_mismatch(rows: list[dict], model_spec: str) -> str | None:
 
 
 def _rows_contract_mismatch(rows: list[dict], contract: str) -> str | None:
-    """Analogous to `_rows_model_mismatch`, for `contract` — rows saved
-    before `--contract` existed carry no such field at all, and count as
-    `"text"`, the only contract there was then."""
+    """The contract recorded in `rows` (default "text"), when it differs; else None."""
     if not rows:
         return None
     existing = rows[0].get("contract", "text")
@@ -367,15 +292,8 @@ def _check_rows_collision(rows_file: Path, model_spec: str, contract: str = "tex
     """None if it is safe to (over)write `rows_file` for `(model_spec,
     contract)` — a message naming what is actually saved there otherwise.
 
-    Two different specs can slugify to the same file name: `rows_path` maps
-    every character outside [A-Za-z0-9._-] to '-', so a spec built from one
-    kind of separator can collide with one built from another — and, since
-    `contract="json"` only changes the file name by a fixed `-json` suffix,
-    a `text` run of some model literally named `...-json` could in
-    principle land on the same path as a `json` run of a different model.
-    Silently overwriting a previous run's saved answers under either
-    circumstance would corrupt a different run's history, so both fields
-    are checked, not just the model.
+    Different specs can slugify to the same file name; overwriting another
+    run's answers would corrupt its history, so model and contract are both checked.
     """
     if not rows_file.exists():
         return None
@@ -400,22 +318,10 @@ def _check_rows_collision(rows_file: Path, model_spec: str, contract: str = "tex
 
 
 def _reaudit(rows: list[dict], docs: list[dict]) -> list[dict]:
-    """Recompute every row's citation verdict from its saved text against
-    the current corpus — a new list of new row dicts, never a mutation of
-    `rows` or the dicts in it, so a caller keeps its own copy of whatever it
-    passed in.
+    """New rows with the citation verdict recomputed from saved text, no model needed.
 
-    The audit itself has been wrong twice already: once on B1's wording,
-    once on citations lifted out of copied statute text — and each time the
-    saved answers were still good, only the check was not. Recomputing from
-    the text means a fixed checker costs a second; the generation that
-    produced the text can cost up to 45 minutes of CPU.
-
-    Raises `ValueError` if a row's `retrieved` names an article number this
-    `docs` does not contain — the corpus does not match the one the run saw,
-    and silently dropping that article from `context` (or, worse, treating
-    it as `""`) would misclassify a real citation as fabricated instead of
-    surfacing the mismatch.
+    Raises ValueError if a row retrieved an article this corpus lacks: the
+    corpus is not the one the run saw.
     """
     by_number = {
         n: d["text"]
@@ -444,23 +350,10 @@ def _reaudit(rows: list[dict], docs: list[dict]) -> list[dict]:
 
 
 def _regate(rows: list[dict], docs: list[dict]) -> list[dict]:
-    """Recompute every claims row's gate verdict from its saved `parsed`
-    answer and `source_numbers` — the claims-JSON sibling of `_reaudit`, for
-    the same reason (the gate is model-free specifically so a fixed gate
-    never needs Ollama again) and in the same style: a new list of new row
-    dicts, never a mutation of `rows` or the dicts in it.
+    """New claims rows with `gate` re-applied to the saved answers, no model needed.
 
-    Source *text* is looked up fresh from the current corpus by article
-    number, exactly as `_reaudit` does — a saved row keeps `source_numbers`,
-    not the article text itself, so the gate's copied-source check
-    (`cite.copied_from_context`) always runs against the corpus as it is
-    now, not a second copy frozen at generation time. `None` (a source with
-    no article number of its own — an issuance article) has no number to
-    look up and stays `""`, same as before; a real number this corpus does
-    not contain is a different situation entirely — a corpus mismatch — and
-    raises `ValueError` rather than silently gating against empty text (this
-    is the exact bug that changed Run 5's re-gated coverage 15 -> 14 with no
-    error at all).
+    Source text comes from the current corpus by article number. A number the
+    corpus lacks raises ValueError rather than gating against empty text.
     """
     by_number = {
         n: d["text"]
@@ -484,13 +377,7 @@ def _regate(rows: list[dict], docs: list[dict]) -> list[dict]:
 
 @dataclass(frozen=True)
 class _Contract:
-    """Everything that varies by `--contract`, keyed by name — how to build
-    a generator from a model spec, how to run it over the question set, how
-    to re-score saved rows against a freshly-loaded corpus, and how to
-    report the result. Replaces the `contract == "json"` branches that used
-    to be scattered through `main` one at a time — Run 6 ("gated") only
-    needed a third branch of each, not a rewrite of the branching itself.
-    """
+    """Per-contract hooks: build the generator, run it, re-score saved rows, report."""
     build: Callable[[str], object]
     run: Callable[[list, list[dict], object, str], list[dict]]
     rescore: Callable[[list[dict], list[dict]], list[dict]]
@@ -510,15 +397,7 @@ def _run_gated(questions, docs, generator: ClaimsGenerator, model_spec: str) -> 
 
 
 def _report_gated(rows: list[dict], meta: dict | None) -> int:
-    # Run 6 reuses Run 5's exact gate and report — only the header (and,
-    # inside it, the pre-registered relevance lines it now also prints) says
-    # which pre-registration these numbers were measured against.
-    # `expect_relevance=True`: no relevance data anywhere is not
-    # necessarily Run 5's own rows saved/loaded under the wrong contract,
-    # or a code regression — a gated run where every question had no
-    # sources never reaches the relevance step either. Either way, there
-    # is no evidence the step ran, so the report refuses the verdict
-    # rather than print Run 5's numbers under this header.
+    # Refuses a verdict when no row shows the relevance step ran.
     return report_claims(
         rows, meta=meta, contract_name="Run 6", pre_registration_commit="d3f39c3",
         expect_relevance=True)
@@ -541,19 +420,7 @@ CONTRACT_TABLE: dict[str, _Contract] = {
 
 
 class _ArgumentParser(argparse.ArgumentParser):
-    """`argparse.ArgumentParser`, except a parse error prints to stdout and
-    raises `SystemExit(2)` instead of argparse's default of stderr plus a
-    direct `sys.exit`.
-
-    stdout because every other diagnostic this module prints — a bad
-    `--model` spec, a rows collision, an incompatible contract — already
-    goes to stdout via a plain `print`, and the tests that pin those
-    messages read `capsys.readouterr().out`; splitting CLI errors across two
-    streams for no reason would just make them harder to find. `SystemExit`
-    is still raised, not swallowed here, because `main` below is the one
-    place that catches it and turns it into a return code — this class
-    exists to be *what* argparse raises, not to hide the raise.
-    """
+    """An ArgumentParser whose errors go to stdout, like every other message here."""
 
     def error(self, message: str) -> None:
         self.print_usage(sys.stdout)
@@ -565,11 +432,7 @@ def _build_arg_parser() -> _ArgumentParser:
     parser = _ArgumentParser(
         prog="answer-eval",
         description="End-to-end answer evaluation — PRD M2/B1 + M2/B2.",
-        # "--o" is an unambiguous PREFIX of "--overwrite" (no other flag
-        # starts with "o") — argparse's default abbreviation matching would
-        # silently accept it as "--overwrite". A full run silently gaining
-        # permission to replace a saved rows file from a typo is exactly the
-        # kind of mistake --overwrite's own confirmation exists to prevent.
+        # A typo must not expand to --overwrite.
         allow_abbrev=False,
     )
     parser.add_argument(
@@ -603,12 +466,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         args = parser.parse_args(argv)
     except SystemExit as e:
-        # argparse itself already printed usage + the error (via
-        # `_ArgumentParser.error` above) before raising this — an unknown
-        # flag (a `--report-only` typo, say) must exit 2 here rather than
-        # silently being ignored the way the hand-rolled `"--x" in argv`
-        # parsing this replaces would have, which is exactly how a
-        # `--report_only` typo used to start a full run by accident.
+        # Usage and error already printed; an unknown flag must not start a run.
         return e.code if isinstance(e.code, int) else 2
 
     model_spec = args.model
@@ -617,17 +475,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         parse_model_spec(model_spec)
     except ValueError as e:
-        # Validated here, before anything else loads: a typo in --model
-        # should not cost a corpus load, a question load, or a wasted run.
-        # `resolve_model` (below) re-parses the same spec to dispatch, but
-        # by then it is known good, so it cannot raise ValueError again.
+        # Before anything loads: a typo should cost nothing.
         print(str(e))
         return 2
 
     if contract != "text" and not model_spec.startswith("ollama:"):
-        # Same reasoning as `generate.resolve_model`'s own refusal — checked
-        # again here, before anything loads, so a mismatched pair costs
-        # nothing rather than failing deep inside the "loading ..." block.
+        # Schema-constrained decoding needs Ollama; checked before anything loads.
         print(f"--contract {contract} needs an ollama: model (got {model_spec!r}) — "
               "schema-constrained decoding is not available on the "
               "transformers path here")
@@ -640,8 +493,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.num_gpu < 0:
             print(f"--num-gpu must be >= 0 (got {args.num_gpu})")
             return 2
-        # Through the environment so every chat this run builds — the text
-        # generator, or both of the gated contract's — carries the same pin.
+        # Via the environment, so every chat this run builds carries the pin.
         os.environ[NUM_GPU_ENV] = str(args.num_gpu)
 
     rows_file = rows_path(model_spec, contract)
@@ -656,11 +508,7 @@ def main(argv: list[str] | None = None) -> int:
 
         contract_mismatch = _rows_contract_mismatch(rows, contract)
         if contract_mismatch is not None:
-            # Unlike a model mismatch (below), this is a refusal, not a
-            # warning: a text-contract row has no `parsed`/`source_numbers`
-            # at all, so proceeding into `_regate` would not produce a
-            # merely-misleading report, it would raise `KeyError` deep
-            # inside it.
+            # Refused: rows of another contract lack the fields re-scoring needs.
             print(f"{rows_file} holds {contract_mismatch!r}-contract rows, "
                   f"not {contract!r} — re-run with "
                   f"--contract {contract_mismatch} instead.")
@@ -668,29 +516,20 @@ def main(argv: list[str] | None = None) -> int:
 
         mismatch = _rows_model_mismatch(rows, model_spec)
         if mismatch is not None:
-            # A warning, not a refusal: --report-only changes nothing on
-            # disk, so there is nothing to protect by blocking it — but
-            # silently reporting another model's answers as this one's
-            # would be misleading.
+            # Warned, not refused: --report-only writes nothing.
             print(f"WARNING: {rows_file} holds answers for {mismatch!r}, not "
                   f"{model_spec!r} — reporting on what is actually saved there.")
 
         docs = load_docs(CORPUS_PATH)
         if not docs:
-            # Today's bug this guards against: `_regate`'s old
-            # `by_number.get(n, "")` silently treated every source as empty
-            # text against an empty corpus, which is how re-gating Run 5
-            # with no corpus loaded changed its coverage number 15 -> 14
-            # with no error printed at all.
+            # Re-scoring against no corpus once changed a published count silently.
             print("corpus not ingested — cannot re-score against nothing. "
                   "Run `python tasks.py ingest --law ...` first.")
             return 2
 
         saved_fp = rows[0].get("corpus_fingerprint") if rows else None
         if saved_fp is None:
-            # True of every row saved before this fingerprint field existed
-            # (Run 3/4/5) — must warn and proceed, not refuse, or none of
-            # those saved runs could ever be reported on again.
+            # Runs 3-5 predate fingerprints; they must stay reportable.
             print(f"WARNING: {rows_file} predates corpus fingerprints — the "
                   "saved answers cannot be verified against this corpus. "
                   "Proceeding anyway.")
@@ -705,20 +544,14 @@ def main(argv: list[str] | None = None) -> int:
 
         handlers = CONTRACT_TABLE[contract]
         try:
-            # The gate is model-free by design so a fixed gate never needs
-            # Ollama again (`_regate`) — "gated" re-applies it exactly like
-            # "json": the relevance decision is saved data on each row
-            # (`relevance`, `abstain_reason`), never re-run here.
+            # Relevance decisions are saved on each row and never re-run.
             rows = handlers.rescore(rows, docs)
             verb = "re-audited" if contract == "text" else "re-gated"
             print(f"{verb} {len(rows)} saved answers from {rows_file} "
                   "(no model loaded)\n")
             return handlers.report(rows, _meta_for_rows(rows, contract))
         except ValueError as e:
-            # A missing article number from `_regate`/`_reaudit` — a corpus
-            # that does not match the one this run saw, slipping past the
-            # fingerprint check above only because these particular saved
-            # rows predate it.
+            # A corpus mismatch in rows older than the fingerprint check.
             print(f"cannot re-score {rows_file} against the loaded corpus: {e}")
             return 2
 
@@ -728,11 +561,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     if rows_file.exists() and not args.overwrite:
-        # Unconditional on top of the mismatch check above: before this fix,
-        # a full run of the SAME model/contract silently overwrote its own
-        # previously saved rows, and the rows in `runs/` are the only record
-        # of a measurement — so any existing file now blocks a full run
-        # unless `--overwrite` says the replacement is intentional.
+        # The rows in runs/ are the only record of a measurement.
         print(f"{rows_file} already holds a saved run. The rows in runs/ "
               "are the only record of that measurement — pass --overwrite "
               "to replace it.")
@@ -786,33 +615,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  ready ({time.perf_counter() - t:.1f}s)\n", flush=True)
         rows = handlers.run(questions, docs, generator, model_spec)
     except GeneratorUnavailable as e:
-        # No traceback: this is an environment problem (missing dependency,
-        # bad checkpoint, unreachable Ollama server, model not pulled), not
-        # a bug, and the message already says what to do about it.
+        # An environment problem, not a bug: the message says what to do.
         print(str(e))
         return 5
 
-    # Persist before reporting. The first run of this eval cost 45 minutes of
-    # CPU and kept none of the answers, so the one question worth asking after
-    # it — *what did the model actually write?* — could not be answered without
-    # paying for the whole run again. The report is cheap to recompute; the
-    # generation is not.
+    # Saved before reporting: generation is expensive, the report is not.
     RUNS.mkdir(exist_ok=True)
     rows_file.write_text(
         json.dumps(rows, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"\nanswers saved to {rows_file} ({len(rows)} rows)")
 
-    # The metadata is written for every backend, not just `ollama:`, because
-    # the question-set fingerprint it carries is what stops these rows being
-    # promoted into the registry after the eval set has moved on. An `hf:` run
-    # needs that guard exactly as much as an Ollama one does.
+    # Written for every backend: its question-set fingerprint guards promotion.
     ollama_meta = None
     if model_spec.startswith("ollama:"):
-        # `generator.model` is the claims chat for every contract — "gated"'s
-        # relevance chat talks to the same Ollama server and the same model
-        # name (EVAL.md, "Run 6": relevance and claims are the same model,
-        # different token caps only), so its GPU share/digest/quantization
-        # are identical and do not need their own separate metadata file.
+        # The relevance chat uses the same server and model, so one record covers both.
         ollama_meta = run_metadata(generator.model)
     _write_run_meta(model_spec, rows_file, questions, ollama_meta)
 

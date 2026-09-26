@@ -1,32 +1,16 @@
-"""The citation contract — PRD M2/B1, and the abstention signal for M2/B2.
+"""Citation checks with no model in them: `audit` (bench) and `gate` (app).
 
-PRD §1 opens on the failure this exists to stop: *"النموذج بيولّد إجابة سليمة
-الصياغة حتى لو المادة اللي استند لها غلط أو مش موجودة أصلاً، والمستخدم مش قادر
-يكشف ده من شكل الإجابة."* A fluent Arabic paragraph citing «المادة (٧٨)» of a
-law that ends at 49 reads exactly like a correct one. No amount of prompting
-makes that detectable by eye, so it is not left to the eye.
+A fluent answer citing an article the law does not have reads exactly like a
+correct one, so every citation is checked against the corpus and against the
+sources actually retrieved. Three failures are counted apart:
 
-Nothing here involves a model. The check runs on generated text against the
-corpus and the retrieved set, so it holds whatever produced the answer — a 3B
-model on a laptop, a frontier API, or a person.
+``fabricated``  a citation to an article or source that does not exist.
+``ungrounded``  a real article that was not in the retrieved context: the model
+                answered from memory, not from retrieval.
+``uncited``     a claim with no citation at all.
 
-**Three failures, deliberately counted apart, because they mean different
-things:**
-
-``fabricated``  — a citation to an article number the corpus does not contain.
-                  The model invented a law.
-``ungrounded``  — a citation to a real article that was NOT in the retrieved
-                  context. The model answered from what it memorised, and the
-                  retrieval pipeline had nothing to do with it. Reads as a
-                  success on any metric that only checks the number exists.
-``uncited``     — a sentence making a claim with no citation at all.
-
-**Format compliance is measured, not assumed.** The prompt asks for a fixed
-form, ``[مادة N]``. Arabic legal prose has many others — «المادة (٧)»،
-«المادتين ٧ و٨»، «المواد ٣٦، ٣٧». Both are extracted: the strict form is what
-was asked for, the loose form is what a reader would call a citation. The gap
-between them is the model's instruction-following, and it is a number rather
-than an impression.
+The prompt asks for ``[مادة N]``; looser forms («المادة (٧)», «المواد ٣٦، ٣٧»)
+are extracted too, so the gap between them measures instruction-following.
 """
 
 from __future__ import annotations
@@ -36,21 +20,8 @@ import unicodedata
 
 from .normalize import TASHKEEL, TATWEEL, evaluation_normalize, normalize_digits
 
-# Whitespace between citation tokens, bounded rather than "*": several
-# unbounded "[ \t]*" in a row over the same class made LOOSE_CITATION's
-# match cost grow with the SQUARE of a run of spaces once what follows
-# fails to match (measured: "مادة" + 800 spaces took 2.4s).
-# gate() never sees this, because evaluation_normalize collapses
-# whitespace before citations() runs on it - but audit() matches on raw,
-# un-collapsed sentence text by design (see its docstring), so the regex
-# itself has to stay cheap regardless of caller. No real citation has
-# more than a handful of spaces between its parts; 20 is generous
-# headroom per slot, and a bounded quantifier's backtracking cost stays
-# flat instead of growing with the input, unlike an unbounded one. LOOSE_CITATION
-# places up to THREE _WS slots between a head word and its number (see
-# _NUMBER_GROUP below), so the actual cliff a real citation could hit is
-# 60 spaces total, not 20 - pinned by a test alongside this constant so a
-# future change to either number is deliberate, not an accidental typo.
+# Bounded, not "*": unbounded runs made matching quadratic in a run of spaces
+# ("مادة" + 800 spaces took 2.4s). A test pins this value.
 _WS = r"[ \t]{0,20}"
 
 # The form the prompt requires: [مادة 7] or [المادة ٧]
@@ -72,14 +43,8 @@ _NUMBER_GROUP = (
 
 LOOSE_CITATION = re.compile(
     r"(?:"
-    # A colon reads the same as a space to anyone fluent — «المادة: 30»،
-    # «المادة :30»، «المادة رقم: 30» and «المادة: رقم 30» (colon before OR
-    # after رقم) are unambiguously citations — but ONLY after the SINGULAR
-    # head word. After a dual or plural one ("المواد: 12", "عدد المواد
-    # رقم: 12") a colon is far more likely to introduce a count or a list
-    # than to cite that number as an article; unnarrowed, this once
-    # misread «عدد المواد: 12» ("number of subjects: 12") as citing
-    # article 12.
+    # A colon («المادة: 30») counts only after the singular head; after a plural
+    # one («عدد المواد: 12») it introduces a count, not a citation.
     + _SINGULAR_HEAD + _WS + r":?" + _WS + r"(?:رقم" + _WS + r":?" + _WS + r")?"
     r"|" + _DUAL_OR_PLURAL_HEAD + _WS + r"(?:رقم)?" + _WS +
     r")" + _NUMBER_GROUP
@@ -90,10 +55,7 @@ NUMBER = re.compile(r"[0-9٠-٩۰-۹]{1,3}")
 # neither of which ends a sentence.
 SENTENCE_END = re.compile(r"[.!؟؛\n]+")
 
-# The exact string the prompt requires when the retrieved articles do not
-# answer the question. A fixed marker, not a judgement call about phrasing:
-# "I could not find" and "the law does not say" are different claims, and
-# scoring abstention on a fuzzy match would measure the matcher.
+# The fixed abstention string the prompt requires; matched exactly, not fuzzily.
 ABSTAIN_MARKER = "لا أستطيع الإجابة من المواد المتاحة"
 
 # Sentences shorter than this are connectives ("وبالتالي :"), not claims.
@@ -141,16 +103,9 @@ COPIED_RUN = 60
 def copied_from_context(sentence: str, context: list[str]) -> bool:
     """Is this sentence lifted verbatim out of one of the retrieved articles?
 
-    This exists because of what the first real run produced. Asked a question,
-    the model frequently reproduced the retrieved article instead of answering
-    — and Egyptian statutes cite themselves: «استثناء من حكم المادة (14) من
-    هذا القانون». The extractor read that as the model citing article 14. It
-    was the law citing itself, inside text the model had copied.
-
-    So a citation lifted from context is not evidence the model grounded
-    anything, and counting it inflates exactly the number a reader most wants
-    to trust. The strict `[مادة N]` form cannot be produced this way, which is
-    what makes it the trustworthy signal.
+    Statutes cite themselves («استثناء من حكم المادة (14) من هذا القانون»), so a
+    citation inside copied text is the law citing itself, not the model grounding
+    an answer. The strict `[مادة N]` form cannot be produced by copying.
     """
     s = " ".join(sentence.split())
     if len(s) < COPIED_RUN:
@@ -181,29 +136,10 @@ def audit(
     An abstention is not audited for citations — refusing to answer is the
     behaviour being asked for, not a failure to cite.
 
-    **Deliberately NOT given `gate`'s normalisation.** `context` reaches
-    this function just as `evaluation_normalize`d as `gate`'s
-    `source_texts` — both come from the same ingested corpus — so the same
-    raw-candidate-vs-normalised-context asymmetry exists here in principle.
-    Left alone for Runs 3/4 anyway: this function splits `text` into
-    `sentences` on raw `.`/`!`/`؟`/`؛`/newline boundaries *before* checking
-    any of them, and `evaluation_normalize`'s whitespace collapse turns a
-    newline into a space. Normalising the whole answer up front, the way
-    `gate` normalises a whole claim, would silently merge sentences a raw
-    newline used to separate — a different and worse failure than the one
-    being fixed here. Doing this safely would mean normalising per sentence
-    *after* the split, touching every call site below rather than one, on
-    the function two already-adopted, pre-registered runs are scored by.
-    That is a follow-up in its own right, not a rider on this fix. Note
-    that `LOOSE_CITATION`'s colon extension is a shared regex constant —
-    unlike the normalisation question, it applies here regardless.
-
-    Confirmed real, still not fixed here: a copied sentence carrying one
-    stray diacritic escapes `copied_from_context` the same way it once did
-    in `gate`, which can flip `grounded`. Confirmed separately: normalising
-    per sentence, after the split, leaves Run 3 and Run 4 byte-identical.
-    Before any new text-contract run: normalise per sentence, after
-    splitting.
+    Unlike `gate`, `text` is not normalised first: that would merge sentences a
+    newline separates. Known gap, kept so Runs 3 and 4 still reproduce: a copied
+    sentence with one stray diacritic escapes `copied_from_context`. Normalise
+    per sentence, after the split, before any new text-contract run.
     """
     if is_abstention(text):
         return {
@@ -242,35 +178,13 @@ def audit(
     }
 
 
-# Two different notions of "invisible", both handled here rather than in
-# evaluation_normalize (the benchmark's shared scoring normaliser, left
-# alone on purpose - see its own module docstring):
-#
-# 1. Every Unicode category Cf ("format") character, UNIONED with every
-#    Default_Ignorable_Code_Point (DerivedCoreProperties.txt) - a wider
-#    property than Cf alone: it also covers combining marks such as CGJ
-#    (U+034F, category Mn) and variation selectors (U+FE00-FE0F, category
-#    Mn), and letter-like filler characters (category Lo) such as the
-#    Hangul fillers. None of these have a visible glyph, none are
-#    whitespace by Python's `\s`, and none are touched by
-#    evaluation_normalize's NFKC/tashkeel/tatweel/whitespace steps - so
-#    one sitting between a head word and its number is invisible on
-#    screen and invisible to a raw string compare. Tested against
-#    `unicodedata.category` plus an explicit range table (Python has no
-#    Default_Ignorable_Code_Point lookup of its own), rather than a fixed
-#    character list, so a member no one has hit yet is still covered.
-# 2. Whether a character between two digits is a BIDI HAZARD: forces
-#    right-to-left or Arabic-letter reading direction (bidi class R or
-#    AL), or is an explicit embedding/override/isolate control. See
-#    `_has_unsafe_gap_between_digits`.
+# Invisible: category Cf or Default_Ignorable_Code_Point. None is whitespace or
+# touched by evaluation_normalize, so one can hide between «مادة» and its number.
 def _is_invisible(ch: str) -> bool:
     return unicodedata.category(ch) == "Cf" or _is_default_ignorable(ord(ch))
 
 
-# DerivedCoreProperties.txt's Default_Ignorable_Code_Point ranges that are
-# not already category Cf (some entries below overlap Cf; the overlap is
-# harmless, this is a union either way). Kept as an explicit, commented
-# table: Python's unicodedata has no property lookup for this one.
+# Default_Ignorable_Code_Point ranges (DerivedCoreProperties.txt); unicodedata has no lookup.
 _DEFAULT_IGNORABLE_RANGES = (
     (0x00AD, 0x00AD),    # soft hyphen
     (0x034F, 0x034F),    # combining grapheme joiner (CGJ)
@@ -291,11 +205,7 @@ _DEFAULT_IGNORABLE_RANGES = (
     (0xE0000, 0xE0FFF),  # tags, and variation selectors supplement
 )
 
-# Every code point in the ranges above, flattened once at import time: a per-character
-# O(range count) scan measured at ~15x the cost of the plain Cf-only check it replaced,
-# recomputed for every character of every source text on every gate() call. An O(1)
-# set membership test is the same semantics, ~6x faster than the linear scan (still
-# slower than Cf alone, since this runs in addition to it, not instead of it).
+# Flattened once: set membership is ~6x faster than scanning the ranges per character.
 _DEFAULT_IGNORABLE_SET = frozenset(
     cp for lo, hi in _DEFAULT_IGNORABLE_RANGES for cp in range(lo, hi + 1)
 )
@@ -311,80 +221,37 @@ def _strip_invisible_chars(text: str) -> str:
 
 _DIGITS = "0123456789\u0660\u0661\u0662\u0663\u0664\u0665\u0666\u0667\u0668\u0669\u06f0\u06f1\u06f2\u06f3\u06f4\u06f5\u06f6\u06f7\u06f8\u06f9"
 
-# Characters evaluation_normalize itself removes, ON TOP of what the gate
-# additionally strips (_is_invisible): tashkeel (Arabic diacritics) and
-# tatweel. Needed for _has_unsafe_gap_between_digits, which must run
-# BEFORE evaluation_normalize - see there for why.
+# Everything removed before comparison: tashkeel, tatweel and invisible characters.
 def _removed_before_comparison(ch: str) -> bool:
     return bool(TASHKEEL.match(ch)) or ch == TATWEEL or _is_invisible(ch)
 
 
-# The embedding, override and isolate controls: each has ITS OWN unique
-# bidi class (LRE, RLE, PDF, LRO, RLO, LRI, RLI, FSI, PDI - never plain
-# "R" or "AL"). NOT checked by `_is_bidi_hazard` below, even though each
-# is exactly as able to flip which digit reads first as an R/AL character
-# is - see `_has_directional_override` for why they need a wider check
-# than a single adjacent character can give them.
+# Bidi embedding, override and isolate controls (see `_has_directional_override`).
 _EMBEDDING_OVERRIDE_ISOLATE = "\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"
 
 
 def _is_bidi_hazard(ch: str) -> bool:
-    """A character that can change which of two digits either side of it
-    reads first (UAX#9) by forcing right-to-left or Arabic-letter
-    direction on ITSELF alone. Scoped to R/AL only - an embedding,
-    override or isolate control is excluded here on purpose; see
-    `_has_directional_override`."""
+    """A right-to-left or Arabic-letter character: between two digits it can
+    change which one reads first (UAX#9)."""
     return unicodedata.bidirectional(ch) in ("R", "AL")
 
 
 def _has_directional_override(text: str) -> bool:
-    """True if `text` contains an embedding, override or isolate control
-    (LRE/RLE/LRO/RLO/LRI/RLI/FSI, or their PDF/PDI pops) ANYWHERE, not
-    only between two digits.
+    """True if `text` holds a bidi embedding, override or isolate control anywhere.
 
-    Unlike a plain R/AL character, these are RANGE operators (UAX#9): an
-    override resolves every character between it and its matching pop (or
-    the end of the paragraph, if unterminated) to its own direction - not
-    only the character immediately touching it. `_has_unsafe_gap_between_digits`
-    cannot see this on its own: it only inspects the single character
-    directly between two digits, so `"\u0645\u0627\u062f\u0629 "\u202e"12"\u202c` - the digits
-    wrapped in RLO/PDF with nothing unusual in the gap immediately next to
-    them - would pass that check and still display as "21" (the override
-    reverses the "12" it encloses). Finding each control's true matching
-    pop (or its absence) for every possible nesting is a full bidi-algorithm
-    exercise; treated conservatively instead, ANY occurrence anywhere in
-    the claim's raw text is unsafe - a legal claim has no legitimate
-    reason to contain one of these controls at all.
+    These act on a whole range, so «مادة \u202e12\u202c» displays "21" with
+    nothing unusual beside the digits. A legal claim has no use for them.
     """
     return any(ch in _EMBEDDING_OVERRIDE_ISOLATE for ch in text)
 
 
 def _has_unsafe_gap_between_digits(text: str) -> bool:
-    """True if two digits are separated only by characters the gate's
-    comparison would remove (_removed_before_comparison), AND at least
-    one of those characters is a bidi hazard (_is_bidi_hazard).
+    """True if two digits are separated only by characters removed before
+    comparison, at least one of them a bidi hazard.
 
-    RLM between "1" and "2" makes a plain strip read "12" - but a
-    bidi-aware renderer displays that same text as "21" (UAX#9): the mark
-    changes which digit a reader sees first. Joining the two digits
-    guesses at a number the claim never unambiguously named, and
-    splitting them (treating each as its own number) is not obviously
-    safer either. Neither is attempted: a claim with a bidi hazard
-    anywhere between two digits is dropped outright, before any number is
-    read from it.
-
-    Not every character removed before comparison is a hazard: LRM (bidi
-    L), ZWSP/ZWJ (bidi BN) and CGJ (Mn, bidi NSM, not even Cf) are all
-    safe to strip and join, since none of them can change reading order -
-    only R/AL characters and the explicit direction controls can. Tatweel
-    (U+0640) and the Quranic small-waw/yeh marks (U+06E5/U+06E6) ARE
-    hazards (bidi AL) even though evaluation_normalize removes them too
-    (detatweel, tashkeel-strip) - which is exactly why this check must run
-    on text BEFORE evaluation_normalize touches it: normalised first, the
-    hazard would already be gone by the time this function ever saw it.
-
-    Between a letter and a digit, or between two letters, nothing here
-    matters either way - this check fires only on digit-gap-digit.
+    RLM between "1" and "2" strips to "12" but displays as "21". Such a claim
+    is dropped rather than guessed at. Must run before evaluation_normalize,
+    which removes tatweel and small waw/yeh (both bidi AL) itself.
     """
     seen_digit = False
     gap_has_hazard = False
@@ -407,9 +274,7 @@ def _gate_one_claim(
     claim: dict, source_numbers: list[int | None], source_texts: list[str],
     stripped_source_texts: list[str], k: int,
 ) -> tuple[dict | None, dict | None]:
-    """One claim from the claims contract, checked against the rules
-    `gate` documents — returns `(kept, None)` or `(None, dropped)`, never
-    both, so a caller can never double-count a claim."""
+    """One claim checked against `gate`'s rules: `(kept, None)` or `(None, dropped)`."""
     text = claim.get("text", "")
     sources = claim.get("sources") or []
 
@@ -421,56 +286,22 @@ def _gate_one_claim(
 
     own_numbers = {source_numbers[s - 1] for s in sources if source_numbers[s - 1] is not None}
 
-    # `source_texts` reaches us already `evaluation_normalize`d — the corpus is
-    # normalised at ingest time, and that is what both the app pipeline and
-    # a saved eval row hand to `gate` as `source_texts` — but that leaves
-    # every Cf/Default_Ignorable character in place (see `_is_invisible`),
-    # and a source's own self-citation can carry one too. `stripped_source_texts`
-    # is every source stripped ONCE by the caller (`gate`, below) for this
-    # comparison only — not recomputed per claim, since the same k sources are
-    # shared by every claim in one answer; neither list is ever part of what a
-    # caller sees.
+    # Sources arrive normalised but may still hold invisible characters; the caller strips them once.
     own_texts_for_comparison = [stripped_source_texts[s - 1] for s in sources]
 
-    # "القانون بيحيل على نفسه" licenses an article the SOURCE'S OWN TEXT
-    # names — not every number a claim happens to mention while some part
-    # of it is copied. Scoped to the claim's own cited sources only: a
-    # number some OTHER retrieved source names does not license a claim
-    # that never cited that source.
+    # A number is allowed only if a source this claim cites is that article or names it in its text.
     numbers_in_own_sources = {n for t in own_texts_for_comparison for n in citations(t)}
     allowed = own_numbers | numbers_in_own_sources
 
-    # Both checks below run on the claim's RAW text, before any
-    # normalisation - evaluation_normalize's own detatweel and
-    # tashkeel-strip steps would otherwise erase tatweel and the Quranic
-    # small-waw/yeh marks before `_has_unsafe_gap_between_digits` ever saw
-    # them, and both are bidi AL, exactly the hazard it exists to catch.
-    # `_has_directional_override` is checked separately, over the WHOLE
-    # claim rather than only a digit-adjacent gap, because an embedding/
-    # override/isolate control's effect is not bounded to the character
-    # touching it - see its own docstring. Either one means the claim is
-    # dropped outright, never joined and never split.
+    # On the raw text: normalising first would erase the hazards these look for.
     if _has_unsafe_gap_between_digits(text) or _has_directional_override(text):
         return None, {"text": text, "sources": sources, "reason": "ungrounded"}
 
-    # The claim's own text never goes through `evaluation_normalize`
-    # upstream; it is the model's raw output. Checking it raw against a
-    # normalised world let a diacritic, a tatweel, or a no-break space
-    # between "مادة" and its number hide a citation from both checks below:
-    # `citations` found nothing, so the "names an article no source
-    # supports" check below passed vacuously, and a claim that should have
-    # been dropped was kept. Normalising here, the same way the sources
-    # already are, closes that gap — and stripping the same invisible
-    # characters as above closes the gap `evaluation_normalize` itself does
-    # not cover. `text` itself stays raw below, since normalising is for
-    # comparison, not display.
+    # Normalised like the sources, so a diacritic or invisible character cannot hide
+    # a citation from the check below. `text` itself stays raw for display.
     normalised_text = _strip_invisible_chars(evaluation_normalize(text))
 
-    # `copied` is still computed and still reported (`report_claims`'s own
-    # rate) — it just no longer decides what is allowed. See `gate`'s
-    # docstring for the bug this replaces: a claim built from a 60+
-    # character copied run plus one invented sentence used to have EVERY
-    # number it mentioned exempted, including one the source never named.
+    # Reported, but no longer decides what is allowed (see `gate`).
     copied = copied_from_context(normalised_text, own_texts_for_comparison)
 
     mentioned = citations(normalised_text)
@@ -485,74 +316,25 @@ def gate(
     source_numbers: list[int | None],
     source_texts: list[str],
 ) -> dict:
-    """Run 5's model-free gate (EVAL.md, commit ecd37f8): decide which
-    claims of a claims-JSON answer survive to be shown, without trusting the
-    model to have followed `sources` correctly — the claims-shaped sibling
-    of `audit`, checked the same way: against what was actually retrieved,
-    never against the model's word for it.
+    """Decide which claims of a claims-JSON answer are shown, trusting only what was retrieved.
 
-    `source_numbers[i]` / `source_texts[i]` describe source ``i + 1`` — the
-    numbering `claims.format_sources` showed the model, 1-based, in
-    retrieval rank order; `k = len(source_texts)`. `source_numbers[i]` is
-    `None` for a source with no article number of its own (an issuance
-    article). Rules, applied in this order so one claim is never dropped
-    for two reasons at once:
+    `source_numbers[i]` / `source_texts[i]` describe source ``i + 1`` as the model
+    saw it (`claims.format_sources`); `source_numbers[i]` is None for a source with
+    no article number. Rules, in order, so no claim is dropped twice:
 
-    1. no `sources` at all -> dropped, ``uncited``.
-    2. any `sources` entry outside ``1..k`` -> dropped, ``fabricated`` (the
-       model pointed at a source that was never shown to it).
-    3. the claim's text names an article ("مادة N", strict or loose form,
-       via `citations`) that is not *allowed* -> dropped, ``ungrounded``. An
-       article number N is allowed only if N is the article number of one
-       of the claim's own cited sources, OR `citations` finds N in the TEXT
-       of one of those same sources (a source that cites itself, e.g.
-       "استثناء من حكم المادة (14) من هذا القانون" — Egyptian statutes do
-       this). The scope is always the claim's own cited sources: a number
-       named only by some OTHER retrieved source, one this claim did not
-       cite, is not allowed either.
+    1. no `sources` -> ``uncited``.
+    2. a source outside ``1..k`` -> ``fabricated``.
+    3. a bidi hazard in the text, or an article named ("مادة N", any form) that
+       none of the claim's own cited sources is or names -> ``ungrounded``.
 
-       The exemption follows this reason, not the wording of an earlier
-       version of this rule, which instead exempted a claim outright
-       whenever `copied_from_context` found it copied — checked once,
-       against the whole claim, rather than per article number. That let a
-       claim built from a 60+ character copied run plus one *invented*
-       sentence ("...وفقاً للمادة 99") keep an article number no source
-       ever named, simply because *some* other part of the same claim was
-       copied. The fix cuts both ways: a copied claim that adds an article
-       none of its sources name is now ``ungrounded`` (it was wrongly kept
-       before), and a *paraphrase* — never copied at all — that correctly
-       names an article its own cited source's text names is now kept (it
-       was wrongly dropped before, since the old rule's exemption never
-       triggered without a literal copy).
+    A kept claim is ``{"text", "sources", "copied": bool}``; `copied` is reported,
+    never scored (EVAL.md Run 5 explains why a verbatim quote can be grounded).
 
-    A claim that survives is ``{"text", "sources", "copied": bool}`` —
-    `copied` (`copied_from_context` against the claim's own cited sources)
-    is still computed and still reported, it just no longer decides what is
-    allowed. Kept regardless of its value, per Run 5's recorded meaning
-    change: in Run 3/4 a citation sitting inside copied text was not
-    counted, because the citation was part of the copied prose itself. Here
-    the source is a *separate* field the model fills in alongside the
-    quote, so a claim that quotes its source verbatim and correctly names
-    that source counts as grounded. The rate is printed on its own in
-    `answer_report.report_claims`, never folded into a pass/fail number.
+    `status` is ``"abstained"`` when nothing is kept (including `parsed is None`),
+    ``"partial"`` when some claims were dropped, else ``"answered"``. A gate that
+    drops everything also shows zero fabrications, so read coverage beside it.
 
-    `status` is ``"abstained"`` when nothing is kept — whether because
-    `abstain: true` said so, every claim was dropped, or `parsed is None`
-    (two failed JSON attempts; the row's own `schema_failure` records that
-    case) — ``"partial"`` when some were dropped and some kept, and
-    ``"answered"`` when none were dropped. **This is the gate trap the
-    pre-registration names, and `report_claims` prints beside every one of
-    these numbers for exactly this reason:** a gate that drops every claim
-    scores "0 fabricated, 0 ungrounded" the same way a model that never
-    says anything would. Coverage and dropped-by-reason counts are what
-    tell the difference from a genuinely clean run.
-
-    Raises `ValueError` immediately when `source_numbers` and `source_texts`
-    disagree in length — they must describe the same sources, position for
-    position (`source_numbers[i]` is article number of `source_texts[i]`),
-    and a caller that passed mismatched lists would otherwise have every
-    source past the shorter list's length silently misaligned instead of
-    failing loudly.
+    Raises ValueError when `source_numbers` and `source_texts` differ in length.
     """
     if len(source_numbers) != len(source_texts):
         raise ValueError(
@@ -570,9 +352,7 @@ def gate(
     claims = parsed.get("claims") or []
 
     if parsed.get("abstain"):
-        # The claims that came with an explicit abstention are not run
-        # through the rules above at all — only counted, so a reader can
-        # see the model said "no" while still writing claims anyway.
+        # Claims sent with an abstention are counted, not checked.
         return {
             "status": "abstained", "kept": [], "dropped": [],
             "uncited": 0, "fabricated": 0, "ungrounded": 0,
@@ -580,8 +360,7 @@ def gate(
         }
 
     k = len(source_texts)
-    # Stripped once here, for every claim to share, instead of once per claim inside
-    # _gate_one_claim: the same k sources are reused across every claim in one answer.
+    # Stripped once, shared by every claim in this answer.
     stripped_source_texts = [_strip_invisible_chars(t) for t in source_texts]
     kept: list[dict] = []
     dropped: list[dict] = []

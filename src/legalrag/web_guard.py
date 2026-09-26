@@ -32,9 +32,9 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException
 
 from . import library as lib
+from .hosts import ALLOWED_HOSTS, split_host_header
 from .pipeline import MAX_QUESTION_CHARS, MIN_QUESTION_CHARS
 
-ALLOWED_HOSTS = ("127.0.0.1", "localhost")
 APP_HEADER = "X-LegalRAG"          # required on every POST/DELETE (value "1")
 CHAT_PATH = "/api/chat"
 UPLOAD_PATH = "/api/documents"
@@ -157,7 +157,7 @@ class Guard:
 
     def _refusal(self, scope) -> JSONResponse | None:
         headers = _first_headers(scope)
-        hostname, port = _split_host_header(headers.get("host", ""))
+        hostname, port = split_host_header(headers.get("host", ""))
         if hostname not in ALLOWED_HOSTS:
             return error_response("invalid_request")
         method = scope["method"]
@@ -189,20 +189,6 @@ def _first_headers(scope) -> dict[str, str]:
     for name, value in scope.get("headers", []):
         found.setdefault(name.decode("latin-1").lower(), value.decode("latin-1"))
     return found
-
-
-def _split_host_header(value: str) -> tuple[str, int | None]:
-    """`host[:port]` -> (lowercased host, port or None). An IPv6 literal stays
-    whole, and a port that is not a number empties the host: both are refused."""
-    text = value.strip().lower()
-    if text.startswith("["):
-        return text, None
-    host, colon, port = text.partition(":")
-    if not colon or not port:
-        return host, None
-    if not (port.isascii() and port.isdigit()):
-        return "", None
-    return host, int(port)
 
 
 def _origins(port: int | None) -> set[str]:

@@ -101,7 +101,7 @@ Registry results come from the scripts in `evals/` (below), not from `tasks.py`.
 
 ### Code map
 
-`src/legalrag/`, 36 modules. The app uses dense retrieval only; BM25, fusion and
+`src/legalrag/`, 38 modules. The app uses dense retrieval only; BM25, fusion and
 rerank exist only in the bench.
 
 **App**
@@ -110,11 +110,12 @@ rerank exist only in the bench.
 |---|---|
 | `webapp.py` | FastAPI app, routes, error-to-HTTP mapping, `main()` for `tasks.py app` |
 | `web_guard.py` | ASGI middleware: host and header checks, rate limits, security headers |
+| `hosts.py` | The allowed Host headers, shared with the legacy `server.py` (stdlib only) |
 | `pipeline.py` | `Pipeline.ask`: one question from retrieval to a gated answer |
 | `library.py` | The on-disk document library: add, search, soft delete |
 | `docextract.py` | A stored PDF's pages and chunks, extracted in a subprocess |
 | `isolate.py` | Run a callable in its own process with a hard timeout |
-| `docstore.py` | One stored document's files, atomic JSON writes |
+| `docstore.py` | One stored document's files on disk |
 | `docindex.py` | A document's dense index and the shared lazily loaded encoder |
 | `docerrors.py` | Every error the library raises, each with a stable code |
 | `reindex.py` | `tasks.py reindex`: rebuild stale embeddings |
@@ -150,6 +151,7 @@ rerank exist only in the bench.
 | `answer_report.py` | Console reports for `answer-eval` |
 | `envcheck.py` | Refuses to stamp an environment record the interpreter does not match |
 | `provenance.py` | The commit and worktree state stamped on every result file |
+| `atomic.py` | Write a file so readers see the old or the new version, never half |
 | `server.py` | `tasks.py serve` (legacy, benchmark test page) |
 
 **Tools**

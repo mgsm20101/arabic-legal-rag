@@ -63,9 +63,16 @@ def binding_problem(meta: dict, laws: list[str]) -> str | None:
 EVAL_K = 5
 
 
-def _avg(values) -> str:
+def mean(values) -> float | None:
+    """The arithmetic mean, or None for no values."""
     vals = list(values)
-    return f"{sum(vals) / len(vals):.3f}" if vals else "—"
+    return sum(vals) / len(vals) if vals else None
+
+
+def _avg(values) -> str:
+    """`mean` for the scoreboard: three decimals, or a dash for no values."""
+    value = mean(values)
+    return "—" if value is None else f"{value:.3f}"
 
 
 def score_questions(questions, k: int = EVAL_K) -> list[tuple[str, float, float]]:

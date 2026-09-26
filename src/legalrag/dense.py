@@ -30,11 +30,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import uuid
 from pathlib import Path
 from typing import Protocol
 
+from .atomic import write_atomic
 from .retrieve import Hit
 
 CORPUS_PATH = Path("data/processed/articles.jsonl")
@@ -356,22 +355,12 @@ class DenseIndex:
             },
             ensure_ascii=False,
         )
-        # Written to a temp file, then os.replace into place: a reader sees the old cache or the
-        # new one, never one truncated by a process that died mid-write (docstore.write_json_atomic
-        # and ingest._write_articles_atomic use the same pattern). The temp name keeps the .npz
-        # suffix on purpose — np.savez appends one to any path that lacks it, which would otherwise
-        # write the data somewhere other than the path os.replace is about to move.
-        tmp = self.cache_path.with_name(f".{self.cache_path.stem}.{uuid.uuid4().hex}.tmp.npz")
-        try:
-            np.savez(
-                tmp,
-                embeddings=self.embeddings,
-                meta=np.array(meta),
-                rows=np.asarray(self.rows, dtype="int32"),
-            )
-            os.replace(tmp, self.cache_path)
-        finally:
-            tmp.unlink(missing_ok=True)
+        write_atomic(self.cache_path, lambda tmp: np.savez(
+            tmp,
+            embeddings=self.embeddings,
+            meta=np.array(meta),
+            rows=np.asarray(self.rows, dtype="int32"),
+        ), suffix=".tmp.npz")
 
     # -- search -----------------------------------------------------------
 

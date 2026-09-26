@@ -20,17 +20,12 @@ import time
 from pathlib import Path
 
 from .dense import CACHE_PATH, CORPUS_PATH, DEFAULT_MODEL, DenseIndex, load_docs
-from .evaluate import binding_problem, corpus_laws, load_meta, load_questions
+from .evaluate import binding_problem, corpus_laws, load_meta, load_questions, mean
 from .fusion import reciprocal_rank_fusion
 from .rerank import CANDIDATE_DEPTH, DEFAULT_RERANKER, rerank
 from .retrieve import BM25Index, Hit, recall_at_k, reciprocal_rank
 
 EVAL_K = 5
-
-
-def _avg(values) -> float | None:
-    vals = list(values)
-    return sum(vals) / len(vals) if vals else None
 
 
 def _fmt(value: float | None, width: int = 8) -> str:
@@ -68,19 +63,19 @@ class Config:
             )
         self.seconds = time.perf_counter() - start
         self.per_question = [(r, m) for _, r, m in rows]
-        self.recall = _avg(r for _, r, _ in rows)
-        self.mrr = _avg(m for _, _, m in rows)
+        self.recall = mean(r for _, r, _ in rows)
+        self.mrr = mean(m for _, _, m in rows)
         for cat in ("direct", "multi_article", "colloquial"):
             sub = [r for r in rows if r[0] == cat]
             self.per_category[cat] = (
-                _avg(r for _, r, _ in sub),
-                _avg(m for _, _, m in sub),
+                mean(r for _, r, _ in sub),
+                mean(m for _, _, m in sub),
             )
 
 
 def candidate_ceiling(questions, search, depth: int) -> float | None:
     """Recall of the candidate stage — the hard cap on any reranking of it."""
-    return _avg(
+    return mean(
         recall_at_k(q.expected_articles, search(q.question, depth)) for q in questions
     )
 

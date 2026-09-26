@@ -19,13 +19,12 @@ Run: ``python tasks.py ingest --law "<اسم القانون>"``
 from __future__ import annotations
 
 import json
-import os
 import re
 import sys
-import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from .atomic import write_atomic
 from .normalize import evaluation_normalize, normalize_digits, search_normalize
 
 RAW_DIR = Path("data/raw")
@@ -290,20 +289,9 @@ def validate(articles: list[Article]) -> list[str]:
 
 
 def _write_articles_atomic(path: Path, articles: list[Article]) -> None:
-    """Write `articles` as JSONL beside `path`, then ``os.replace`` over it.
-
-    Same pattern as ``docstore.write_json_atomic``: a reader of `path` sees the
-    old corpus or the new one, never a half-written one, and a failure here —
-    disk full while writing the temp file, or the final replace itself — raises
-    with `path` completely untouched, because `path` is never opened directly.
-    """
-    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        content = "".join(json.dumps(asdict(a), ensure_ascii=False) + "\n" for a in articles)
-        tmp.write_text(content, encoding="utf-8")
-        os.replace(tmp, path)
-    finally:
-        tmp.unlink(missing_ok=True)
+    """`articles` as JSONL at `path`; readers see the old corpus or the new one, never half."""
+    content = "".join(json.dumps(asdict(a), ensure_ascii=False) + "\n" for a in articles)
+    write_atomic(path, lambda tmp: tmp.write_text(content, encoding="utf-8"))
 
 
 NO_SOURCES = """Nothing to ingest — no .pdf or .txt in data/raw/.

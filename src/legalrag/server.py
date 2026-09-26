@@ -25,19 +25,10 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from .evaluate import corpus_size, load_questions
+from .hosts import ALLOWED_HOSTS, split_host_header
 from .retrieve import BM25Index, load_index, recall_at_k, reciprocal_rank
 
 UI_PATH = Path("ui/index.html")
-
-# Same allowed set as web_guard.ALLOWED_HOSTS (ADR-023), redefined rather than
-# imported: this server is meant to run with only the M1 requirements
-# installed (see module docstring, "Standard library only"), and importing
-# web_guard would pull in fastapi/starlette at module load time for a tool
-# that has neither as a real dependency. Binding to 127.0.0.1 stops remote
-# *connections* but not DNS rebinding: a page a user has open can, after its
-# domain re-resolves to 127.0.0.1, reach this server with an arbitrary Host
-# header, so the header itself has to be checked.
-_ALLOWED_HOSTS = ("127.0.0.1", "localhost")
 
 # A dev retrieval tool never needs more hits than this; also keeps a
 # maliciously large k (e.g. from a rebound page) from being handed straight
@@ -45,21 +36,6 @@ _ALLOWED_HOSTS = ("127.0.0.1", "localhost")
 _MAX_K = 50
 
 _index: BM25Index | None = None
-
-
-def _split_host_header(value: str) -> str:
-    """`host[:port]` -> lowercased host, port stripped. Same rule as
-    web_guard._split_host_header's hostname half (see the comment on
-    _ALLOWED_HOSTS for why it is duplicated here instead of imported)."""
-    text = value.strip().lower()
-    if text.startswith("["):
-        return text
-    host, colon, port = text.partition(":")
-    if not colon or not port:
-        return host
-    if not (port.isascii() and port.isdigit()):
-        return ""
-    return host
 
 
 def _parse_k(qs: dict[str, list[str]]) -> int | None:
@@ -162,7 +138,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):  # noqa: N802
-        if _split_host_header(self.headers.get("Host", "")) not in _ALLOWED_HOSTS:
+        if split_host_header(self.headers.get("Host", ""))[0] not in ALLOWED_HOSTS:
             return self._send({"error": "invalid host"}, 400)
 
         url = urlparse(self.path)

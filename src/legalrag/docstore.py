@@ -14,14 +14,13 @@ here as a description, never as an exception raised on purpose.
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import time
-import uuid
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from .atomic import write_json_atomic
 from .chunking import Chunk
 
 META = "meta.json"
@@ -89,16 +88,6 @@ def read_chunks(path: Path) -> list[Chunk]:
     # "\n" only: JSON escapes it inside strings, but not U+2028, which splitlines() splits on.
     lines = path.read_text(encoding="utf-8").split("\n")
     return [Chunk(**json.loads(line)) for line in lines if line.strip()]
-
-
-def write_json_atomic(path: Path, data: dict | list) -> None:
-    """Write beside `path`, then os.replace over it: readers see old or new, never half."""
-    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
-        os.replace(tmp, path)
-    finally:
-        tmp.unlink(missing_ok=True)
 
 
 def clear_stale(tmp: Path, max_age_seconds: float) -> None:

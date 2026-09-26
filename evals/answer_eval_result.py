@@ -28,7 +28,6 @@ from __future__ import annotations
 import argparse
 import json
 import statistics
-import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -51,22 +50,10 @@ from legalrag.evaluate import (  # noqa: E402
 from legalrag.envcheck import load_recorded, mismatches  # noqa: E402
 from legalrag.envcheck import require as require_environment  # noqa: E402
 from legalrag.generate import MAX_NEW_TOKENS, TEMPERATURE, parse_model_spec  # noqa: E402
+from legalrag.provenance import git as _git  # noqa: E402
+from legalrag.provenance import worktree_clean as _source_is_clean  # noqa: E402
 
 REGISTRY = ROOT / "evals" / "registry"
-
-
-def _git(*args: str) -> str:
-    return subprocess.run(
-        ["git", *args], cwd=ROOT, capture_output=True, text=True, check=True
-    ).stdout.strip()
-
-
-def _source_is_clean() -> bool:
-    """Uncommitted changes outside this run's own output directory."""
-    return all(
-        line[3:].strip().strip('"').startswith("evals/registry/")
-        for line in _git("status", "--porcelain").splitlines()
-    )
 
 
 def _ollama_identity(name: str) -> dict:

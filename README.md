@@ -101,7 +101,7 @@ Registry results come from the scripts in `evals/` (below), not from `tasks.py`.
 
 ### Code map
 
-`src/legalrag/`, 35 modules. The app uses dense retrieval only; BM25, fusion and
+`src/legalrag/`, 36 modules. The app uses dense retrieval only; BM25, fusion and
 rerank exist only in the bench.
 
 **App**
@@ -149,6 +149,7 @@ rerank exist only in the bench.
 | `answer_eval.py` | `tasks.py answer-eval`: end-to-end answers over dense top-5. The `text` and `json` contracts are legacy, kept to reproduce E3; `gated` is what the app runs |
 | `answer_report.py` | Console reports for `answer-eval` |
 | `envcheck.py` | Refuses to stamp an environment record the interpreter does not match |
+| `provenance.py` | The commit and worktree state stamped on every result file |
 | `server.py` | `tasks.py serve` (legacy, benchmark test page) |
 
 **Tools**

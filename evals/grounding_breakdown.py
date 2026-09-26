@@ -21,29 +21,21 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
+import sys
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from legalrag.provenance import git as _git  # noqa: E402
+from legalrag.provenance import worktree_clean as _source_is_clean  # noqa: E402
+
 REGISTRY = ROOT / "evals" / "registry"
 DEFAULT_ROWS = REGISTRY / "answer_rows_83384b2b.json"
 DEFAULT_BASELINE = REGISTRY / "answer_rows_46797bef.json"
 BATCH_1_LAST_ID = 20  # Q001–Q020 were the original set; Q021+ were added with the 60-question expansion
-
-
-def _git(*args: str) -> str:
-    return subprocess.run(
-        ["git", *args], cwd=ROOT, capture_output=True, text=True, check=True
-    ).stdout.strip()
-
-
-def _source_is_clean() -> bool:
-    return all(
-        line[3:].strip().strip('"').startswith("evals/registry/")
-        for line in _git("status", "--porcelain").splitlines()
-    )
 
 
 def _batch(row: dict) -> str:

@@ -19,7 +19,6 @@ from __future__ import annotations
 import argparse
 import json
 import statistics
-import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -32,31 +31,11 @@ from legalrag.ablate import CORPUS_PATH, EVAL_K, build_configs  # noqa: E402
 from legalrag.dense import load_docs  # noqa: E402
 from legalrag.envcheck import require as require_environment  # noqa: E402
 from legalrag.evaluate import load_questions  # noqa: E402
+from legalrag.provenance import git as _git  # noqa: E402
+from legalrag.provenance import worktree_clean as _source_is_clean  # noqa: E402
 
 
 WARMUP_QUERY = "ما هي مدة الإخطار؟"
-
-
-def _git(*args: str) -> str:
-    return subprocess.run(
-        ["git", *args], cwd=ROOT, capture_output=True, text=True, check=True
-    ).stdout.strip()
-
-
-def _source_is_clean() -> bool:
-    """True when nothing that could change the result is uncommitted.
-
-    `git status --porcelain` on its own is too coarse here: this run writes its
-    own log and JSON into evals/registry/, so the harness would report its own
-    output as evidence that the sha is untrustworthy. Anything outside that
-    directory still counts, tracked or not.
-    """
-    for line in _git("status", "--porcelain").splitlines():
-        path = line[3:].strip().strip('"')
-        if path.startswith("evals/registry/"):
-            continue
-        return False
-    return True
 
 
 def _repo_relative(path: Path) -> str:

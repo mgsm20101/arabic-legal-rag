@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 import sys
 from collections import Counter
 from datetime import datetime, timezone
@@ -33,22 +32,11 @@ REGISTRY = ROOT / "evals" / "registry"
 sys.path.insert(0, str(ROOT / "src"))
 
 from legalrag.evaluate import load_questions  # noqa: E402
+from legalrag.provenance import git as _git  # noqa: E402
+from legalrag.provenance import worktree_clean as _source_is_clean  # noqa: E402
 
 DEFAULT_OLD = REGISTRY / "ablation_bd04e8e8.json"
 OLD_SET_LAST_ID = 20  # the 15-question run scored the answerable dev questions Q001–Q020
-
-
-def _git(*args: str) -> str:
-    return subprocess.run(
-        ["git", *args], cwd=ROOT, capture_output=True, text=True, check=True
-    ).stdout.strip()
-
-
-def _source_is_clean() -> bool:
-    return all(
-        line[3:].strip().strip('"').startswith("evals/registry/")
-        for line in _git("status", "--porcelain").splitlines()
-    )
 
 
 def _mix(categories: list[str]) -> dict[str, float]:

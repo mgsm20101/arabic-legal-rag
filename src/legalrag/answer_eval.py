@@ -27,7 +27,6 @@ import argparse
 import json
 import os
 import re
-import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -49,6 +48,7 @@ from .evaluate import (
 from .envcheck import observed as observed_environment
 from .generate import DEFAULT_MODEL, Generator, model_source, parse_model_spec, resolve_model
 from .ollama import NUM_GPU_ENV, GeneratorUnavailable, run_metadata
+from .provenance import commit_state
 
 TOP_K = 5
 
@@ -300,26 +300,6 @@ def _weights_line(model_spec: str) -> str | None:
     return f"weights    : {model_source(repo)}"
 
 
-def _commit_state() -> dict:
-    """The commit this run is executing, and whether the tree matched it.
-
-    Recorded at generation time because the promoter runs later: stamping the
-    promoter's HEAD onto rows is only right if nothing was committed in between,
-    and nothing in the rows could show whether that held. `None` outside a git
-    checkout, which the promoter refuses.
-    """
-    root = Path(__file__).resolve().parents[2]
-    try:
-        sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True,
-                             text=True, check=True).stdout.strip()
-        status = subprocess.run(["git", "status", "--porcelain"], cwd=root, capture_output=True,
-                                text=True, check=True).stdout.splitlines()
-    except (OSError, subprocess.CalledProcessError):
-        return {"source_commit_sha": None, "worktree_clean": None}
-    clean = all(line[3:].strip().strip('"').startswith("evals/registry/") for line in status)
-    return {"source_commit_sha": sha, "worktree_clean": clean}
-
-
 def _write_run_meta(
     model_spec: str, rows_file: Path, questions, ollama_meta: dict | None = None
 ) -> Path:
@@ -345,7 +325,7 @@ def _write_run_meta(
     # later, possibly from another shell, so checking only its own process
     # would say nothing about the run it is about to stamp.
     meta["runtime"] = observed_environment()
-    meta.update(_commit_state())
+    meta.update(commit_state())  # recorded now: the promoter runs later, maybe at another commit
     meta["question_set"] = {
         "fingerprint": question_set_fingerprint(questions),
         "n": len(questions),

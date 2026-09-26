@@ -26,7 +26,6 @@ import argparse
 import json
 import random
 import statistics
-import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,20 +43,8 @@ from legalrag.dense import load_docs  # noqa: E402
 from legalrag.evaluate import binding_problem, corpus_laws, load_meta, load_questions  # noqa: E402
 from legalrag.envcheck import require as require_environment  # noqa: E402
 from legalrag.rerank import CANDIDATE_DEPTH  # noqa: E402
-
-
-def _git(*args: str) -> str:
-    return subprocess.run(
-        ["git", *args], cwd=ROOT, capture_output=True, text=True, check=True
-    ).stdout.strip()
-
-
-def _source_is_clean() -> bool:
-    """Uncommitted changes outside this run's own output directory."""
-    return all(
-        line[3:].strip().strip('"').startswith("evals/registry/")
-        for line in _git("status", "--porcelain").splitlines()
-    )
+from legalrag.provenance import git as _git  # noqa: E402
+from legalrag.provenance import worktree_clean as _source_is_clean  # noqa: E402
 
 
 def _bootstrap_ci(values: list[float], resamples: int, seed: int) -> dict:

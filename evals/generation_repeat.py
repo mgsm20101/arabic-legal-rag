@@ -25,27 +25,19 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
+import sys
 from datetime import datetime, timezone
 from itertools import combinations
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from legalrag.provenance import git as _git  # noqa: E402
+from legalrag.provenance import worktree_clean as _source_is_clean  # noqa: E402
+
 REGISTRY = ROOT / "evals" / "registry"
 ABSTENTION_CRITERION = 0.80  # EVAL.md, pre-registered: abstain on >= 80% of out_of_corpus
-
-
-def _git(*args: str) -> str:
-    return subprocess.run(
-        ["git", *args], cwd=ROOT, capture_output=True, text=True, check=True
-    ).stdout.strip()
-
-
-def _source_is_clean() -> bool:
-    return all(
-        line[3:].strip().strip('"').startswith("evals/registry/")
-        for line in _git("status", "--porcelain").splitlines()
-    )
 
 
 def summarise(rows: list[dict]) -> dict:
